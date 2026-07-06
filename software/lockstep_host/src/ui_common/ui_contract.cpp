@@ -1,0 +1,131 @@
+/**********************************************************
+* 文件名: ui_contract.cpp
+* 日期: 2026-07-06
+* 版本: v2.0
+* 更新记录: v1.0 初版创建 UI 解耦接口合同实现；v2.0 改为源工程克隆工作台最小接口实现
+* 描述: 提供浅色克隆工作台动作文本和默认占位状态
+**********************************************************/
+
+#include "ui_contract.h"
+
+namespace lockstep::ui {
+
+QString toDisplayText(const UiAction action)
+{
+    QString text;
+
+    switch (action) {
+    case UiAction::NewTask:
+        text = QStringLiteral("新建验证任务");
+        break;
+    case UiAction::SaveTask:
+        text = QStringLiteral("保存为验证任务");
+        break;
+    case UiAction::LoadTaskToWorkbench:
+        text = QStringLiteral("加载到工作台");
+        break;
+    case UiAction::EditTask:
+        text = QStringLiteral("修改任务");
+        break;
+    case UiAction::SaveTaskEdit:
+        text = QStringLiteral("保存修改");
+        break;
+    case UiAction::CancelTaskEdit:
+        text = QStringLiteral("放弃修改");
+        break;
+    case UiAction::LoadProfile:
+        text = QStringLiteral("加载目标配置(profile)");
+        break;
+    case UiAction::SaveProfile:
+        text = QStringLiteral("保存目标配置(profile)");
+        break;
+    case UiAction::StartDebugService:
+        text = QStringLiteral("启动片上调试器");
+        break;
+    case UiAction::StopDebugService:
+        text = QStringLiteral("停止片上调试器");
+        break;
+    case UiAction::BrowseTargetDebugTool:
+        text = QStringLiteral("选择片上调试器");
+        break;
+    case UiAction::BrowseInterfaceConfig:
+        text = QStringLiteral("选择 interface.cfg");
+        break;
+    case UiAction::BrowseTargetConfig:
+        text = QStringLiteral("选择 target.cfg");
+        break;
+    case UiAction::BrowseProgramImage:
+        text = QStringLiteral("选择程序镜像");
+        break;
+    case UiAction::ProgramImage:
+        text = QStringLiteral("程序烧录");
+        break;
+    case UiAction::VerifyReadback:
+        text = QStringLiteral("回读校验");
+        break;
+    case UiAction::RunProgram:
+        text = QStringLiteral("程序运行");
+        break;
+    case UiAction::StopProgram:
+        text = QStringLiteral("程序中止");
+        break;
+    case UiAction::ShowVerifySummary:
+        text = QStringLiteral("回读校验摘要");
+        break;
+    case UiAction::ShowRunSummary:
+        text = QStringLiteral("运行摘要");
+        break;
+    case UiAction::BrowseWaveform:
+        text = QStringLiteral("选择波形文件");
+        break;
+    case UiAction::ImportWaveform:
+        text = QStringLiteral("导入波形");
+        break;
+    case UiAction::ClearWaveform:
+        text = QStringLiteral("清除波形");
+        break;
+    case UiAction::ShowWaveformEmbedded:
+        text = QStringLiteral("嵌入显示");
+        break;
+    case UiAction::ShowWaveformDetached:
+        text = QStringLiteral("独立窗口");
+        break;
+    case UiAction::BrowseProtocolWaveform:
+        text = QStringLiteral("选择协议波形");
+        break;
+    case UiAction::BrowseProtocolOutput:
+        text = QStringLiteral("选择协议输出");
+        break;
+    case UiAction::AnalyzeProtocol:
+        text = QStringLiteral("解析波形文件");
+        break;
+    case UiAction::RefreshSerialPorts:
+        text = QStringLiteral("刷新串口");
+        break;
+    case UiAction::ToggleSerialMonitor:
+        text = QStringLiteral("打开串口");
+        break;
+    case UiAction::ClearSerialOutput:
+        text = QStringLiteral("清空输出");
+        break;
+    case UiAction::DetachLogWindow:
+        text = QStringLiteral("弹出独立窗口");
+        break;
+    default:
+        text = QStringLiteral("未知动作");
+        break;
+    }
+
+    return text;
+}
+
+UiWorkbenchState makeDefaultWorkbenchState(const UiMode mode)
+{
+    UiWorkbenchState state;
+    state.topStatus = makeDefaultGlobalStatus(mode);
+    state.logText = QStringLiteral("[INFO] UI 预览窗口已启动\n[INFO] 当前为纯 UI 占位，按钮只发出动作请求");
+    state.serialText = QStringLiteral("[SERIAL] 串口监控占位：当前未接入真实串口");
+    return state;
+}
+
+}  // namespace lockstep::ui

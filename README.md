@@ -1,3 +1,25 @@
+<!--
+/**********************************************************
+* 文件名: README.md
+* 日期: 2026-07-06
+* 版本: v1.1
+* 更新记录: 补充源码库结构入口和上位机软件目录说明
+* 描述: 说明 lockstep_bench 源码库的顶层用途和主要目录
+**********************************************************/
+-->
+
 # lockstep_bench
 
-Benchmark workspace for the `lockstep` project.
+`lockstep_bench` 是锁步研发测试系统上位机软件的源码库工作区。仓库结构按 `docs/开发文档` 中的软件设计说明书和模块开发计划组织：
+
+```text
+lockstep_bench/
+  docs/
+  software/
+    lockstep_host/
+```
+
+- `docs/` 保存项目级设计文档、模块设计说明和结构规划。
+- `software/lockstep_host/` 保存上位机 Qt/C++ 程序源码、资源 profile 来源、开发脚本、测试和示例。
+
+源码库结构规划见 `docs/开发文档/源码库结构规划.md`。

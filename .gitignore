@@ -1,0 +1,47 @@
+# /**********************************************************
+# * 文件名: .gitignore
+# * 日期: 2026-07-06
+# * 版本: v1.0
+# * 更新记录: 初版创建源码库忽略规则
+# * 描述: 忽略本地构建产物、IDE 临时文件和运行生成物
+# **********************************************************/
+
+# CMake build directories
+build/
+build-*/
+cmake-build-*/
+out/
+software/lockstep_host/build-*/
+
+# CMake generated files outside dedicated build dirs
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+*_autogen/
+
+# Compiler and linker outputs
+*.a
+*.dll
+*.dylib
+*.exe
+*.lib
+*.obj
+*.o
+*.pdb
+*.so
+
+# IDE and editor state
+.vs/
+.vscode/
+*.user
+*.swp
+*~
+
+# Local runtime output
+/logs/
+/tmp/
+/software/lockstep_host/logs/
+/software/lockstep_host/tmp/
