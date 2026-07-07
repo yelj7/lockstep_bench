@@ -15,6 +15,8 @@ qt_add_library(lockstep_ui_common STATIC
     ui_theme.h
     ui_types.cpp
     ui_types.h
+    workspace_selection_dialog.cpp
+    workspace_selection_dialog.h
 )
 
 target_link_libraries(lockstep_ui_common

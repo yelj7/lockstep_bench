@@ -34,7 +34,7 @@ TopStatusBar::TopStatusBar(QWidget* const parent)
       programValue_(nullptr)
 {
     buildLayout();
-    setStatus(makeDefaultGlobalStatus(UiMode::Research));
+    setStatus(makeDefaultGlobalStatus(UiMode::Test));
 }
 
 void TopStatusBar::setStatus(const GlobalStatus& status)

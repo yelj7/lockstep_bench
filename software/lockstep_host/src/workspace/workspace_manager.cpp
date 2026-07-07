@@ -171,6 +171,7 @@ TaskInputItem taskInputItemFromJson(const QJsonObject& object)
 QJsonObject taskInputsToJson(const TaskInputSet& inputs)
 {
     QJsonObject object;
+    object.insert(QStringLiteral("program_file"), taskInputItemToJson(inputs.programFile));
     object.insert(QStringLiteral("program_manifest"), taskInputItemToJson(inputs.programManifest));
     object.insert(QStringLiteral("sampling_config"), taskInputItemToJson(inputs.samplingConfig));
     object.insert(QStringLiteral("fault_injection_config"), taskInputItemToJson(inputs.faultInjectionConfig));
@@ -181,6 +182,8 @@ QJsonObject taskInputsToJson(const TaskInputSet& inputs)
 TaskInputSet taskInputsFromJson(const QJsonObject& object)
 {
     TaskInputSet inputs;
+    inputs.programFile =
+        taskInputItemFromJson(object.value(QStringLiteral("program_file")).toObject());
     inputs.programManifest =
         taskInputItemFromJson(object.value(QStringLiteral("program_manifest")).toObject());
     inputs.samplingConfig =
@@ -196,6 +199,7 @@ QJsonObject taskSummaryToJson(const TaskSummary& summary)
     QJsonObject object;
     object.insert(QStringLiteral("task_id"), summary.taskId);
     object.insert(QStringLiteral("task_name"), summary.taskName);
+    object.insert(QStringLiteral("description"), summary.description);
     object.insert(QStringLiteral("mode"), toString(summary.mode));
     object.insert(QStringLiteral("status"), toString(summary.status));
     object.insert(QStringLiteral("relative_path"), summary.relativePath);
@@ -219,6 +223,7 @@ bool taskSummaryFromJson(const QJsonObject& object, TaskSummary* const summary)
 
     parsed.taskId = object.value(QStringLiteral("task_id")).toString();
     parsed.taskName = object.value(QStringLiteral("task_name")).toString();
+    parsed.description = object.value(QStringLiteral("description")).toString();
     parsed.mode = mode;
     parsed.status = status;
     parsed.relativePath = object.value(QStringLiteral("relative_path")).toString();
@@ -368,6 +373,14 @@ bool clearFolder(const QString& path, QStringList* const removedPaths, QString* 
     }
 
     return ensureDir(path, errorMessage);
+}
+
+bool isTaskRootPath(const QString& tasksRoot, const QString& taskRoot)
+{
+    const QString cleanTasksRoot = QDir::cleanPath(QDir::fromNativeSeparators(tasksRoot));
+    const QString cleanTaskRoot = QDir::cleanPath(QDir::fromNativeSeparators(taskRoot));
+    return (cleanTaskRoot != cleanTasksRoot) &&
+        cleanTaskRoot.startsWith(cleanTasksRoot + QLatin1Char('/'));
 }
 
 }  // namespace
@@ -648,6 +661,7 @@ bool WorkspaceManager::createTask(
     TaskSummary summary;
     summary.taskId = generateTaskId(tasks, mode);
     summary.taskName = requestedName;
+    summary.description = options.description;
     summary.mode = mode;
     summary.status = TaskStatus::Draft;
     summary.relativePath = QStringLiteral("%1/%2").arg(QString::fromLatin1(kTasksName), summary.taskId);
@@ -733,6 +747,21 @@ bool WorkspaceManager::renameTask(
     const QString& newTaskName,
     QString* const errorMessage)
 {
+    TaskContext context;
+    if (!loadTask(mode, taskId, &context, errorMessage)) {
+        return false;
+    }
+
+    return updateTaskMetadata(mode, taskId, newTaskName, context.summary.description, errorMessage);
+}
+
+bool WorkspaceManager::updateTaskMetadata(
+    const WorkspaceMode mode,
+    const QString& taskId,
+    const QString& newTaskName,
+    const QString& description,
+    QString* const errorMessage)
+{
     QJsonObject index;
     if (!loadIndex(rootPath_, mode, &index, errorMessage)) {
         return false;
@@ -754,6 +783,7 @@ bool WorkspaceManager::renameTask(
         QJsonObject item = tasks.at(i).toObject();
         if (item.value(QStringLiteral("task_id")).toString() == taskId) {
             item.insert(QStringLiteral("task_name"), trimmed);
+            item.insert(QStringLiteral("description"), description);
             item.insert(QStringLiteral("updated_at"), currentTimeText());
             tasks.replace(i, item);
             found = true;
@@ -772,6 +802,7 @@ bool WorkspaceManager::renameTask(
     }
 
     context.summary.taskName = trimmed;
+    context.summary.description = description;
     context.summary.updatedAt = currentTimeText();
     QJsonObject taskObject = taskSummaryToJson(context.summary);
     taskObject.insert(QStringLiteral("inputs"), taskInputsToJson(context.inputs));
@@ -781,6 +812,65 @@ bool WorkspaceManager::renameTask(
     index.insert(QStringLiteral("tasks"), tasks);
     return writeJsonObject(context.paths.taskJsonPath, taskObject, errorMessage) &&
         saveIndex(rootPath_, mode, index, errorMessage);
+}
+
+bool WorkspaceManager::deleteTask(
+    const WorkspaceMode mode,
+    const QString& taskId,
+    QString* const errorMessage)
+{
+    const QString normalizedTaskId = taskId.trimmed();
+    if (normalizedTaskId.isEmpty()) {
+        setError(errorMessage, QStringLiteral("任务 ID 为空"));
+        return false;
+    }
+    if (normalizedTaskId.contains(QLatin1Char('/')) ||
+        normalizedTaskId.contains(QLatin1Char('\\')) ||
+        normalizedTaskId.contains(QStringLiteral(".."))) {
+        setError(errorMessage, QStringLiteral("任务 ID 非法: %1").arg(normalizedTaskId));
+        return false;
+    }
+
+    QJsonObject index;
+    if (!loadIndex(rootPath_, mode, &index, errorMessage)) {
+        return false;
+    }
+
+    const QJsonArray tasks = index.value(QStringLiteral("tasks")).toArray();
+    QJsonArray remainingTasks;
+    bool found = false;
+    for (const QJsonValue& value : tasks) {
+        const QJsonObject taskObject = value.toObject();
+        if (taskObject.value(QStringLiteral("task_id")).toString() == normalizedTaskId) {
+            found = true;
+        } else {
+            remainingTasks.append(value);
+        }
+    }
+
+    if (!found) {
+        setError(errorMessage, QStringLiteral("任务不存在: %1").arg(normalizedTaskId));
+        return false;
+    }
+
+    TaskPaths paths;
+    if (!getTaskPaths(mode, normalizedTaskId, &paths, errorMessage)) {
+        return false;
+    }
+
+    if (!isTaskRootPath(tasksRootPath(rootPath_, mode), paths.taskRootPath)) {
+        setError(errorMessage, QStringLiteral("任务目录非法，拒绝删除: %1").arg(paths.taskRootPath));
+        return false;
+    }
+
+    QDir taskDir(paths.taskRootPath);
+    if (taskDir.exists() && !taskDir.removeRecursively()) {
+        setError(errorMessage, QStringLiteral("无法删除任务目录: %1").arg(paths.taskRootPath));
+        return false;
+    }
+
+    index.insert(QStringLiteral("tasks"), remainingTasks);
+    return saveIndex(rootPath_, mode, index, errorMessage);
 }
 
 bool WorkspaceManager::saveTaskInputs(
@@ -804,6 +894,31 @@ bool WorkspaceManager::saveTaskInputs(
     object.insert(QStringLiteral("stage_status"), loaded.stageStatus);
     object.insert(QStringLiteral("last_error_id"), loaded.lastErrorId);
     if (!writeJsonObject(loaded.paths.taskJsonPath, object, errorMessage)) {
+        return false;
+    }
+
+    QJsonObject index;
+    if (!loadIndex(rootPath_, mode, &index, errorMessage)) {
+        return false;
+    }
+
+    QJsonArray tasks = index.value(QStringLiteral("tasks")).toArray();
+    bool found = false;
+    for (int i = 0; i < tasks.size(); ++i) {
+        QJsonObject item = tasks.at(i).toObject();
+        if (item.value(QStringLiteral("task_id")).toString() == taskId) {
+            tasks.replace(i, taskSummaryToJson(loaded.summary));
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        setError(errorMessage, QStringLiteral("任务不存在: %1").arg(taskId));
+        return false;
+    }
+
+    index.insert(QStringLiteral("tasks"), tasks);
+    if (!saveIndex(rootPath_, mode, index, errorMessage)) {
         return false;
     }
 

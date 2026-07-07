@@ -43,7 +43,7 @@ QString toDisplayText(const NavigationPage page)
 
     switch (page) {
     case NavigationPage::Project:
-        text = QStringLiteral("项目与任务");
+        text = QStringLiteral("任务管理");
         break;
     case NavigationPage::Connection:
         text = QStringLiteral("目标连接");
@@ -52,16 +52,25 @@ QString toDisplayText(const NavigationPage page)
         text = QStringLiteral("工作模式");
         break;
     case NavigationPage::RamProgram:
-        text = QStringLiteral("RAM程序烧录");
+        text = QStringLiteral("程序烧录");
+        break;
+    case NavigationPage::FaultInjection:
+        text = QStringLiteral("错误注入");
+        break;
+    case NavigationPage::SamplingConfig:
+        text = QStringLiteral("采集配置");
+        break;
+    case NavigationPage::ProgramRun:
+        text = QStringLiteral("程序运行");
         break;
     case NavigationPage::Waveform:
-        text = QStringLiteral("波形分析仪");
+        text = QStringLiteral("波形显示");
         break;
     case NavigationPage::Protocol:
         text = QStringLiteral("协议解析");
         break;
     case NavigationPage::Stats:
-        text = QStringLiteral("性能统计");
+        text = QStringLiteral("测试报告");
         break;
     default:
         text = QStringLiteral("未知页面");

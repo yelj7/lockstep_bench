@@ -32,6 +32,9 @@ QString toDisplayText(const UiAction action)
     case UiAction::LoadTaskToWorkbench:
         text = QStringLiteral("加载到工作台");
         break;
+    case UiAction::DeleteTask:
+        text = QStringLiteral("删除验证任务");
+        break;
     case UiAction::EditTask:
         text = QStringLiteral("修改任务");
         break;
@@ -52,15 +55,6 @@ QString toDisplayText(const UiAction action)
         break;
     case UiAction::StopDebugService:
         text = QStringLiteral("停止片上调试器");
-        break;
-    case UiAction::BrowseTargetDebugTool:
-        text = QStringLiteral("选择片上调试器");
-        break;
-    case UiAction::BrowseInterfaceConfig:
-        text = QStringLiteral("选择 interface.cfg");
-        break;
-    case UiAction::BrowseTargetConfig:
-        text = QStringLiteral("选择 target.cfg");
         break;
     case UiAction::BrowseProgramImage:
         text = QStringLiteral("选择程序镜像");
@@ -118,6 +112,9 @@ QString toDisplayText(const UiAction action)
         break;
     case UiAction::DetachLogWindow:
         text = QStringLiteral("弹出独立窗口");
+        break;
+    case UiAction::GenerateReport:
+        text = QStringLiteral("生成报告");
         break;
     default:
         text = QStringLiteral("未知动作");

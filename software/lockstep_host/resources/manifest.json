@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "resource_pack_id": "lockstep_host_default_resources",
+  "resource_pack_version": "1.0.0.1",
+  "defaults": {
+    "research_profile_id": "noelv_zcu102_cmsis_dap",
+    "test_profile_id": "noelv_zcu102_cmsis_dap",
+    "research_report_template_id": "report_template_default",
+    "test_report_template_id": "report_template_default"
+  },
+  "board_profiles": [
+    {
+      "id": "noelv_zcu102_cmsis_dap",
+      "name": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+      "version": "1.0.0.1",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "board_profiles/noelv_zcu102_cmsis_dap.json",
+      "sha256": "",
+      "status": "enabled"
+    }
+  ],
+  "debug_adapters": [],
+  "report_templates": [
+    {
+      "id": "report_template_default",
+      "name": "Default JSON Report Template",
+      "version": "1.0.0.1",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "report_templates/report_template_default.json",
+      "sha256": "",
+      "status": "enabled"
+    }
+  ],
+  "protocol_rules": [
+    {
+      "id": "protocol_rules_placeholder",
+      "name": "Protocol Rules Placeholder",
+      "version": "0.0.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "protocol_rules/placeholder.json",
+      "sha256": "",
+      "status": "placeholder"
+    }
+  ]
+}

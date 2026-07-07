@@ -132,15 +132,11 @@ QString UiTheme::workbenchStyleSheet()
         QGroupBox[panelBox="true"]:checked::title {
             color: #374151;
         }
-        QGroupBox#raw_log {
-            border-color: #d7dde5;
+        QFrame#raw_log {
+            background-color: #eceff3;
+            border: 1px solid #d7dde5;
             border-radius: 6px;
-            margin-top: 12px;
-            padding: 10px;
-        }
-        QGroupBox#raw_log::title {
-            left: 10px;
-            padding: 0 5px;
+            padding: 0;
         }
         QWidget#diagnostics_panel,
         QWidget#log_content_widget,
@@ -151,18 +147,30 @@ QString UiTheme::workbenchStyleSheet()
             background-color: #eceff3;
             border: 0;
         }
+        QWidget#log_tab_corner {
+            background-color: #eceff3;
+            border: 0;
+        }
         QTabWidget#diagnostics_output_tabs::pane {
             background-color: #f7f8fa;
             border: 1px solid #d7dde5;
+            border-top: 0;
             border-radius: 6px;
-            top: -1px;
+            top: 0;
+        }
+        QTabWidget#diagnostics_output_tabs QTabBar::base {
+            background-color: transparent;
+            border: 0;
+            height: 0;
         }
         QTabWidget#diagnostics_output_tabs QTabBar::tab {
             background-color: #f2f4f7;
             border: 1px solid #d7dde5;
+            border-top-left-radius: 3px;
+            border-top-right-radius: 3px;
             color: #64748b;
             min-width: 84px;
-            padding: 5px 12px;
+            padding: 5px 12px 6px 12px;
         }
         QTabWidget#diagnostics_output_tabs QTabBar::tab:selected {
             background-color: #dcecff;
@@ -335,6 +343,11 @@ QString UiTheme::workbenchStyleSheet()
         QPushButton#tool_icon_button {
             padding: 4px;
             min-width: 28px;
+        }
+        QPushButton#log_clear_button {
+            padding: 2px 8px;
+            min-width: 0;
+            min-height: 0;
         }
         QProgressBar {
             background-color: #eef2f6;

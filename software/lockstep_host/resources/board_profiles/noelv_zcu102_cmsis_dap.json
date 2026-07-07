@@ -1,0 +1,14 @@
+{
+  "defaultRunAddress": "0x0",
+  "gdbPort": 3333,
+  "host": "127.0.0.1",
+  "interfaceConfigPath": "/home/hhq/ylj/lockstep/riscv_downloader/cmsis-dap-explicit.cfg",
+  "jtagKhz": 14,
+  "profileName": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+  "ramBaseAddress": "0x0",
+  "resetStrategy": "reset halt",
+  "runAfterDownload": true,
+  "targetConfigPath": "/home/hhq/ylj/lockstep/riscv_downloader/target-riscv-direct.cfg",
+  "targetDebugToolPath": "/home/hhq/ylj/tools/riscv-openocd/bin/openocd",
+  "tclPort": 6666
+}

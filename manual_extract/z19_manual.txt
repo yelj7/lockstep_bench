@@ -1,0 +1,1962 @@
+Zynq UltraScale+
+ MPSoC 开发平台
+
+     Z19 开发板
+Z19 用户手册
+
+                文档版本控制
+
+文档版本            修改内容记录
+
+  REV1.0 创建文档
+
+芯驿电子科技（上海）有限公司          2 / 57
+        Z19 用户手册
+
+                      目录
+
+文档版本控制 ...................................................................................................................................... 2
+一、 开发板简介 ............................................................................................................................. 6
+二、 ZYNQ 芯片 .............................................................................................................................9
+三、 DDR4 DRAM ......................................................................................................................10
+四、 QSPI Flash .......................................................................................................................... 19
+五、 eMMC Flash .......................................................................................................................20
+六、 时钟配置 ...............................................................................................................................21
+七、 电源 ....................................................................................................................................... 24
+八、 M.2 接口 ...............................................................................................................................25
+九、 DP 显示接口 ........................................................................................................................26
+十、 USB3.0 接口 ........................................................................................................................27
+十一、 千兆以太网接口 .................................................................................................................. 28
+十二、 Uart 接口 ............................................................................................................................. 30
+十三、 SD 卡槽 ................................................................................................................................ 31
+十四、 光纤接口 ...............................................................................................................................32
+十五、 CAN 通信接口 .................................................................................................................... 36
+十六、 485 通信接口 ...................................................................................................................... 37
+十七、 MIPI 接口 .............................................................................................................................37
+十八、 FMC 连接器 .........................................................................................................................38
+十九、 PCIE 接口 ............................................................................................................................. 48
+二十、 SATA 接口 ............................................................................................................................ 49
+二十一、 SMA 接口 ..................................................................................................................... 51
+二十二、 JTAG 调试口 .................................................................................................................51
+二十三、 RTC 实时时钟 ...............................................................................................................52
+二十四、 EEPROM 和温度传感器 ............................................................................................ 53
+二十五、 LED 灯 ........................................................................................................................... 54
+二十六、 按键 ................................................................................................................................54
+二十七、 拨码开关配置 ...............................................................................................................55
+二十八、 风扇 ................................................................................................................................56
+
+3 / 57  http://www.alinx.com
+Z19 用户手册
+
+     二十九、 结构尺寸图 ................................................................................................................... 57
+
+芯驿电子科技（上海）有限公司  4 / 57
+                                                                          Z19 用户手册
+
+      芯驿电子科技（上海）有限公司 基于 XILINX Zynq UltraScale+ MPSoCs 开发平台的开
+发板（型号：Z19）2021 款正式发布了，为了让您对此开发平台可以快速了解，我们编写了
+此用户手册。
+
+      这款 MPSoCs 开发平台使用 XILINX Zynq UltraScale+ EG 芯片 ZU19EG 的解决方案，
+它采用 Processing System(PS)+Programmable Logic(PL)技术将四核 ARM Cortex-A53
+和 FPGA 可编程逻辑集成在一颗芯片上。开发板上 PS 端带有 4 片共 8GB 高速 DDR4 SDRAM
+芯片，1 片 32GB 的 eMMC 存储芯片和 2 片 512Mb 的 QSPI FLASH 芯片；核心板上 PL 端
+带有一个 260 脚的 DDR4 SODIMM 插槽（DDR4 SODIMM 需另行购买）。
+
+      在开发板的设计上我们为用户扩展了丰富的外围接口，比如 2 个 FMC 双宽度接口、1 路
+M.2 SSD 接口、1 路 PCIE 主模式插槽、4 路 SATA 接口、3 对差分 SMA 接口、1 路 mini_DP
+接口、4 路 QSFP28 光纤接口、4 个 USB3.0 接口、2 路千兆以太网接口、3 路 UART 接口、
+1 路 TF 卡槽、2 路 CAN 总线接口、2 路 RS485 接口和 1 路 MIPI 摄像头接口等等。满足用户
+各种高速数据交换，数据存储，视频传输处理，深度学习，人工智能以及工业控制的要求，是
+一款“专业级”的 ZYNQ 开发平台。为高速数据传输和交换，数据处理的前期验证和后期应
+用提供了可能。相信这样的一款产品非常适合从事 MPSoCs 开发的学生、工程师等群体。
+
+5 / 57  http://www.alinx.com
+Z19 用户手册
+
+    一、 开发板简介
+
+      在这里，对这款 Z19 MPSoCs 开发平台进行简单的功能介绍。
+      开发板主要由 ZU19EG + 4 个 DDR4+DDR4 SODIMM + eMMC +2 个 QSPI FLASH
+构成。主芯片采用 Xilinx 公司的 Zynq UltraScale+ MPSoCs 系列的芯片，型号为 XCZU19EG-
+-2FFVC1760I。ZU19EG 芯片可分成处理器系统部分 Processor System（PS）和可编程逻辑
+部分 Programmable Logic（PL）。 在 ZU19EG 芯片的 PS 端和 PL 端分别挂了 4 片 DDR4
+和 1 个 260 脚 DDR4 SODIMM 卡槽，PS 端的每片 DDR4 容量高达 2GB，使得 ARM 系统和
+FPGA 系统能独立处理和存储的数据的功能。PS 端的 32GB eMMC FLASH 存储芯片和 2 片
+512Mb 的 QSPI FLASH 用来静态存储 MPSoCs 的操作系统、文件系统及用户数据。
+      开发板扩展了丰富的外围接口，其中包含 2 个 FMC 双宽度接口、1 路 M.2 SSD 接口、1
+路 PCIE 主模式插槽、4 路 SATA 接口、3 对差分 SMA 接口、1 路 mini_DP 接口、4 路 QSFP28
+光纤接口、4 个 USB3.0 接口、2 路千兆以太网接口、3 路 UART 接口、1 路 TF 卡槽、2 路
+CAN 总线接口、2 路 RS485 接口和 1 路 MIPI 摄像头接口和一些按键 LED。
+      下图为整个开发系统的结构示意图：
+
+芯驿电子科技（上海）有限公司  6 / 57
+                                                                          Z19 用户手册
+
+      通过这个示意图，我们可以看到，我们这个开发平台所能含有的接口和功能。
+       Xilinx ARM+FPGA 芯片 XCZU19EG- -2FFVC1760I
+       DDR4
+
+           PS 端带有四片大容量 2GB（共 8GB）高速 DDR4 SDRAM。
+           Pl 端带有一个 260 脚的 DDR4 SODIMM 插槽。
+       eMMC
+           PS 端挂载一片 32GB eMMC FLASH 存储芯片，用户存储操作系统文件或者其他用
+           户数据。
+       QSPI FLASH
+           两片 512Mbit 的 QSPI FLASH 存储芯片, 可用作 ZYNQ 芯片的 Uboot 文件，系统文
+           件和用户数据的存储。
+       PCIe x8 插槽
+           一路标准的 PCIEx8 主模式插槽用于 PCIEx8 通信, 可用于连接 PCIEx8，x4, x2, x1 的
+           PCIE 板卡，实现 PCIE 数据通信。支持 PCI Express 2.0 标准，单通道通信速率可高
+           达 5GBaud。
+       SMA 接口
+           6 个 SMA 接口共引出 3 对差分信号。
+       SATA 接口
+           4 路 SATA 接口，用于连接硬盘等外设。
+       DP 输出接口
+      1 路标准的 Display Port 输出显示接口，用于视频图像的显示。最高支持 4K@30Hz 或
+者 1080P@60Hz 输出。
+       USB3.0 接口
+      4 路 USB3.0 HOST 接口，USB 接口类型为 TYPE A。用于连接外部的 USB 外设，比如连
+接鼠标，键盘，U 盘等外设。
+       千兆以太网接口
+      2 路 10/100M/1000M 以太网 RJ45 接口，PS 和 PL 各 1 路。用于和电脑或其它网络设
+备进行以太网数据交换。
+       Uart 接口
+      2 路 Uart 转 USB 接口，PS 和 PL 各 1 路。用于和电脑通信，方便用户调试。串口芯片采
+用 Silicon Labs CP2102GM 的 USB-UART 芯片, USB 接口采用 MINI USB 接口。
+      1 路 ps uart 通过一个 1mm 间距 10pin FPC 接口引出，用于连接串口屏等外设。
+
+7 / 57  http://www.alinx.com
+Z19 用户手册
+
+       4 路 QSFP28 光纤接口
+      提供 4 个独立的发送和接收通道，每个功能可以在 OM4 MMF 的 100 米处进行 25Gbps
+的运行，总体数据速率为 100Gbps。
+       Micro SD 卡座
+      1 路 Micro SD 卡座，用于存储操作系统镜像和文件系统。
+       FMC 扩展口
+      2 个标准的 FMC HPC 的扩展口，符合标准双宽度 FMC 标准。可以外接 XILINX 或者我
+们黑金的各种 FMC 模块（HDMI 输入输出模块，双目摄像头模块，高速 AD 模块等等）。
+       CAN 通信接口
+      2 路 CAN 总线接口，选用 TI 公司的 SN65HVD232 芯片，接口采用 4Pin 的绿色接线端
+子。
+       485 通信接口
+      2 路 485 通信接口，选用 MAXIM 公司的 MAX3485 芯片。接口采用 6Pin 的绿色接线端
+子。
+       MIPI 接口
+      2 个 LANE 的 MIPI 摄像头输入接口，用于连接 MIPI 摄像头模块（AN5641）。
+       JTAG 调试口
+      1 个 10 针 2.54mm 标准的 JTAG 口，用于 FPGA 程序的下载和调试，用户可以通过 XILINX
+下载器对 ZU9EG 系统进行调试和下载。
+       温湿度传感器
+      板载 1 片温湿度传感器芯片 LM75，用于检测板子周围环境的温度和湿度。
+       EEPROM
+      1 片 IIC 接口的 EEPROM 24LC04;
+       RTC 实时时钟
+      1 路内置的 RTC 实时时钟；
+       LED 灯
+      2 个双路侧装 LED 灯，包含 1 个电源指示灯，1 个 DONE 配置指示灯，2 个用户指示灯。
+       按键
+      3 个按键，1 个侧装复位按键， 2 个用户按键。
+
+芯驿电子科技（上海）有限公司  8 / 57
+                                                                          Z19 用户手册
+
+    二、 ZYNQ 芯片
+
+      开发板使用的是 Xilinx 公司的 Zynq UltraScale+ MPSoCs EG 系列的系列的芯片，型号
+为 XCZU19EG-2FFVC1760I。ZU19EG 芯片的 PS 系统集成了 4 个 ARM Cortex™-A53 处理
+器，速度高达 1.3Ghz，支持 2 级 Cache; 另外 ZU9EG 还包含 2 个 Cortex-R5 处理器（速度
+高达 533Mhz）。
+
+    ZU19EG 芯片支持 32 位或者 64 位的 DDR4，LPDDR4，DDR3,DDR3L, LPDDR3 存储芯
+片，在 PS 端带有丰富的高速接口如 PCIE Gen2, USB3.0, SATA 3.1, DisplayPort；同时另外
+也支持 USB2.0，千兆以太网，SD/SDIO，I2C，CAN，UART，GPIO 等接口。PL 端内部含
+有丰富的可编程逻辑单元，DSP 和内部 RAM。ZU19EG 芯片的总体框图如图 2-2-1 所示
+
+                             图2-1 ZYNQ ZU19EG芯片的总体框图
+其中 PS 系统部分的主要参数如下：
+- ARM 四核 Cortex™-A53 处理器，速度高达 1.3GHz，每个 CPU 32KB 1 级指令和数
+
+     据缓存，1MB 2 级缓存 2 个 CPU 共享。
+- ARM 双核 Cortex-R5 处理器，速度高达 533MHz，每个 CPU 32KB 1 级指令和数据
+
+     缓存，及 128K 紧耦合内存。
+- 外部存储接口，支持 32/64bit DDR4/3/3L、LPDDR4/3 接口。
+
+9 / 57  http://www.alinx.com
+Z19 用户手册
+
+- 静态存储接口，支持 NAND, 2xQuad-SPI FLASH。
+- 高速连接接口，支持 PCIe Gen2 x4, 2xUSB3.0, Sata 3.1, DisplayPort, 4x Tri-mode
+
+     Gigabit Ethernet。
+- 普通连接接口：2xUSB2.0, 2x SD/SDIO, 2x UART, 2x CAN 2.0B, 2x I2C, 2x SPI, 4x
+
+     32b GPIO。
+- 电源管理：支持 Full/Low/PL/Battery 四部分电源的划分。
+- 加密算法：支持 RSA, AES 和 SHA。
+- 系统监控：10 位 1Mbps 的 AD 采样，用于温度和电压的检测。
+其中 PL 逻辑部分的主要参数如下：
+- 逻辑单元(System Logic Cells)：1143K；
+- 触发器(CLB flip-flops) : 1045K；
+- 查找表(CLBLUTs) : 523K；
+- Block RAM：34.6Mb；
+- 时钟管理单元（CMTs）: 11 个
+- DSP Slices：1968 个
+- GTH 16.3Gb/s 收发器： 44 个
+
+XCZU19EG-2FFVC1760I芯片的速度等级为-2，工业级，封装为FFVC1760。
+
+三、 DDR4 DRAM
+
+Z19开发板上配有4片Micron(美光）的2GB的DDR4芯片，型号为MT40A1G16KD-062E，
+
+均挂载在PS端，组成64位数据总线带宽和8GB的容量。PL端引出一个260脚的DDR4
+
+SODIMM插槽。PS端的DDR4 SDRAM的最高运行速度可达1200MHz(数据速率2400Mbps)，
+
+4片DDR4存储系统直接连接到了PS的BANK504的存储器接口上。PL端DDR4 SODIMM卡槽
+
+连接到了FPGA的BANK69，70，71的接口上。DDR4 SDRAM的具体配置如下表2-3-1所示。
+
+位号           芯片型号              容量          厂家
+
+U4,U5,U6,U7  MT40A1G16KD-062E  1G x 16bit  Micron
+
+                表 3-1 DDR4 SDRAM 配置
+
+DDR4 的硬件设计需要严格考虑信号完整性，我们在电路设计和 PCB 设计的时候已经充
+
+分考虑了匹配电阻/终端电阻,走线阻抗控制，走线等长控制，保证 DDR4 的高速稳定的工作。
+
+PS 端的 DDR4 的硬件连接方式如图 3-1 所示:
+
+芯驿电子科技（上海）有限公司                                 10 / 57
+                                                      Z19 用户手册
+
+                              图3-1 PS端DDR4 DRAM原理图部分
+PL 端的 DDR4 SODIMM 卡槽的硬件连接方式如图 3-2 所示:
+
+         图3-2 PL端DDR4 DRAM原理图部分
+
+PS 端 DDR4 SDRAM 引脚分配：             引脚名                        引脚号
+                 信号名称      PS_DDR_DQS_N0_504          BA30
+                           PS_DDR_DQS_P0_504          AY30
+           PS_DDR4_DQS0_N  PS_DDR_DQS_N1_504          AY33
+           PS_DDR4_DQS0_P  PS_DDR_DQS_P1_504          AY32
+           PS_DDR4_DQS1_N  PS_DDR_DQS_N2_504          AT30
+           PS_DDR4_DQS1_P  PS_DDR_DQS_P2_504          AR30
+           PS_DDR4_DQS2_N  PS_DDR_DQS_N3_504          AT32
+           PS_DDR4_DQS2_P
+           PS_DDR4_DQS3_N
+
+11 / 57                                       http://www.alinx.com
+Z19 用户手册
+
+PS_DDR4_DQS3_P  PS_DDR_DQS_P3_504  AR32
+PS_DDR4_DQS4_N  PS_DDR_DQS_N4_504  AR40
+PS_DDR4_DQS4_P  PS_DDR_DQS_P4_504  AP40
+PS_DDR4_DQS5_N  PS_DDR_DQS_N5_504  AK37
+PS_DDR4_DQS5_P  PS_DDR_DQS_P5_504  AJ37
+PS_DDR4_DQS6_N  PS_DDR_DQS_N6_504  AU41
+PS_DDR4_DQS6_P  PS_DDR_DQS_P6_504  AU40
+PS_DDR4_DQS7_N  PS_DDR_DQS_N7_504  AL41
+PS_DDR4_DQS7_P  PS_DDR_DQS_P7_504  AL40
+PS_DDR4_DQ0     PS_DDR_DQ0_504     AV29
+PS_DDR4_DQ1     PS_DDR_DQ1_504     AW30
+PS_DDR4_DQ2     PS_DDR_DQ2_504     AW29
+PS_DDR4_DQ3     PS_DDR_DQ3_504     AW31
+PS_DDR4_DQ4     PS_DDR_DQ4_504     BB31
+PS_DDR4_DQ5     PS_DDR_DQ5_504     BB30
+PS_DDR4_DQ6     PS_DDR_DQ6_504     BB29
+PS_DDR4_DQ7     PS_DDR_DQ7_504     BA31
+PS_DDR4_DQ8     PS_DDR_DQ8_504     BB33
+PS_DDR4_DQ9     PS_DDR_DQ9_504     BA32
+PS_DDR4_DQ10    PS_DDR_DQ10_504    BA33
+PS_DDR4_DQ11    PS_DDR_DQ11_504    BB34
+PS_DDR4_DQ12    PS_DDR_DQ12_504    AV31
+PS_DDR4_DQ13    PS_DDR_DQ13_504    AW32
+PS_DDR4_DQ14    PS_DDR_DQ14_504    AV32
+PS_DDR4_DQ15    PS_DDR_DQ15_504    AV33
+PS_DDR4_DQ16    PS_DDR_DQ16_504    AN29
+PS_DDR4_DQ17    PS_DDR_DQ17_504    AP29
+PS_DDR4_DQ18    PS_DDR_DQ18_504    AP30
+PS_DDR4_DQ19    PS_DDR_DQ19_504    AP31
+PS_DDR4_DQ20    PS_DDR_DQ20_504    AT31
+PS_DDR4_DQ21    PS_DDR_DQ21_504    AU30
+PS_DDR4_DQ22    PS_DDR_DQ22_504    AU31
+PS_DDR4_DQ23    PS_DDR_DQ23_504    AU29
+PS_DDR4_DQ24    PS_DDR_DQ24_504    AV34
+PS_DDR4_DQ25    PS_DDR_DQ25_504    AU33
+
+芯驿电子科技（上海）有限公司                           12 / 57
+                                                Z19 用户手册
+
+           PS_DDR4_DQ26  PS_DDR_DQ26_504  AT33
+           PS_DDR4_DQ27  PS_DDR_DQ27_504  AU34
+           PS_DDR4_DQ28  PS_DDR_DQ28_504  AN33
+           PS_DDR4_DQ29  PS_DDR_DQ29_504  AP32
+           PS_DDR4_DQ30  PS_DDR_DQ30_504  AN32
+           PS_DDR4_DQ31  PS_DDR_DQ31_504  AN31
+           PS_DDR4_DQ32  PS_DDR_DQ32_504  AN41
+           PS_DDR4_DQ33  PS_DDR_DQ33_504  AN42
+           PS_DDR4_DQ34  PS_DDR_DQ34_504  AP42
+           PS_DDR4_DQ35  PS_DDR_DQ35_504  AP41
+           PS_DDR4_DQ36  PS_DDR_DQ36_504  AN39
+           PS_DDR4_DQ37  PS_DDR_DQ37_504  AR38
+           PS_DDR4_DQ38  PS_DDR_DQ38_504  AP39
+           PS_DDR4_DQ39  PS_DDR_DQ39_504  AN38
+           PS_DDR4_DQ40  PS_DDR_DQ40_504  AL37
+           PS_DDR4_DQ41  PS_DDR_DQ41_504  AL38
+           PS_DDR4_DQ42  PS_DDR_DQ42_504  AK38
+           PS_DDR4_DQ43  PS_DDR_DQ43_504  AK39
+           PS_DDR4_DQ44  PS_DDR_DQ44_504  AJ36
+           PS_DDR4_DQ45  PS_DDR_DQ45_504  AL35
+           PS_DDR4_DQ46  PS_DDR_DQ46_504  AJ35
+           PS_DDR4_DQ47  PS_DDR_DQ47_504  AK35
+           PS_DDR4_DQ48  PS_DDR_DQ48_504  AR42
+           PS_DDR4_DQ49  PS_DDR_DQ49_504  AT41
+           PS_DDR4_DQ50  PS_DDR_DQ50_504  AT42
+           PS_DDR4_DQ51  PS_DDR_DQ51_504  AT40
+           PS_DDR4_DQ52  PS_DDR_DQ52_504  AV42
+           PS_DDR4_DQ53  PS_DDR_DQ53_504  AV41
+           PS_DDR4_DQ54  PS_DDR_DQ54_504  AV39
+           PS_DDR4_DQ55  PS_DDR_DQ55_504  AV38
+           PS_DDR4_DQ56  PS_DDR_DQ56_504  AM39
+           PS_DDR4_DQ57  PS_DDR_DQ57_504  AM38
+           PS_DDR4_DQ58  PS_DDR_DQ58_504  AM40
+           PS_DDR4_DQ59  PS_DDR_DQ59_504  AM41
+           PS_DDR4_DQ60  PS_DDR_DQ60_504  AJ42
+
+13 / 57                                   http://www.alinx.com
+Z19 用户手册
+
+PS_DDR4_DQ61        PS_DDR_DQ61_504   AK42
+PS_DDR4_DQ62        PS_DDR_DQ62_504   AK40
+PS_DDR4_DQ63        PS_DDR_DQ63_504   AK41
+PS_DDR4_DM0         PS_DDR_DM0_504    AY29
+PS_DDR4_DM1         PS_DDR_DM1_504    AY34
+PS_DDR4_DM2         PS_DDR_DM2_504    AR29
+PS_DDR4_DM3         PS_DDR_DM3_504    AR33
+PS_DDR4_DM4         PS_DDR_DM4_504    AR39
+PS_DDR4_DM5         PS_DDR_DM5_504    AL36
+PS_DDR4_DM6         PS_DDR_DM6_504    AU39
+PS_DDR4_DM7         PS_DDR_DM7_504    AL42
+PS_DDR4_A0          PS_DDR_A0_504     BA38
+PS_DDR4_A1          PS_DDR_A1_504     BB36
+PS_DDR4_A2          PS_DDR_A2_504     BA35
+PS_DDR4_A3          PS_DDR_A3_504     BB35
+PS_DDR4_A4          PS_DDR_A4_504     BB38
+PS_DDR4_A5          PS_DDR_A5_504     AY35
+PS_DDR4_A6          PS_DDR_A6_504     AP37
+PS_DDR4_A7          PS_DDR_A7_504     AT36
+PS_DDR4_A8          PS_DDR_A8_504     AR35
+PS_DDR4_A9          PS_DDR_A9_504     AT35
+PS_DDR4_A10         PS_DDR_A10_504    AU35
+PS_DDR4_A11         PS_DDR_A11_504    AU36
+PS_DDR4_A12         PS_DDR_A12_504    AW36
+PS_DDR4_A13         PS_DDR_A13_504    AW37
+PS_DDR4_ACT_B       PS_DDR_ACT_N_504  AR37
+PS_DDR4_ALERT_B  PS_DDR_ALERT_N_504   AM36
+PS_DDR4_BA0         PS_DDR_BA0_504    AN37
+PS_DDR4_BA1         PS_DDR_BA1_504    AN36
+PS_DDR4_BG0         PS_DDR_BG0_504    AP36
+PS_DDR4_CAS_B       PS_DDR_A15_504    AW34
+PS_DDR4_CKE0        PS_DDR_CKE0_504   AY38
+PS_DDR4_CLK0_N      PS_DDR_CK_N0_504  BA37
+PS_DDR4_CLK0_P      PS_DDR_CK0_504    BA36
+PS_DDR4_CS0_B       PS_DDR_CS_N0_504  AY37
+
+芯驿电子科技（上海）有限公司                              14 / 57
+                                                            Z19 用户手册
+
+         PS_DDR4_ODT0           PS_DDR_ODT0_504       BB39
+         PS_DDR4_PARITY         PS_DDR_PARITY_504     AM35
+         PS_DDR4_RAS_B          PS_DDR_A16_504        AR34
+         PS_DDR4_RESET_B  PS_DDR_RAM_RST_N_504        AM34
+         PS_DDR4_WE_B           PS_DDR_A14_504        AW35
+
+PL 端 DDR4 SODIMM 引脚分配：
+
+         信号名称             引脚名                                引脚号
+                                                            N19
+PL_DDR4_DQS0_N            IO_L4N_T0U_N7_DBC_AD7N_71         N20
+                                                            J22
+PL_DDR4_DQS0_P            IO_L4P_T0U_N6_DBC_AD7P_71         K22
+                                                            E20
+PL_DDR4_DQS1_N            IO_L10N_T1U_N7_QBC_AD4N_71        F20
+                                                            B21
+PL_DDR4_DQS1_P            IO_L10P_T1U_N6_QBC_AD4P_71        C21
+                                                            F30
+PL_DDR4_DQS2_N            IO_L16N_T2U_N7_QBC_AD3N_71        G30
+                                                            A32
+PL_DDR4_DQS2_P            IO_L16P_T2U_N6_QBC_AD3P_71        B31
+                                                            C34
+PL_DDR4_DQS3_N            IO_L22N_T3U_N7_DBC_AD0N_71        D34
+                                                            A40
+PL_DDR4_DQS3_P            IO_L22P_T3U_N6_DBC_AD0P_71        A39
+                                                            M20
+PL_DDR4_DQS4_N            IO_L4N_T0U_N7_DBC_AD7N_69         L19
+                                                            M22
+PL_DDR4_DQS4_P            IO_L4P_T0U_N6_DBC_AD7P_69         P21
+                                                            L18
+PL_DDR4_DQS5_N            IO_L10N_T1U_N7_QBC_AD4N_69        M18
+                                                            N21
+PL_DDR4_DQS5_P            IO_L10P_T1U_N6_QBC_AD4P_69        M21
+                                                            H21
+PL_DDR4_DQS6_N            IO_L16N_T2U_N7_QBC_AD3N_69        H20
+
+PL_DDR4_DQS6_P            IO_L16P_T2U_N6_QBC_AD3P_69
+
+PL_DDR4_DQS7_N            IO_L22N_T3U_N7_DBC_AD0N_69
+
+PL_DDR4_DQS7_P            IO_L22P_T3U_N6_DBC_AD0P_69
+
+PL_DDR4_DQ0               IO_L3P_T0L_N4_AD15P_71
+
+PL_DDR4_DQ1               IO_L3N_T0L_N5_AD15N_71
+
+PL_DDR4_DQ2               IO_L6P_T0U_N10_AD6P_71
+
+PL_DDR4_DQ3               IO_L5P_T0U_N8_AD14P_71
+
+PL_DDR4_DQ4               IO_L2N_T0L_N3_71
+
+PL_DDR4_DQ5               IO_L2P_T0L_N2_71
+
+PL_DDR4_DQ6               IO_L5N_T0U_N9_AD14N_71
+
+PL_DDR4_DQ7               IO_L6N_T0U_N11_AD6N_71
+
+PL_DDR4_DQ8               IO_L12P_T1U_N10_GC_71
+
+PL_DDR4_DQ9               IO_L11P_T1U_N8_GC_71
+
+15 / 57                                            http://www.alinx.com
+Z19 用户手册
+
+PL_DDR4_DQ10    IO_L8N_T1L_N3_AD5N_71    K20
+PL_DDR4_DQ11    IO_L8P_T1L_N2_AD5P_71    L20
+PL_DDR4_DQ12    IO_L11N_T1U_N9_GC_71     H19
+PL_DDR4_DQ13    IO_L12N_T1U_N11_GC_71    G20
+PL_DDR4_DQ14    IO_L9P_T1L_N4_AD12P_71   K21
+PL_DDR4_DQ15    IO_L9N_T1L_N5_AD12N_71   J21
+PL_DDR4_DQ16    IO_L17N_T2U_N9_AD10N_71  D21
+PL_DDR4_DQ17    IO_L17P_T2U_N8_AD10P_71  E21
+PL_DDR4_DQ18    IO_L14P_T2L_N2_GC_71     F23
+PL_DDR4_DQ19    IO_L18N_T2U_N11_AD2N_71  D22
+PL_DDR4_DQ20    IO_L15N_T2L_N5_AD11N_71  E19
+PL_DDR4_DQ21    IO_L15P_T2L_N4_AD11P_71  F19
+PL_DDR4_DQ22    IO_L18P_T2U_N10_AD2P_71  E22
+PL_DDR4_DQ23    IO_L14N_T2L_N3_GC_71     F22
+PL_DDR4_DQ24    IO_L20N_T3L_N3_AD1N_71   B20
+PL_DDR4_DQ25    IO_L21P_T3L_N4_AD8P_71   A20
+PL_DDR4_DQ26    IO_L24P_T3U_N10_71       B23
+PL_DDR4_DQ27    IO_L24N_T3U_N11_71       A23
+PL_DDR4_DQ28    IO_L20P_T3L_N2_AD1P_71   C20
+PL_DDR4_DQ29    IO_L21N_T3L_N5_AD8N_71   A19
+PL_DDR4_DQ30    IO_L23P_T3U_N8_71        B22
+PL_DDR4_DQ31    IO_L23N_T3U_N9_71        A22
+PL_DDR4_DQ32    IO_L5P_T0U_N8_AD14P_69   G28
+PL_DDR4_DQ33    IO_L5N_T0U_N9_AD14N_69   F29
+PL_DDR4_DQ34    IO_L2N_T0L_N3_69         H30
+PL_DDR4_DQ35    IO_L2P_T0L_N2_69         J30
+PL_DDR4_DQ36    IO_L6P_T0U_N10_AD6P_69   J28
+PL_DDR4_DQ37    IO_L6N_T0U_N11_AD6N_69   H28
+PL_DDR4_DQ38    IO_L3P_T0L_N4_AD15P_69   F31
+PL_DDR4_DQ39    IO_L3N_T0L_N5_AD15N_69   F32
+PL_DDR4_DQ40    IO_L9N_T1L_N5_AD12N_69   A30
+PL_DDR4_DQ41    IO_L8N_T1L_N3_AD5N_69    B30
+PL_DDR4_DQ42    IO_L11N_T1U_N9_GC_69     D31
+PL_DDR4_DQ43    IO_L11P_T1U_N8_GC_69     E31
+PL_DDR4_DQ44    IO_L9P_T1L_N4_AD12P_69   A29
+
+芯驿电子科技（上海）有限公司                                      16 / 57
+                                                     Z19 用户手册
+
+           PL_DDR4_DQ45  IO_L8P_T1L_N2_AD5P_69       C29
+           PL_DDR4_DQ46  IO_L12P_T1U_N10_GC_69       C30
+           PL_DDR4_DQ47  IO_L12N_T1U_N11_GC_69       C31
+           PL_DDR4_DQ48  IO_L15N_T2L_N5_AD11N_69     C33
+           PL_DDR4_DQ49  IO_L18N_T2U_N11_AD2N_69     A34
+           PL_DDR4_DQ50  IO_L14N_T2L_N3_GC_69        B33
+           PL_DDR4_DQ51  IO_L15P_T2L_N4_AD11P_69     D33
+           PL_DDR4_DQ52  IO_L18P_T2U_N10_AD2P_69     A33
+           PL_DDR4_DQ53  IO_L14P_T2L_N2_GC_69        B32
+           PL_DDR4_DQ54  IO_L17P_T2U_N8_AD10P_69     B35
+           PL_DDR4_DQ55  IO_L17N_T2U_N9_AD10N_69     A35
+           PL_DDR4_DQ56  IO_L21N_T3L_N5_AD8N_69      A38
+           PL_DDR4_DQ57  IO_L20N_T3L_N3_AD1N_69      B37
+           PL_DDR4_DQ58  IO_L24P_T3U_N10_69          C42
+           PL_DDR4_DQ59  IO_L23P_T3U_N8_69           B40
+           PL_DDR4_DQ60  IO_L20P_T3L_N2_AD1P_69      B36
+           PL_DDR4_DQ61  IO_L21P_T3L_N4_AD8P_69      A37
+           PL_DDR4_DQ62  IO_L24N_T3U_N11_69          B42
+           PL_DDR4_DQ63  IO_L23N_T3U_N9_69           B41
+           PL_DDR4_DQ64  IO_L24P_T3U_N10_70          A24
+           PL_DDR4_DQ65  IO_L21P_T3L_N4_AD8P_70      C26
+           PL_DDR4_DQ66  IO_L23N_T3U_N9_70           C25
+           PL_DDR4_DQ67  IO_L20P_T3L_N2_AD1P_70      A27
+           PL_DDR4_DQ68  IO_L23P_T3U_N8_70           C24
+           PL_DDR4_DQ69  IO_L24N_T3U_N11_70          A25
+           PL_DDR4_DQ70  IO_L21N_T3L_N5_AD8N_70      B27
+           PL_DDR4_DQ71  IO_L20N_T3L_N3_AD1N_70      A28
+           PL_DDR4_DM0   IO_L1P_T0L_N0_DBC_71        P18
+           PL_DDR4_DM1   IO_L7P_T1L_N0_QBC_AD13P_71  K19
+           PL_DDR4_DM2   IO_L13P_T2L_N0_GC_QBC_71    G22
+           PL_DDR4_DM3   IO_L19P_T3L_N0_DBC_AD9P_71  D19
+           PL_DDR4_DM4   IO_L1P_T0L_N0_DBC_69        K29
+           PL_DDR4_DM5   IO_L7P_T1L_N0_QBC_AD13P_69  E29
+           PL_DDR4_DM6   IO_L13P_T2L_N0_GC_QBC_69    E32
+           PL_DDR4_DM7   IO_L19P_T3L_N0_DBC_AD9P_69  C36
+
+17 / 57                  http://www.alinx.com
+Z19 用户手册
+
+PL_DDR4_DM8      IO_L19P_T3L_N0_DBC_AD9P_70  C28
+PL_DDR4_A0       IO_L1P_T0L_N0_DBC_70        P26
+PL_DDR4_A1       IO_L6P_T0U_N10_AD6P_70      M23
+PL_DDR4_A2       IO_L6N_T0U_N11_AD6N_70      L23
+PL_DDR4_A3       IO_L11P_T1U_N8_GC_70        H25
+PL_DDR4_A4       IO_L11N_T1U_N9_GC_70        H26
+PL_DDR4_A5       IO_T3U_N12_70               D24
+PL_DDR4_A6       IO_L4N_T0U_N7_DBC_AD7N_70   K24
+PL_DDR4_A7       IO_L18N_T2U_N11_AD2N_70     E24
+PL_DDR4_A8       IO_L9N_T1L_N5_AD12N_70      J24
+PL_DDR4_A9       IO_L10N_T1U_N7_QBC_AD4N_70  G23
+PL_DDR4_A10      IO_L16N_T2U_N7_QBC_AD3N_70  E27
+PL_DDR4_A11      IO_L16P_T2U_N6_QBC_AD3P_70  E26
+PL_DDR4_A12      IO_L15N_T2L_N5_AD11N_70     F28
+PL_DDR4_A13      IO_L7P_T1L_N0_QBC_AD13P_70  K27
+PL_DDR4_ACT_B    IO_L9P_T1L_N4_AD12P_70      J23
+PL_DDR4_ALERT_B  IO_L10P_T1U_N6_QBC_AD4P_70  H23
+PL_DDR4_BA0      IO_L4P_T0U_N6_DBC_AD7P_70   L24
+PL_DDR4_BA1      IO_T1U_N12_70               K25
+PL_DDR4_BG0      IO_L17N_T2U_N9_AD10N_70     D28
+PL_DDR4_BG1      IO_L17P_T2U_N8_AD10P_70     D27
+PL_DDR4_CAS_B    IO_L7N_T1L_N1_QBC_AD13N_70  J27
+PL_DDR4_CKE0     IO_L18P_T2U_N10_AD2P_70     F24
+PL_DDR4_CKE1     IO_T2U_N12_70               D26
+PL_DDR4_CLK0_N   IO_L13N_T2L_N1_GC_QBC_70    G27
+PL_DDR4_CLK0_P   IO_L13P_T2L_N0_GC_QBC_70    G26
+PL_DDR4_CLK1_N   IO_L14N_T2L_N3_GC_70        E25
+PL_DDR4_CLK1_P   IO_L14P_T2L_N2_GC_70        F25
+PL_DDR4_CS0_B    IO_L2P_T0L_N2_70            M25
+PL_DDR4_CS1_B    IO_L3N_T0L_N5_AD15N_70      N25
+PL_DDR4_ODT0     IO_L5P_T0U_N8_AD14P_70      P23
+PL_DDR4_ODT1     IO_L2N_T0L_N3_70            L25
+PL_DDR4_PARITY   IO_L3P_T0L_N4_AD15P_70      N24
+PL_DDR4_RAS_B    IO_L8N_T1L_N3_AD5N_70       J26
+PL_DDR4_RST      IO_L15P_T2L_N4_AD11P_70     F27
+
+芯驿电子科技（上海）有限公司                                          18 / 57
+                                          Z19 用户手册
+
+PL_DDR4_SCL   IO_L9P_AD3P_93              E6
+PL_DDR4_SDA   IO_L9N_AD3N_93              D6
+PL_DDR4_WE_B  IO_L5N_T0U_N9_AD14N_70      N23
+
+    四、 QSPI Flash
+
+      Z19 核心板配有 2 片 512MBit 大小的 Quad-SPI FLASH 芯片组成 8 位带宽数据总线，
+FLASH 型号为 MT25QU512ABB1EW9-0SIT，它使用 1.8V CMOS 电压标准。由于 QSPI
+FLASH 的非易失特性，在使用中， 它可以作为系统的启动设备来存储系统的启动镜像。这些
+镜像主要包括 FPGA 的 bit 文件、ARM 的应用程序代码以及其它的用户数据文件。QSPI FLASH
+的具体型号和相关参数见表 4-1。
+
+ 位号           芯片类型              容量        厂家
+U2,U3                                     美光
+         MT25QU512ABB1EW9-0SIT  512M bit
+
+              表4-1 QSPI Flash的型号和参数
+
+      QSPI FLASH 连接到 ZYNQ 芯片的 PS 部分 BANK500 的 GPIO 口上，在系统设计中需要
+配置这些 PS 端的 GPIO 口功能为 QSPI FLASH 接口。为图 4-1 为 QSPI Flash 在原理图中的
+部分。
+
+19 / 57       图 4-1 QSPI Flash 连接示意图
+
+                                             http://www.alinx.com
+Z19 用户手册
+
+配置芯片引脚分配：                            引脚名        引脚号
+             信号名称          PS_MIO5_500        AL32
+                           PS_MIO0_500        AM33
+         MIO5_QSPI0_SS_B   PS_MIO4_500        AL33
+         MIO0_QSPI0_SCLK   PS_MIO1_500        AM29
+         MIO4_QSPI0_IO0    PS_MIO2_500        AM31
+         MIO1_QSPI0_IO1    PS_MIO3_500        AM30
+         MIO2_QSPI0_IO2    PS_MIO7_500        AL30
+         MIO3_QSPI0_IO3    PS_MIO12_500       AJ34
+         MIO7_QSPI1_SS_B   PS_MIO8_500        AK33
+         MIO12_QSPI1_SCLK  PS_MIO9_500        AK34
+         MIO8_QSPI1_IO0    PS_MIO10_500       AK30
+         MIO9_QSPI1_IO1    PS_MIO11_500       AK32
+         MIO10_QSPI1_IO2
+         MIO11_QSPI1_IO3
+
+五、 eMMC Flash
+
+开 发 板 配 有 一 片 大 容 量 的 32GB 大 小 的 eMMC FLASH 芯 片 ， 型 号 为
+
+MTFC32GAPALBH-IT，它支持 JEDEC e-MMC V5.0 标准的 HS-MMC 接口，电平支持 1.8V
+
+或者 3.3V。eMMC FLASH 和 ZYNQ 连接的数据宽度为 8bit。由于 eMMC FLASH 的大容量
+
+和非易失特性，在 ZYNQ 系统使用中，它可以作为系统大容量的存储设备，比如存储 ARM 的
+
+应用程序、系统文件以及其它的用户数据文件。eMMC FLASH 的具体型号和相关参数见表
+
+2-5-1。
+
+        位号                 芯片类型           容量  厂家
+
+        U19 MTFC32GAPALBH-IT 32G Byte         Micron
+
+            表5-1 eMMC Flash的型号和参数
+
+      eMMC FLASH 连接到 ZYNQ UltraScale+的 PS 部分 BANK500 的 GPIO 口上，在系统
+设计中需要配置这些 PS 端的 GPIO 口功能为 EMMC 接口。为图 5-1 为 eMMC Flash 在原理
+图中的部分。
+
+芯驿电子科技（上海）有限公司                                        20 / 57
+                                             Z19 用户手册
+
+                     图 5-1 eMMC Flash 连接示意图
+
+配置芯片引脚分配：                    引脚名               引脚号
+               信号名称  PS_MIO22_500            AH32
+                     PS_MIO21_500            AF35
+         MMC_CCLK    PS_MIO13_500            AD34
+         MMC_CMD     PS_MIO14_500            AJ32
+         MMC_DAT0    PS_MIO15_500            AD35
+         MMC_DAT1    PS_MIO16_500            AJ31
+         MMC_DAT2    PS_MIO17_500            AJ30
+         MMC_DAT3    PS_MIO18_500            AE34
+         MMC_DAT4    PS_MIO19_500            AE35
+         MMC_DAT5    PS_MIO20_500            AH34
+         MMC_DAT6    PS_MIO23_500            AG35
+         MMC_DAT7
+         MMC_RSTN
+
+    六、 时钟配置
+
+      开发板上分别为 PS 系统, PL 逻辑部分提供了参考时钟和 RTC 实时时钟，使 PS 系统和 PL
+逻辑可以单独工作。时钟电路设计的示意图如下图 6-1 所示：
+
+21 / 57                                      http://www.alinx.com
+Z19 用户手册
+
+                                              图 6-1 核心板时钟源
+      另外板上还有两片可编程的时钟芯片 Si5332BD11025-GM2 为高速收发器 GTX 提供差
+分时钟源。
+PS 系统 RTC 实时时钟
+      核心板上的无源晶体 Y1 为 PS 系统的提供 32.768KHz 的实时时钟源。晶体连接到 ZYNQ
+芯片的 BANK503 的 PS_PADI_503 和 PS_PADO_503 的管脚上。其原理图如图 6-2 所示：
+
+                                   图 6-2 RTC 的无源晶振
+
+时钟引脚分配：                                             引脚
+                         信号名称                       AE28
+                                                    AE27
+                      PS_PADI_503
+                     PS_PADO_503
+
+ PS 系统时钟源
+      核心板上的 X1 晶振为 PS 部分提供 33.333MHz 的时钟输入。时钟的输入连接到 ZYNQ
+
+芯片的 BANK503 的 PS_REF_CLK_503 的管脚上。其原理图如图 6-3 所示：
+
+芯驿电子科技（上海）有限公司                                            22 / 57
+                                                                 Z19 用户手册
+
+                                  图 6-3 PS 部分的有源晶振
+
+时钟引脚分配：                                                    引脚
+                         信号名称                              AC27
+
+                      PS_REF_CLK
+
+PL 系统时钟源
+      板上提供了一个差分 200MHz 的 PL 系统时钟源，用于 DDR4 控制器的参考时钟。晶振
+
+输出连接到 PL BANK64 的全局时钟(MRCC)，这个全局时钟可以用来驱动 FPGA 内的 DDR4
+控制器和用户逻辑电路。该时钟源的原理图如图 6-4 所示
+
+                                            图 6-4 PL系统时钟源  引脚
+                                                           H24
+PL 时钟引脚分配：                                                 G25
+                         信号名称
+
+                       PL_CLK0_P
+                       PL_CLK0_N
+
+23 / 57                                                    http://www.alinx.com
+Z19 用户手册
+
+    七、 电源
+
+      Z19 开 发 板 供 电 电 压 为 +12V ， 在 板 内 通 过 多 路 DCDC 芯 片 产 生
++5V,+5V_SATA,+3.3V_PCIE,+3.3V_QSFP,+1.8V 电源。对于 ZYNQ 芯片的电源供应，板上
+通过 1 颗 MAX20796GFB+电源芯片实现 60A 的电流为 XCZU19EG 提供核心电源 0.85V, 通
+过两颗 TPS74801DRCR 电源芯片分别产生 0.85V 和 1.8V 电压为 PS_MGT 部分供电，通过两
+颗 MAX20812AFH+电源芯片分别产生两路 0.9V 和两路 1.2V 电压为 PL-MGT 部分供电，另
+外 使 用 一 颗 PMIC 芯 片 TPS6508640 产 生 XCZU19EG 芯 片 所 需 要 的 其 它 所 有 电 源 ，
+TPS6508640 电源设计请参考电源芯片手册，设计框图如下：
+
+芯驿电子科技（上海）有限公司  24 / 57
+                                                                          Z19 用户手册
+
+    八、 M.2 接口
+
+      Z19 开发板配备了一个 PCIE x1 标准的 M.2 接口，用于连接 M.2 的 SSD 固态硬盘，通信
+速度高达 6Gbps。M.2 接口使用 M key 插槽，只支持 PCI-E, 不支持 SATA，用户选择 SSD
+固态硬盘的时候需要选择 PCIE 类型的 SSD 固态硬盘。
+
+      PCIE 信号直接跟 ZU19EG 的 BANK505 PS MGT 收发器相连接，1 路 TX 信号和 RX 信
+号都是以差分信号方式连接到 MGT 的 LANE1。PCIE 的时钟由 Si5332 芯片提供，频率为
+100Mhz, M.2 电路设计的示意图如下图 8-1 所示:
+
+                     8-1 M.2 接口设计示意图
+
+M.2 接口 ZYNQ 引脚分配如下：
+
+         信号名称        引脚名              引脚号             备注
+                                         AH39  PCIE 数据发送正
+PCIE_TX_P        PS_MGTRTXP0_505         AH40  PCIE 数据发送负
+                                         AG41  PCIE 数据接收正
+PCIE_TX_N        PS_MGTRTXN0_505         AG42  PCIE 数据接收负
+                                         AG37  PCIE 参考时钟正
+PCIE_RX_P        PS_MGTRRXP0_505         AG38  PCIE 参考时钟负
+                                         N30
+PCIE_RX_N        PS_MGTRRXN0_505                 PCIE 复位信号
+
+505_PCIE_REFCLK_P PS_MGTREFCLK0P_505
+
+505_PCIE_REFCLK_N PS_MGTREFCLK0N_505
+
+PCIE_RSTN_MIO37  PS_MIO37_501
+
+25 / 57                                        http://www.alinx.com
+Z19 用户手册
+
+    九、 DP 显示接口
+
+      Z19 开发板带有 1 路 mini DisplayPort 输出显示接口，用于视频图像的显示。接口支持
+VESA DisplayPort V1.2a 输出标准，最高支持 4K x 2K@30Fps 输出，支持 Y-only, YCbCr444,
+YCbCr422, YCbCr420 和 RGB 视频格式，每种颜色支持 6, 8, 10, 或者 12 位。
+
+      DisplayPort 数据传输通道直接用 ZU9EG 的 BANK505 PS MGT 驱动输出，MGT 的
+LANE2 和 LANE3 TX 信号以差分信号方式连接到 DP 连接器。DisplayPort 辅助通道连接到
+PS 的 MIO 管脚上。DP 输出接口设计的示意图如下图 9-1 所示:
+
+                  9-1 DP 接口设计示意图
+
+DisplayPort 接口 ZYNQ 引脚分配如下：
+
+信号名称              ZYNQ 引脚名            ZYNQ 引脚           备注
+                                            号
+GT0_DP_TX_P       PS_MGTRTXP3_505               DP 数据低位发送正
+                                          AB39  DP 数据低位发送负
+GT0_DP_TX_N       PS_MGTRTXN3_505         AB40  DP 数据高位发送正
+                                          AD39  DP 数据高位发送负
+GT1_DP_TX_P       PS_MGTRTXP2_505         AD40  DP 参考时钟正
+                                          AC37  DP 参考时钟负
+GT1_DP_TX_N       PS_MGTRTXN2_505         AC38  DP 辅助数据输出
+                                          L29   DP 辅助数据输入
+505_DP_CLKP       PS_MGTREFCLK2P_505      L30   DP 辅助数据输出使能
+                                          M27
+505_DP_CLKN PS_MGTREFCLK2N_505
+
+DP_AUX_OUT_MIO27  PS_MIO27_501
+
+DP_AUX_IN_MIO30   PS_MIO30_501
+
+DP_OE_MIO29       PS_MIO29_501
+
+芯驿电子科技（上海）有限公司                                  26 / 57
+                                      Z19 用户手册
+
+DP_HPD_MIO28  PS_MIO28_501  L28       DP 插入信号检测
+
+十、 USB3.0 接口
+
+      Z19 扩展板上有 4 个 USB3.0 接口，支持 HOST 工作模式，数据传输速度高达 5.0Gb/s。
+USB3.0 通过 PIPE3 接口连接，USB2.0 通过 ULPI 接口连接外部的 USB3320C 芯片，实现高
+速的 USB3.0 和 USB2.0 的数据通信。
+
+      USB 接口为扁型 USB 接口(USB Type A)，方便用户同时连接不同的 USB Slave 外设(比
+如 USB 鼠标，键盘或 U 盘）。USB3.0 连接的示意图如 10-1 所示：
+
+                   10-1 USB3.0 接口示意图
+
+USB 接口引脚分配：
+
+信号名称          引脚名           引脚号                  备注
+                            AF39      USB3.0 数据发送正
+USB_SSTXP PS_MGTRTXP1_505   AF40      USB3.0 数据发送负
+                            AE41      USB3.0 数据接收正
+USB_SSTXN PS_MGTRTXN1_505   AE42      USB3.0 数据接收负
+                            AA30      USB2.0 数据 Bit0
+USB_SSRXP PS_MGTRRXP1_505   AB30      USB2.0 数据 Bit1
+                            Y29       USB2.0 数据 Bit2
+USB_SSRXN PS_MGTRRXN1_505   AC31      USB2.0 数据 Bit3
+                            AD29      USB2.0 数据 Bit4
+USB_DATA0     PS_MIO56_502  AC32      USB2.0 数据 Bit5
+
+USB_DATA1     PS_MIO57_502
+
+USB_DATA2     PS_MIO54_502
+
+USB_DATA3     PS_MIO59_502
+
+USB_DATA4     PS_MIO60_502
+
+USB_DATA5     PS_MIO61_502
+
+27 / 57                               http://www.alinx.com
+Z19 用户手册
+
+USB_DATA6    PS_MIO62_502  AD31    USB2.0 数据 Bit6
+USB_DATA7    PS_MIO63_502  AD30    USB2.0 数据 Bit7
+USB_STP      PS_MIO58_502  AC29    USB2.0 停止信号
+USB_DIR      PS_MIO53_502  Y30     USB2.0 数据方向信号
+USB_CLK      PS_MIO52_502  W29     USB2.0 时钟信号
+USB_NXT      PS_MIO55_502  AB29    USB2.0 下一数据信号
+USB_RESET_N  PS_MIO44_501  R29     USB2.0 复位信号
+
+十一、 千兆以太网接口
+
+Z19 扩展板上有 2 路千兆以太网接口，1 路连接到 PS 端，另 1 路连接到 PL 端。GPHY
+
+芯 片 采 用 Micrel 公 司 的 KSZ9031RNX 以 太 网 PHY 芯 片 为 用 户 提 供 网 络 通 信 服 务 。
+KSZ9031RNX 芯片支持 10/100/1000 Mbps 网络传输速率，通过 RGMII 接口跟 ZU9EG 系
+统的 MAC 层进行数据通信。KSZ9031RNX 支持ＭDI/MDX 自适应，各种速度自适应，
+
+Master/Slave 自适应，支持 MDIO 总线进行 PHY 的寄存器管理。
+      KSZ9031RNX 上电会检测一些特定的 IO 的电平状态，从而确定自己的工作模式。表 11-1
+
+描述了 GPHY 芯片上电之后的默认设定信息。
+
+配置 Pin 脚        说明                 配置值
+
+PHYAD[2:0]   MDIO/MDC 模式的 PHY 地址  PHY Address 为 011
+
+CLK125_EN    使能 125Mhz 时钟输出选择      使能
+
+LED_MODE     LED 灯模式配置             单个 LED 灯模式
+
+MODE0~MODE3  链路自适应和全双工配置          10/100/1000 自适应，兼容全
+                                             双工、半双工
+
+                表 11-1PHY 芯片默认配置值
+
+      当网络连接到千兆以太网时，ZYNQ 和 PHY 芯片 KSZ9031RNX 的数据传输时通过 RGMII
+总线通信，传输时钟为 125Mhz，数据在时钟的上升沿和下降样采样。
+
+      当网络连接到百兆以太网时，ZYNQ 和 PHY 芯片 KSZ9031RNX 的数据传输时通过 RMII
+总线通信，传输时钟为 25Mhz。数据在时钟的上升沿和下降样采样。
+
+      图 11-1 为 ZYNQ 以太网 PHY 芯片连接示意图:
+
+芯驿电子科技（上海）有限公司                                       28 / 57
+                                      Z19 用户手册
+
+            图 11-1 ZYNQ 与 GPHY 连接示意图
+
+PS 千兆以太网引脚分配如下：
+
+信号名称        引脚名           引脚号                     备注
+                          AD32           以太网 1RGMII 发送时钟
+PHY1_TXCK   PS_MIO64_502  AE29           以太网 1 发送数据 bit０
+                          AD33           以太网 1 发送数据 bit1
+PHY1_TXD0   PS_MIO65_502  AE30           以太网 1 发送数据 bit2
+                          AE33           以太网 1 发送数据 bit3
+PHY1_TXD1   PS_MIO66_502  AE32           以太网 1 发送使能信号
+                          AF30           以太网 1RGMII 接收时钟
+PHY1_TXD2   PS_MIO67_502  AF31           以太网 1 接收数据 Bit0
+                          AF32           以太网 1 接收数据 Bit1
+PHY1_TXD3   PS_MIO68_502  AG30           以太网 1 接收数据 Bit2
+                          AG33           以太网 1 接收数据 Bit3
+PHY1_TXCTL  PS_MIO69_502  AF33        以太网 1 接收数据有效信号
+                          AH31           以太网 1MDIO 管理时钟
+PHY1_RXCK   PS_MIO70_502  AG31           以太网 1MDIO 管理数据
+
+PHY1_RXD0   PS_MIO71_502
+
+PHY1_RXD1   PS_MIO72_502
+
+PHY1_RXD2   PS_MIO73_502
+
+PHY1_RXD3   PS_MIO74_502
+
+PHY1_RXCTL  PS_MIO75_502
+
+PHY1_MDC    PS_MIO76_502
+
+PHY1_MDIO   PS_MIO77_502
+
+29 / 57                         http://www.alinx.com
+Z19 用户手册
+
+PL 千兆以太网引脚分配如下：
+
+信号名称        引脚名                     引脚号    备注
+
+PHY2_TXCK IO_L20N_T3L_N3_AD1N_64    AM20 以太网 2 RGMII 发送时钟
+
+PHY2_TXD0   IO_L24P_T3U_N10_64      AJ22   以太网 2 发送数据 bit０
+
+PHY2_TXD1   IO_L24N_T3U_N11_64      AK22   以太网 2 发送数据 bit1
+
+PHY2_TXD2   IO_L23P_T3U_N8_64       AJ21   以太网 2 发送数据 bit2
+
+PHY2_TXD3   IO_L23N_T3U_N9_64       AJ20   以太网 2 发送数据 bit3
+
+PHY2_TXCTL IO_L20P_T3L_N2_AD1P_64   AM21   以太网 2 发送使能信号
+
+PHY2_RXCK IO_L14P_T2L_N2_GC_64      AT20   以太网 2 RGMII 接收时钟
+
+PHY2_RXD0 IO_L22P_T3U_N6_DBC_AD0P_64 AK20  以太网 2 接收数据 Bit0
+
+PHY2_RXD1 IO_L22N_T3U_N7_DBC_AD0N_64 AK19  以太网 2 接收数据 Bit1
+
+PHY2_RXD2   IO_L21P_T3L_N4_AD8P_64  AL22   以太网 2 接收数据 Bit2
+
+PHY2_RXD3   IO_L21N_T3L_N5_AD8N_64  AL21   以太网 2 接收数据 Bit3
+
+PHY2_RXCTL  IO_L14N_T2L_N3_GC_64    AU19 以太网 2 接收数据有效信号
+
+PHY2_MDC    IO_T1U_N12_64           AW21 以太网 2 MDIO 管理时钟
+
+PHY2_MDIO   IO_T2U_N12_64           AR22 以太网 2 MDIO 管理数据
+
+PHY2_RESET  IO_T3U_N12_64           AL20   以太网 2 复位信号
+
+    十二、Uart 接口
+
+      Z19 扩展板上配备了 3 个 Uart 接口。其中两个通过 UART 转 USB 芯片从 MINI USB 接
+口引出，1 个连接到 PS 端，一个连接到 PL 端。转换芯片采用 Silicon Labs CP2102GM 芯片。
+可以用 USB 线将它连接到上 PC 的 USB 口进行串口数据通信。USB Uart 电路设计的示意图
+如下图所示:
+
+芯驿电子科技（上海）有限公司                                 30 / 57
+                                Z19 用户手册
+
+                                                12-1 USB 转串口示意图
+      第 3 路 UART 口从 PS 端通过一个 1mm 间距，10pin 的 FPC 连接器引出，可以用于连
+接串口屏等外设。
+
+USB 转串口的 ZYNQ 引脚分配：
+
+信号名称     引脚名               引脚号           备注
+                           P29  PS Uart1 数据输出
+PS_UART_TX PS_MIO39_501    R27  PS Uart1 数据输入
+                           C3   PL Uart 数据输出
+PS_UART_RX PS_MIO38_501    C6   PL Uart 数据输入
+                           M30  PS Uart1 数据输出
+PL_UART_TX IO_L8N_HDGC_94  N28  PS Uart1 数据输入
+
+PL_UART_RX IO_L7P_HDGC_94
+
+PS_UART2_TX PS_MIO32_501
+
+PS_UART2_RX PS_MIO33_501
+
+    十三、SD 卡槽
+
+      Z19扩展板包含了一个Micro型的SD卡接口，以提供用户访问SD卡存储器，用于存储
+ZU19EG芯片的BOOT程序，Linux操作系统内核, 文件系统以及其它的用户数据文件。
+
+      SDIO信号与ZU19EG的PS BANK501的IO信号相连，因为501的VCCIO设置为1.8V，但
+SD卡的数据电平为3.3V, 我们这里通过TXS02612电平转换器来连接。ZU19EG PS和SD卡连
+接器的原理图如图3-7-1所示。
+
+31 / 57                         http://www.alinx.com
+Z19 用户手册
+
+                图 13-1 SD 卡连接示意图
+
+SD 卡槽引脚分配             引脚名     引脚号              备注
+        信号名称    PS_MIO50_501  V29  SD 时钟信号
+        SD_CMD  PS_MIO45_501  T29  SD 命令信号
+        SD_CD   PS_MIO46_501  U28  SD 数据 Data0
+        SD_D0   PS_MIO47_501  T28  SD 数据 Data1
+        SD_D1   PS_MIO48_501  V30  SD 数据 Data2
+        SD_D2   PS_MIO49_501  U29  SD 数据 Data3
+        SD_D3   PS_MIO50_501  V29  SD 卡检测信号
+        SD_CMD
+
+    十四、 光纤接口
+
+      Z19扩展板上有4路QSFP28光纤接口，用户可以购买QSFP光模块插入到这4个光纤接口
+中进行光纤数据通信。4路光纤接口分别跟ZYNQ的BANK128-131的GTY收发器的4路RX/TX
+相连接，提供4个独立的发送和接收通道，每个功能可以在OM4 MMF的100米处进行25Gbps
+的运行，总体数据速率为100Gbps。BANK128-131的参考时钟由Si5332BD11025-4芯片提
+供的125Mhz(可以通过电阻改成156.25M)。
+
+      ZYNQ Ultrascale+和光纤设计示意图如下图 14-1 所示:
+
+芯驿电子科技（上海）有限公司                                     32 / 57
+                                       Z19 用户手册
+
+             图 14-1 光纤设计示意图
+
+4 路光纤接口 ZYNQ 引脚分配如下：
+
+信号名称         ZYNQ 引脚名         ZYNQ 引脚           备注
+
+                              号        光模块 1 数据接收负 1
+                                       光模块 1 数据接收正 1
+QSFP1_RX1_N  MGTYRXN0_128     W42      光模块 1 数据接收负 2
+                                       光模块 1 数据接收正 2
+QSFP1_RX1_P  MGTYRXP0_128     W41      光模块 1 数据接收负 3
+                                       光模块 1 数据接收正 3
+QSFP1_RX2_N  MGTYRXN1_128     V40      光模块 1 数据接收负 4
+                                       光模块 1 数据接收正 4
+QSFP1_RX2_P  MGTYRXP1_128     V39      光模块 1 数据发送负 1
+                                       光模块 1 数据发送正 1
+QSFP1_RX3_N  MGTYRXN2_128     U42      光模块 1 数据发送负 2
+                                       光模块 1 数据发送正 2
+QSFP1_RX3_P  MGTYRXP2_128     U41      光模块 1 数据发送负 3
+                                       光模块 1 数据发送正 3
+QSFP1_RX4_N  MGTYRXN3_128     T40      光模块 1 数据发送负 4
+                                       光模块 1 数据发送正 4
+QSFP1_RX4_P  MGTYRXP3_128     T39      BANK128 参考时钟负
+                                       BANK128 参考时钟正
+QSFP1_TX1_N  MGTYTXN0_128     Y35
+
+QSFP1_TX1_P  MGTYTXP0_128     Y34
+
+QSFP1_TX2_N  MGTYTXN1_128     W37
+
+QSFP1_TX2_P  MGTYTXP1_128     W36
+
+QSFP1_TX3_N  MGTYTXN2_128     V35
+
+QSFP1_TX3_P  MGTYTXP2_128     V34
+
+QSFP1_TX4_N  MGTYTXN3_128     U37
+
+QSFP1_TX4_P  MGTYTXP3_128     U36
+
+128_CLK0_N   MGTREFCLK0N_128  AB35
+
+128_CLK0_P   MGTREFCLK0P_128  AB34
+
+33 / 57                                http://www.alinx.com
+Z19 用户手册
+
+QSFP1_SCL    IO_L3N_AD9N_93        H9   光模块 1 的 I2C 时钟
+                                   G7   光模块 1 的 I2C 数据
+QSFP1_SDA    IO_L5P_HDGC_AD7P_93   J8   光模块 1 的中断信号
+                                   G6   光模块 1 低功耗选择信号
+QSFP1_INTL   IO_L2P_AD10P_93       J9   光模块 1 存在指示信号
+                                   H8   光模块 1 模块选择信号
+QSFP1_LPMODE IO_L1P_AD11P_93       F6   光模块 1 复位信号
+                                   R42  光模块 2 数据接收负 1
+QSFP1_MODPRSL IO_L3P_AD9P_93       R41  光模块 2 数据接收正 1
+                                   P40  光模块 2 数据接收负 2
+QSFP1_MODSELL IO_L2N_AD10N_93      P39  光模块 2 数据接收正 2
+                                   N42  光模块 2 数据接收负 3
+QSFP1_RESETL IO_L1N_AD11N_93       N41  光模块 2 数据接收正 3
+                                   M40  光模块 2 数据接收负 4
+QSFP2_RX1_N  MGTYRXN0_129          M39  光模块 2 数据接收正 4
+                                   T35  光模块 2 数据发送负 1
+QSFP2_RX1_P  MGTYRXP0_129          T34  光模块 2 数据发送正 1
+                                   R37  光模块 2 数据发送负 2
+QSFP2_RX2_N  MGTYRXN1_129          R36  光模块 2 数据发送正 2
+                                   P35  光模块 2 数据发送负 3
+QSFP2_RX2_P  MGTYRXP1_129          P34  光模块 2 数据发送正 3
+                                   N37  光模块 2 数据发送负 4
+QSFP2_RX3_N  MGTYRXN2_129          N36  光模块 2 数据发送正 4
+                                   W33  BANK129 参考时钟负
+QSFP2_RX3_P  MGTYRXP2_129          W32  BANK129 参考时钟正
+                                   E9   光模块 2 的 I2C 时钟
+QSFP2_RX4_N  MGTYRXN3_129          D9   光模块 2 的 I2C 数据
+                                   F8   光模块 2 的中断信号
+QSFP2_RX4_P  MGTYRXP3_129          G8   光模块 2 低功耗选择信号
+                                   D8   光模块 2 存在指示信号
+QSFP2_TX1_N  MGTYTXN0_129          F7   光模块 2 模块选择信号
+                                   F9   光模块 2 复位信号
+QSFP2_TX1_P  MGTYTXP0_129          L42  光模块 3 数据接收负 1
+                                   L41  光模块 3 数据接收正 1
+QSFP2_TX2_N  MGTYTXN1_129          K40  光模块 3 数据接收负 2
+
+QSFP2_TX2_P  MGTYTXP1_129                                       34 / 57
+
+QSFP2_TX3_N  MGTYTXN2_129
+
+QSFP2_TX3_P  MGTYTXP2_129
+
+QSFP2_TX4_N  MGTYTXN3_129
+
+QSFP2_TX4_P  MGTYTXP3_129
+
+129_CLK0_N   MGTREFCLK0N_129
+
+129_CLK0_P   MGTREFCLK0P_129
+
+QSFP2_SCL    IO_L4N_AD8N_93
+
+QSFP2_SDA    IO_L12P_AD0P_93
+
+QSFP2_INTL   IO_L6N_HDGC_AD6N_93
+
+QSFP2_LPMODE IO_L6P_HDGC_AD6P_93
+
+QSFP2_MODPRSL IO_L8P_HDGC_AD4P_93
+
+QSFP2_MODSELL IO_L5N_HDGC_AD7N_93
+
+QSFP2_RESETL IO_L4P_AD8P_93
+
+QSFP3_RX1_N  MGTYRXN0_130
+
+QSFP3_RX1_P  MGTYRXP0_130
+
+QSFP3_RX2_N  MGTYRXN1_130
+
+芯驿电子科技（上海）有限公司
+                                        Z19 用户手册
+
+QSFP3_RX2_P  MGTYRXP1_130          K39  光模块 3 数据接收正 2
+                                   J42  光模块 3 数据接收负 3
+QSFP3_RX3_N  MGTYRXN2_130          J41  光模块 3 数据接收正 3
+                                   H40  光模块 3 数据接收负 4
+QSFP3_RX3_P  MGTYRXP2_130          H39  光模块 3 数据接收正 4
+                                   M35  光模块 3 数据发送负 1
+QSFP3_RX4_N  MGTYRXN3_130          M34  光模块 3 数据发送正 1
+                                   L37  光模块 3 数据发送负 2
+QSFP3_RX4_P  MGTYRXP3_130          L36  光模块 3 数据发送正 2
+                                   K35  光模块 3 数据发送负 3
+QSFP3_TX1_N  MGTYTXN0_130          K34  光模块 3 数据发送正 3
+                                   J37  光模块 3 数据发送负 4
+QSFP3_TX1_P  MGTYTXP0_130          J36  光模块 3 数据发送正 4
+                                   R33  BANK130 参考时钟负
+QSFP3_TX2_N  MGTYTXN1_130          R32  BANK130 参考时钟正
+                                   D7   光模块 3 的 I2C 时钟
+QSFP3_TX2_P  MGTYTXP1_130          B7   光模块 3 的 I2C 数据
+                                   E7   光模块 3 的中断信号
+QSFP3_TX3_N  MGTYTXN2_130          C9   光模块 3 低功耗选择信号
+                                   A7   光模块 3 存在指示信号
+QSFP3_TX3_P  MGTYTXP2_130          C8   光模块 3 模块选择信号
+                                   A8   光模块 3 复位信号
+QSFP3_TX4_N  MGTYTXN3_130          G42  光模块 4 数据接收负 1
+                                   G41  光模块 4 数据接收正 1
+QSFP3_TX4_P  MGTYTXP3_130          F40  光模块 4 数据接收负 2
+                                   F39  光模块 4 数据接收正 2
+130_CLK0_N   MGTREFCLK0N_130       E42  光模块 4 数据接收负 3
+                                   E41  光模块 4 数据接收正 3
+130_CLK0_P   MGTREFCLK0P_130       D40  光模块 4 数据接收负 4
+                                   D39  光模块 4 数据接收正 4
+QSFP3_SCL    IO_L7N_HDGC_AD5N_93   H35  光模块 4 数据发送负 1
+                                   H34  光模块 4 数据发送正 1
+QSFP3_SDA    IO_L10P_AD2P_93       G37  光模块 4 数据发送负 2
+                                   G36  光模块 4 数据发送正 2
+QSFP3_INTL   IO_L7P_HDGC_AD5P_93   F35  光模块 4 数据发送负 3
+
+QSFP3_LPMODE IO_L12N_AD0N_93
+
+QSFP3_MODPRSL IO_L10N_AD2N_93
+
+QSFP3_MODSELL IO_L8N_HDGC_AD4N_93
+
+QSFP3_RESETL IO_L11N_AD1N_93
+
+QSFP4_RX1_N  MGTYRXN0_131
+
+QSFP4_RX1_P  MGTYRXP0_131
+
+QSFP4_RX2_N  MGTYRXN1_131
+
+QSFP4_RX2_P  MGTYRXP1_131
+
+QSFP4_RX3_N  MGTYRXN2_131
+
+QSFP4_RX3_P  MGTYRXP2_131
+
+QSFP4_RX4_N  MGTYRXN3_131
+
+QSFP4_RX4_P  MGTYRXP3_131
+
+QSFP4_TX1_N  MGTYTXN0_131
+
+QSFP4_TX1_P  MGTYTXP0_131
+
+QSFP4_TX2_N  MGTYTXN1_131
+
+QSFP4_TX2_P  MGTYTXP1_131
+
+QSFP4_TX3_N  MGTYTXN2_131
+
+35 / 57                                 http://www.alinx.com
+Z19 用户手册
+
+QSFP4_TX3_P  MGTYTXP2_131      F34 光模块 4 数据发送正 3
+
+QSFP4_TX4_N  MGTYTXN3_131      E37 光模块 4 数据发送负 4
+
+QSFP4_TX4_P  MGTYTXP3_131      E36 光模块 4 数据发送正 4
+
+131_CLK0_N   MGTREFCLK0N_131   L33      BANK131 参考时钟负
+
+131_CLK0_P   MGTREFCLK0P_131   L32 BANK131 参考时钟正
+
+QSFP4_SCL    IO_L2N_AD14N_94   E4       光模块 4 的 I2C 时钟
+
+QSFP4_SDA    IO_L4N_AD12N_94   D1       光模块 4 的 I2C 数据
+
+QSFP4_INTL   IO_L3P_AD13P_94   E3 光模块 4 的中断信号
+
+QSFP4_LPMODE IO_L2P_AD14P_94   E5 光模块 4 低功耗选择信号
+
+QSFP4_MODPRSL IO_L3N_AD13N_94 E2 光模块 4 存在指示信号
+
+QSFP4_MODSELL IO_L1P_AD15P_94  F5 光模块 4 模块选择信号
+
+QSFP4_RESETL IO_L1N_AD15N_94 F4 光模块 4 复位信号
+
+    十五、CAN 通信接口
+
+         Z19 开发板上有 2 路 CAN 通信接口，连接在 PS 系统端 BANK501 的 MIO 接口上。
+CAN 收发芯片 ISO1042BDWVR 芯片为用户 CAN 通信服务。
+
+      图 15-1 为 PS 端 CAN 收发芯片的连接示意图
+
+             图 15-1 PS 端 CAN 收发芯片的连接示意图
+
+CAN 通信引脚分配如下：
+
+信号名称         引脚名                   引脚号         备注
+                               P27       CAN0 接收端
+CAN0_RX      PS_MIO34_501
+
+芯驿电子科技（上海）有限公司                              36 / 57
+                                       Z19 用户手册
+
+CAN0_TX      PS_MIO35_501      N29     CAN0 发送端
+CAN1_RX      PS_MIO41_501      P30     CAN1 接收端
+CAN1_TX      PS_MIO40_501      P28     CAN1 发送端
+
+    十六、485 通信接口
+
+      Z19 开发板上有 2 路 485 通信接口， 485 通信端口连接在 PL 端 BANK90,91 的 IO 接口
+上。485 收发芯片选用 ISO3088DWR 芯片为用户 485 通信服务。
+
+      图 3-10-1 为 PL 端 485 收发芯片的连接示意图
+
+             图 16-1 PL 端 485 通信的连接示意图
+
+RS485 通信引脚分配如下：
+
+信号名称         引脚名                引脚号            备注
+                               K14     第一路 485 发送使能
+PL_485_DE1   IO_L11P_AD1P_90   C10     第二路 485 发送使能
+                               J14     第一路 485 接收端
+PL_485_DE2   IO_L10P_AD10P_91  B10     第二路 485 接收端
+                               D11     第一路 485 发送端
+PL_485_RXD1  IO_L11N_AD1N_90   B11     第二路 485 发送端
+
+PL_485_RXD2  IO_L10N_AD10N_91
+
+PL_485_TXD1  IO_L9P_AD11P_91
+
+PL_485_TXD2  IO_L11N_AD9N_91
+
+    十七、MIPI 接口
+
+      开发板上包含了一个 MIPI 摄像头接口，可以用来接我们的 MIPI OV5640 像头模块
+（AN5641）。MIPI 接口 15PIN 的 FPC 连接器，为 2 个 LANE 的数据和 1 对时钟，连接到
+
+37 / 57                              http://www.alinx.com
+Z19 用户手册
+
+BANK68 的差分 IO 管脚上; 其它的控制信号连接到 BANK91 的 IO 上。
+
+             图 17-1 HDMI 接口设计原理图
+
+MIPI 接口引脚分配
+
+信号名称         ZYNQ 引脚名                ZYNQ 引脚  备注
+
+                                     号
+
+MIPI_CLK_N   IO_L1N_T0L_N1_DBC_68    N15      MIPI 输入时钟负
+
+MIPI_CLK_P   IO_L1P_T0L_N0_DBC_68    P15 MIPI 输入时钟正
+
+MIPI_LAN0_N  IO_L2N_T0L_N3_68        N16 MIPI 输入的数据 LANE0 负
+
+MIPI_LAN0_P  IO_L2P_T0L_N2_68        P16 MIPI 输入的数据 LANE0 正
+
+MIPI_LAN1_N  IO_L3N_T0L_N5_AD15N_68  M16      MIPI 输入的数据 LANE1 负
+
+MIPI_LAN1_P  IO_L3P_T0L_N4_AD15P_68  M17      MIPI 输入的数据 LANE1 正
+
+CAM_CLK      IO_L6P_HDGC_91          F13 摄像头的时钟输入
+
+CAM_GPIO     IO_L6N_HDGC_91          F12 摄像头的 GPIO 控制
+
+CAM_SCL      IO_L7N_HDGC_91          E10 摄像头的 I2C 时钟
+
+CAM_SDA      IO_L7P_HDGC_91          E11 摄像头的 I2C 数据
+
+    十八、FMC 连接器
+
+      Z19 开发板带有两个 FMC HPC 的扩展口组成标准的双宽度 FMC 接口，可以外接 XILINX
+或者我们黑金的各种 FMC 模块（HDMI 输入输出模块，双目摄像头模块，高速 AD 模块等等）。
+其中 FMC1 扩展口包含 36 对差分 IO 信号和 8 组 GTH 收发器信号，FMC2 扩展口包含 60 对
+
+芯驿电子科技（上海）有限公司                                            38 / 57
+                                                                          Z19 用户手册
+
+差分 IO 信号和 8 组 GTH 收发器信号。
+      FMC1 扩展口的 36 对差分信号连接到 ZYNQ Ultrascale+芯片的 BANK67, 68 的 IO 上，
+
+电平标准为 1.8V 或者是 1.2V（跳帽 J5 来选择），差分信号支持 LVDS 数据通信。8 组 GTH
+收发器信号连接到 BANK230 和 BANK231。ZYNQ Ultrascale+和 FMC1 连接器的原理图如
+图 18-1 所示。
+
+                  图 18-1 FMC1 连接器连接示意图
+
+FMC1 连接器引脚分配
+
+信号名称              ZYNQ 引脚名          ZYNQ               备注
+
+                                    引脚号   FMC1 收发器参考时钟 0 负
+
+FMC1_GBTCLK0_M2C  MGTREFCLK1N_230   U9    FMC1收发器参考时钟0正
+_C_N
+                                          FMC1 收发器参考时钟 1 负
+FMC1_GBTCLK0_M2C  MGTREFCLK1P_230   U10   FMC1收发器参考时钟1正
+_C_P                                      FMC1收发器数据发送4负
+                                          FMC1收发器数据发送4正
+FMC1_GBTCLK1_M2C_N MGTREFCLK0N_230  V11   FMC1收发器数据接收4负
+                                          FMC1收发器数据接收4正
+FMC1_GBTCLK1_M2C_P MGTREFCLK0P_230  V12   FMC1收发器数据发送5负
+                                          FMC1收发器数据发送5正
+FMC1_DP4_C2M_N    MGTHTXN2_230      N5    FMC1收发器数据接收5负
+                                          FMC1收发器数据接收5正
+FMC1_DP4_C2M_P    MGTHTXP2_230      N6
+
+FMC1_DP4_M2C_N    MGTHRXN2_230      P3
+
+FMC1_DP4_M2C_P    MGTHRXP2_230      P4
+
+FMC1_DP5_C2M_N    MGTHTXN0_230      R5
+
+FMC1_DP5_C2M_P    MGTHTXP0_230      R6
+
+FMC1_DP5_M2C_N    MGTHRXN0_230      T3
+
+FMC1_DP5_M2C_P    MGTHRXP0_230      T4
+
+39 / 57                                  http://www.alinx.com
+Z19 用户手册
+
+FMC1_DP6_C2M_N  MGTHTXN1_230              P7    FMC1收发器数据发送6负
+FMC1_DP6_C2M_P  MGTHTXP1_230              P8    FMC1收发器数据发送6正
+FMC1_DP6_M2C_N  MGTHRXN1_230              R1    FMC1收发器数据接收6负
+FMC1_DP6_M2C_P  MGTHRXP1_230              R2    FMC1收发器数据接收6正
+FMC1_DP7_C2M_N  MGTHTXN3_230              M7    FMC1收发器数据发送7负
+FMC1_DP7_C2M_P  MGTHTXP3_230              M8    FMC1收发器数据发送7正
+FMC1_DP7_M2C_N  MGTHRXN3_230              N1    FMC1收发器数据接收7负
+FMC1_DP7_M2C_P  MGTHRXP3_230              N2    FMC1收发器数据接收7正
+FMC1_DP0_C2M_N  MGTHTXN3_231              H3    FMC1收发器数据发送0负
+FMC1_DP0_C2M_P  MGTHTXP3_231              H4    FMC1收发器数据发送0正
+FMC1_DP0_M2C_N  MGTHRXN3_231              G1    FMC1收发器数据接收0负
+FMC1_DP0_M2C_P  MGTHRXP3_231              G2    FMC1收发器数据接收0正
+FMC1_DP1_C2M_N  MGTHTXN2_231              J5    FMC1收发器数据发送1负
+FMC1_DP1_C2M_P  MGTHTXP2_231              J6    FMC1收发器数据发送1正
+FMC1_DP1_M2C_N  MGTHRXN2_231              J1    FMC1收发器数据接收1负
+FMC1_DP1_M2C_P  MGTHRXP2_231              J2    FMC1收发器数据接收1正
+FMC1_DP2_C2M_N  MGTHTXN1_231              K3    FMC1收发器数据发送2负
+FMC1_DP2_C2M_P  MGTHTXP1_231              K4    FMC1收发器数据发送2正
+FMC1_DP2_M2C_N  MGTHRXN1_231              L1    FMC1收发器数据接收2负
+FMC1_DP2_M2C_P  MGTHRXP1_231              L2    FMC1收发器数据接收2正
+FMC1_DP3_C2M_N  MGTHTXN0_231              L5    FMC1收发器数据发送3负
+FMC1_DP3_C2M_P  MGTHTXP0_231              L6    FMC1收发器数据发送3正
+FMC1_DP3_M2C_N  MGTHRXN0_231              M3    FMC1收发器数据接收3负
+FMC1_DP3_M2C_P  MGTHRXP0_231              M4    FMC1收发器数据接收3正
+FMC1_CLK0_N     IO_L13N_T2L_N1_GC_QBC_68  E14   FMC1第1路参考时钟N
+FMC1_CLK0_P     IO_L13P_T2L_N0_GC_QBC_68  F14   FMC1第1路参考时钟P
+FMC1_CLK1_N     IO_L12N_T1U_N11_GC_67     AT10  FMC1第2路参考时钟N
+FMC1_CLK1_P     IO_L12P_T1U_N10_GC_67     AT11  FMC1第2路参考时钟P
+FMC1_LA00_CC_N  IO_L11N_T1U_N9_GC_68      F17   FMC1参考第0路数据N
+FMC1_LA00_CC_P  IO_L11P_T1U_N8_GC_68      G17   FMC1参考第0路数据P
+FMC1_LA01_CC_N  IO_L12N_T1U_N11_GC_68     F15   FMC1参考第1路数据N
+FMC1_LA01_CC_P  IO_L12P_T1U_N10_GC_68     G16   FMC1参考第1路数据P
+FMC1_LA02_N     IO_L6N_T0U_N11_AD6N_68    K17   FMC1参考第2路数据N
+FMC1_LA02_P     IO_L6P_T0U_N10_AD6P_68    L17   FMC1参考第2路数据P
+FMC1_LA03_N     IO_L17N_T2U_N9_AD10N_68   A13   FMC1参考第3路数据N
+FMC1_LA03_P     IO_L17P_T2U_N8_AD10P_68   A14   FMC1参考第3路数据P
+
+芯驿电子科技（上海）有限公司                                  40 / 57
+                                                  Z19 用户手册
+
+FMC1_LA04_N     IO_L24N_T3U_N11_68          A18   FMC1参考第4路数据N
+FMC1_LA04_P     IO_L24P_T3U_N10_68          B18   FMC1参考第4路数据P
+FMC1_LA05_N     IO_L16N_T2U_N7_QBC_AD3N_68  A12   FMC1参考第5路数据N
+FMC1_LA05_P     IO_L16P_T2U_N6_QBC_AD3P_68  B13   FMC1参考第5路数据P
+FMC1_LA06_N     IO_L21N_T3L_N5_AD8N_68      D17   FMC1参考第6路数据N
+FMC1_LA06_P     IO_L21P_T3L_N4_AD8P_68      E17   FMC1参考第6路数据P
+FMC1_LA07_N     IO_L23N_T3U_N9_68           C18   FMC1参考第7路数据N
+FMC1_LA07_P     IO_L23P_T3U_N8_68           D18   FMC1参考第7路数据P
+FMC1_LA08_N     IO_L22N_T3U_N7_DBC_AD0N_68  A17   FMC1参考第8路数据N
+FMC1_LA08_P     IO_L22P_T3U_N6_DBC_AD0P_68  B17   FMC1参考第8路数据P
+FMC1_LA09_N     IO_L20N_T3L_N3_AD1N_68      B16   FMC1参考第9路数据N
+FMC1_LA09_P     IO_L20P_T3L_N2_AD1P_68      C16   FMC1参考第9路数据P
+FMC1_LA10_N     IO_L15N_T2L_N5_AD11N_68     C13   FMC1参考第10路数据N
+FMC1_LA10_P     IO_L15P_T2L_N4_AD11P_68     D13   FMC1参考第10路数据P
+FMC1_LA11_N     IO_L4N_T0U_N7_DBC_AD7N_68   L15   FMC1参考第11路数据N
+FMC1_LA11_P     IO_L4P_T0U_N6_DBC_AD7P_68   M15   FMC1参考第11路数据P
+FMC1_LA12_N     IO_L19N_T3L_N1_DBC_AD9N_68  D16   FMC1参考第12路数据N
+FMC1_LA12_P     IO_L19P_T3L_N0_DBC_AD9P_68  E16   FMC1参考第12路数据P
+FMC1_LA13_N     IO_L5N_T0U_N9_AD14N_68      K15   FMC1参考第13路数据N
+FMC1_LA13_P     IO_L5P_T0U_N8_AD14P_68      K16   FMC1参考第13路数据P
+FMC1_LA14_N     IO_L1N_T0L_N1_DBC_68        N15   FMC1参考第14路数据N
+FMC1_LA14_P     IO_L1P_T0L_N0_DBC_68        P15   FMC1参考第14路数据P
+FMC1_LA15_N     IO_L2N_T0L_N3_68            N16   FMC1参考第15路数据N
+FMC1_LA15_P     IO_L2P_T0L_N2_68            P16   FMC1参考第15路数据P
+FMC1_LA16_N     IO_L3N_T0L_N5_AD15N_68      M16   FMC1参考第16路数据N
+FMC1_LA16_P     IO_L3P_T0L_N4_AD15P_68      M17   FMC1参考第16路数据P
+FMC1_LA17_CC_N  IO_L13N_T2L_N1_GC_QBC_67    AR12  FMC1参考第17路数据N
+FMC1_LA17_CC_P  IO_L13P_T2L_N0_GC_QBC_67    AR13  FMC1参考第17路数据P
+FMC1_LA18_CC_N  IO_L11N_T1U_N9_GC_67        AT12  FMC1参考第18路数据N
+FMC1_LA18_CC_P  IO_L11P_T1U_N8_GC_67        AT13  FMC1参考第18路数据P
+FMC1_LA19_N     IO_L15N_T2L_N5_AD11N_67     AR14  FMC1参考第19路数据N
+FMC1_LA19_P     IO_L15P_T2L_N4_AD11P_67     AR15  FMC1参考第19路数据P
+FMC1_LA20_N     IO_L24N_T3U_N11_67          AK14  FMC1参考第20路数据N
+FMC1_LA20_P     IO_L24P_T3U_N10_67          AJ14  FMC1参考第20路数据P
+FMC1_LA21_N     IO_L21N_T3L_N5_AD8N_67      AM14  FMC1参考第21路数据N
+FMC1_LA21_P     IO_L21P_T3L_N4_AD8P_67      AL14  FMC1参考第21路数据P
+
+41 / 57                                     http://www.alinx.com
+Z19 用户手册
+
+FMC1_LA22_N  IO_L20N_T3L_N3_AD1N_67      AK15  FMC1参考第22路数据N
+FMC1_LA22_P  IO_L20P_T3L_N2_AD1P_67      AJ15  FMC1参考第22路数据P
+FMC1_LA23_N  IO_L23N_T3U_N9_67           AN13  FMC1参考第23路数据N
+FMC1_LA23_P  IO_L23P_T3U_N8_67           AM13  FMC1参考第23路数据P
+FMC1_LA24_N  IO_L9N_T1L_N5_AD12N_67      AW10  FMC1参考第24路数据N
+FMC1_LA24_P  IO_L9P_T1L_N4_AD12P_67      AW11  FMC1参考第24路数据P
+FMC1_LA25_N  IO_L14N_T2L_N3_GC_67        AR10  FMC1参考第25路数据N
+FMC1_LA25_P  IO_L14P_T2L_N2_GC_67        AP10  FMC1参考第25路数据P
+FMC1_LA26_N  IO_L19N_T3L_N1_DBC_AD9N_67  AM15  FMC1参考第26路数据N
+FMC1_LA26_P  IO_L19P_T3L_N0_DBC_AD9P_67  AL15  FMC1参考第26路数据P
+FMC1_LA27_N  IO_L22N_T3U_N7_DBC_AD0N_67  AP14  FMC1参考第27路数据N
+FMC1_LA27_P  IO_L22P_T3U_N6_DBC_AD0P_67  AN14  FMC1参考第27路数据P
+FMC1_LA28_N  IO_L10N_T1U_N7_QBC_AD4N_67  AV8   FMC1参考第28路数据N
+FMC1_LA28_P  IO_L10P_T1U_N6_QBC_AD4P_67  AV9   FMC1参考第28路数据P
+FMC1_LA29_N  IO_L1N_T0L_N1_DBC_67        AY9   FMC1参考第29路数据N
+FMC1_LA29_P  IO_L1P_T0L_N0_DBC_67        AW9   FMC1参考第29路数据P
+FMC1_LA30_N  IO_L2N_T0L_N3_67            BB8   FMC1参考第30路数据N
+FMC1_LA30_P  IO_L2P_T0L_N2_67            BB9   FMC1参考第30路数据P
+FMC1_LA31_N  IO_L3N_T0L_N5_AD15N_67      AY8   FMC1参考第31路数据N
+FMC1_LA31_P  IO_L3P_T0L_N4_AD15P_67      AW8   FMC1参考第31路数据P
+FMC1_LA32_N  IO_L5N_T0U_N9_AD14N_67      BB6   FMC1参考第32路数据N
+FMC1_LA32_P  IO_L5P_T0U_N8_AD14P_67      BA6   FMC1参考第32路数据P
+FMC1_LA33_N  IO_L4N_T0U_N7_DBC_AD7N_67   BA7   FMC1参考第33路数据N
+FMC1_LA33_P  IO_L4P_T0U_N6_DBC_AD7P_67   BA8   FMC1参考第33路数据P
+FMC1_SDA     IO_L12N_AD8N_94             A4    FMC1的I2C通信数据
+FMC1_SCL     IO_L11P_AD9P_94             B6    FMC1的I2C通信时钟
+
+      FMC2 扩展口的 60 对差分信号连接到 ZYNQ Ultrascale+芯片的 BANK64，65, 66 的 IO
+上，电平标准为 1.8V 或者 1.2V（跳帽 J88 来选择），差分信号支持 LVDS 数据通信。8 组 GTH
+收发器信号连接到 BANK224 和 BANK225。ZYNQ Ultrascale+和 FMC2 连接器的原理图如
+图 18-2 所示。
+
+芯驿电子科技（上海）有限公司                                 42 / 57
+                                            Z19 用户手册
+
+                图 18-2 FMC2 连接器连接示意图
+
+FMC2 连接器引脚分配
+
+         信号名称   ZYNQ 引脚名              ZYNQ  备注
+
+                                      引脚号
+
+FMC2_GBTCLK0_M2C_C_N MGTREFCLK1N_224                FMC2 收发 器参考时 钟 0
+                                      AJ9
+
+                                                    负
+
+FMC2_GBTCLK0_M2C_C_P MGTREFCLK1P_224  AJ10 FMC2收发器参考时钟0正
+
+FMC2_GBTCLK1_M2C_N MGTREFCLK0N_224    AK11  FMC2 收发 器参考时 钟 1
+                                            负
+
+FMC2_GBTCLK1_M2C_P MGTREFCLK0P_224    AK12 FMC2收发器参考时钟1正
+
+FMC2_DP4_C2M_N  MGTHTXN2_224          AU5   FMC2收发器数据发送4负
+
+FMC2_DP4_C2M_P  MGTHTXP2_224          AU6   FMC2收发器数据发送4正
+
+FMC2_DP4_M2C_N  MGTHRXN2_224          AV3 FMC2收发器数据接收4负
+
+FMC2_DP4_M2C_P  MGTHRXP2_224          AV4 FMC2收发器数据接收4正
+
+FMC2_DP5_C2M_N  MGTHTXN0_224          AY3 FMC2收发器数据发送5负
+
+FMC2_DP5_C2M_P  MGTHTXP0_224          AY4 FMC2收发器数据发送5正
+
+FMC2_DP5_M2C_N  MGTHRXN0_224          BA1   FMC2收发器数据接收5负
+
+FMC2_DP5_M2C_P  MGTHRXP0_224          BA2   FMC2收发器数据接收5正
+
+FMC2_DP6_C2M_N  MGTHTXN1_224          AW5 FMC2收发器数据发送6负
+
+FMC2_DP6_C2M_P  MGTHTXP1_224          AW6 FMC2收发器数据发送6正
+
+FMC2_DP6_M2C_N  MGTHRXN1_224          AW1 FMC2收发器数据接收6负
+
+FMC2_DP6_M2C_P  MGTHRXP1_224          AW2 FMC2收发器数据接收6正
+
+FMC2_DP7_C2M_N  MGTHTXN3_224          AT7 FMC2收发器数据发送7负
+
+FMC2_DP7_C2M_P  MGTHTXP3_224          AT8 FMC2收发器数据发送7正
+
+43 / 57                                     http://www.alinx.com
+Z19 用户手册
+
+FMC2_DP7_M2C_N   MGTHRXN3_224           AU1   FMC2收发器数据接收7负
+FMC2_DP7_M2C_P   MGTHRXP3_224           AU2   FMC2收发器数据接收7正
+FMC2_DP0_C2M_N   MGTHTXN1_225           AP7   FMC2收发器数据发送0负
+FMC2_DP0_C2M_P   MGTHTXP1_225           AP8   FMC2收发器数据发送0正
+FMC2_DP0_M2C_N   MGTHRXN1_225           AR1   FMC2收发器数据接收0负
+FMC2_DP0_M2C_P   MGTHRXP1_225           AR2   FMC2收发器数据接收0正
+FMC2_DP1_C2M_N   MGTHTXN3_225           AM7   FMC2收发器数据发送1负
+FMC2_DP1_C2M_P   MGTHTXP3_225           AM8   FMC2收发器数据发送1正
+FMC2_DP1_M2C_N   MGTHRXN3_225           AN1   FMC2收发器数据接收1负
+FMC2_DP1_M2C_P   MGTHRXP3_225           AN2   FMC2收发器数据接收1正
+FMC2_DP2_C2M_N   MGTHTXN2_225           AN5   FMC2收发器数据发送2负
+FMC2_DP2_C2M_P   MGTHTXP2_225           AN6   FMC2收发器数据发送2正
+FMC2_DP2_M2C_N   MGTHRXN2_225           AP3   FMC2收发器数据接收2负
+FMC2_DP2_M2C_P   MGTHRXP2_225           AP4   FMC2收发器数据接收2正
+FMC2_DP3_C2M_N   MGTHTXN0_225           AR5   FMC2收发器数据发送3负
+FMC2_DP3_C2M_P   MGTHTXP0_225           AR6   FMC2收发器数据发送3正
+FMC2_DP3_M2C_N   MGTHRXN0_225           AT3   FMC2收发器数据接收3负
+FMC2_DP3_M2C_P   MGTHRXP0_225           AT4   FMC2收发器数据接收3正
+FMC2_CLK0_M2C_N  IO_L13N_T2L_N1_GC_64   AT21  FMC2第1路参考时钟N
+FMC2_CLK0_M2C_P  IO_L13P_T2L_N0_GC_64   AT22  FMC2第1路参考时钟P
+FMC2_CLK1_M2C_N  IO_L13N_T2L_N1_GC_65   AT27  FMC2第2路参考时钟N
+FMC2_CLK1_M2C_P  IO_L13P_T2L_N0_GC_65   AR27  FMC2第2路参考时钟P
+FMC2_LA00_CC_N   IO_L11N_T1U_N9_GC_64   AV21  FMC2参考第0路数据N
+FMC2_LA00_CC_P   IO_L11P_T1U_N8_GC_64   AU21  FMC2参考第0路数据P
+FMC2_LA01_CC_N   IO_L12N_T1U_N11_GC_64  AV19  FMC2参考第1路数据N
+FMC2_LA01_CC_P   IO_L12P_T1U_N10_GC_64  AU20  FMC2参考第1路数据P
+FMC2_LA02_N      IO_L7N_T1L_N1_QBC_64   AV23  FMC2参考第2路数据N
+FMC2_LA02_P      IO_L7P_T1L_N0_QBC_64   AU23  FMC2参考第2路数据P
+FMC2_LA03_N      IO_L9N_T1L_N5 _64      AW19  FMC2参考第3路数据N
+FMC2_LA03_P      IO_L9P_T1L_N4 _64      AW20  FMC2参考第3路数据P
+FMC2_LA04_N      IO_L16N_T2U_N7_QBC_64  AP21  FMC2参考第4路数据N
+FMC2_LA04_P      IO_L16P_T2U_N6_QBC_64  AN21  FMC2参考第4路数据P
+FMC2_LA05_N      IO_L10N_T1U_N7_QBC_64  AY18  FMC2参考第5路数据N
+FMC2_LA05_P      IO_L10P_T1U_N6_QBC_64  AY19  FMC2参考第5路数据P
+FMC2_LA06_N      IO_L2N_T0L_N3_64       AY22  FMC2参考第6路数据N
+FMC2_LA06_P      IO_L2P_T0L_N2_64       AY23  FMC2参考第6路数据P
+
+芯驿电子科技（上海）有限公司                                44 / 57
+                                              Z19 用户手册
+
+FMC2_LA07_N     IO_L3N_T0L_N5_64        BA21  FMC2参考第7路数据N
+FMC2_LA07_P     IO_L3P_T0L_N4 _64       BA22  FMC2参考第7路数据P
+FMC2_LA08_N     IO_L5N_T0U_N9_64        BB19  FMC2参考第8路数据N
+FMC2_LA08_P     IO_L5P_T0U_N8_64        BB20  FMC2参考第8路数据P
+FMC2_LA09_N     IO_L4N_T0U_N7_DBC_64    BA20  FMC2参考第9路数据N
+FMC2_LA09_P     IO_L4P_T0U_N6_DBC_64    AY20  FMC2参考第9路数据P
+FMC2_LA10_N     IO_L6N_T0U_N11 _64      BB18  FMC2参考第10路数据N
+FMC2_LA10_P     IO_L6P_T0U_N10 _64      BA18  FMC2参考第10路数据P
+FMC2_LA11_N     IO_L22N_T3U_N7_DBC_64   AK19  FMC2参考第11路数据N
+FMC2_LA11_P     IO_L22P_T3U_N6_DBC_64   AK20  FMC2参考第11路数据P
+FMC2_LA12_N     IO_L1N_T0L_N1_DBC_64    BB23  FMC2参考第12路数据N
+FMC2_LA12_P     IO_L1P_T0L_N0_DBC_64    BA23  FMC2参考第12路数据P
+FMC2_LA13_N     IO_L23N_T3U_N9_64       AJ20  FMC2参考第13路数据N
+FMC2_LA13_P     IO_L23P_T3U_N8_64       AJ21  FMC2参考第13路数据P
+FMC2_LA14_N     IO_L19N_T3L_N1_DBC_64   AN19  FMC2参考第14路数据N
+FMC2_LA14_P     IO_L19P_T3L_N0_DBC_64   AM19  FMC2参考第14路数据P
+FMC2_LA15_N     IO_L20N_T3L_N3_64       AM20  FMC2参考第15路数据N
+FMC2_LA15_P     IO_L20P_T3L_N2_64       AM21  FMC2参考第15路数据P
+FMC2_LA16_N     IO_L21N_T3L_N5_64       AL21  FMC2参考第16路数据N
+FMC2_LA16_P     IO_L21P_T3L_N4_64       AL22  FMC2参考第16路数据P
+FMC2_LA17_CC_N  IO_L14N_T2L_N3_GC_65    AR25  FMC2参考第17路数据N
+FMC2_LA17_CC_P  IO_L14P_T2L_N2_GC_65    AR24  FMC2参考第17路数据P
+FMC2_LA18_CC_N  IO_L11N_T1U_N9_GC_65    AU26  FMC2参考第18路数据N
+FMC2_LA18_CC_P  IO_L11P_T1U_N8_GC_65    AU25  FMC2参考第18路数据P
+FMC2_LA19_N     IO_L9N_T1L_N5_AD12N_65  AW27  FMC2参考第19路数据N
+FMC2_LA19_P     IO_L9P_T1L_N4_AD12P_65  AV27  FMC2参考第19路数据P
+FMC2_LA20_N     IO_L10N_T1U_N7_QBC_ 65  AV28  FMC2参考第20路数据N
+FMC2_LA20_P     IO_L10P_T1U_N6_QBC_ 65  AU28  FMC2参考第20路数据P
+FMC2_LA21_N     IO_L2N_T0L_N3_65        BB25  FMC2参考第21路数据N
+FMC2_LA21_P     IO_L2P_T0L_N2_65        BB24  FMC2参考第21路数据P
+FMC2_LA22_N     IO_L4N_T0U_N7_DBC_ 65   BB26  FMC2参考第22路数据N
+FMC2_LA22_P     IO_L4P_T0U_N6_DBC_ 65   BA26  FMC2参考第22路数据P
+FMC2_LA23_N     IO_L3N_T0L_N5_AD15N_65  BA25  FMC2参考第23路数据N
+FMC2_LA23_P     IO_L3P_T0L_N4_AD15P_65  AY25  FMC2参考第23路数据P
+FMC2_LA24_N     IO_L12N_T1U_N11_GC_65   AT26  FMC2参考第24路数据N
+FMC2_LA24_P     IO_L12P_T1U_N10_GC_65   AT25  FMC2参考第24路数据P
+
+45 / 57                                 http://www.alinx.com
+Z19 用户手册
+
+FMC2_LA25_N     IO_L15N_T2L_N5_AD11N_65  AN26  FMC2参考第25路数据N
+FMC2_LA25_P     IO_L15P_T2L_N4_AD11P_65  AM26  FMC2参考第25路数据P
+FMC2_LA26_N     IO_L1N_T0L_N1_DBC_65     AY24  FMC2参考第26路数据N
+FMC2_LA26_P     IO_L1P_T0L_N0_DBC_65     AW24  FMC2参考第26路数据P
+FMC2_LA27_N     IO_L5N_T0U_N9_AD14N_65   AY28  FMC2参考第27路数据N
+FMC2_LA27_P     IO_L5P_T0U_N8_AD14P_65   AY27  FMC2参考第27路数据P
+FMC2_LA28_N     IO_L6N_T0U_N11_AD6N_65   BB28  FMC2参考第28路数据N
+FMC2_LA28_P     IO_L6P_T0U_N10_AD6P_65   BA28  FMC2参考第28路数据P
+FMC2_LA29_N     IO_L19N_T3L_N1_DBC_ 65   AT23  FMC2参考第29路数据N
+FMC2_LA29_P     IO_L19P_T3L_N0_DBC_ 65   AR23  FMC2参考第29路数据P
+FMC2_LA30_N     IO_L22N_T3U_N7_DBC_ 65   AN23  FMC2参考第30路数据N
+FMC2_LA30_P     IO_L22P_T3U_N6_DBC_ 65   AM23  FMC2参考第30路数据P
+FMC2_LA31_N     IO_L23N_T3U_N9__65       AL23  FMC2参考第31路数据N
+FMC2_LA31_P     IO_L23P_T3U_N8_ 65       AK23  FMC2参考第31路数据P
+FMC2_LA32_N     IO_L20N_T3L_N3_AD1N_65   AP25  FMC2参考第32路数据N
+FMC2_LA32_P     IO_L20P_T3L_N2_AD1P_65   AP24  FMC2参考第32路数据P
+FMC2_LA33_N     IO_L21N_T3L_N5_AD8N_65   AN24  FMC2参考第33路数据N
+FMC2_LA33_P     IO_L21P_T3L_N4_AD8P_65   AM24  FMC2参考第33路数据P
+                                               FMC2高位参考第0路数据
+FMC2_HA00_CC_N  IO_L11N_T1U_N9_GC_66     AW14  （时钟）N
+                                               FMC2高位参考第0路数据
+FMC2_HA00_CC_P  IO_L11P_T1U_N8_GC_66     AW15  （时钟）P
+                                               FMC2高位参考第1路数据
+FMC2_HA01_CC_N  IO_L12N_T1U_N11_GC_66    AV14  （时钟）N
+                                               FMC2高位参考第1路数据
+FMC2_HA01_CC_P  IO_L12P_T1U_N10_GC_66    AU14  （时钟）P
+                                               FMC2高位第2路数据N
+FMC2_HA02_N     IO_L23N_T3U_N9_66        AM16  FMC2高位第2路数据P
+FMC2_HA02_P     IO_L23P_T3U_N8_66        AL16  FMC2高位第3路数据N
+FMC2_HA03_N     IO_L22N_T3U_N7_DBC_ 66   AK17  FMC2高位第3路数据P
+FMC2_HA03_P     IO_L22P_T3U_N6_DBC_ 66   AJ17  FMC2高位第4路数据N
+FMC2_HA04_N     IO_L15N_T2L_N5_AD11N_66  AV18  FMC2高位第4路数据P
+FMC2_HA04_P     IO_L15P_T2L_N4_AD11P_66  AU18  FMC2高位第5路数据N
+FMC2_HA05_N     IO_L19N_T3L_N1_DBC_ 66   AK18  FMC2高位第5路数据P
+FMC2_HA05_P     IO_L19P_T3L_N0_DBC_ 66   AJ18  FMC2高位第6路数据N
+FMC2_HA06_N     IO_L14N_T2L_N3_GC_66     AU15  FMC2高位第6路数据P
+FMC2_HA06_P     IO_L14P_T2L_N2_GC_66     AT15
+
+芯驿电子科技（上海）有限公司                                 46 / 57
+                                               Z19 用户手册
+
+FMC2_HA07_N     IO_L24N_T3U_N11_66       AP16  FMC2高位第7路数据N
+FMC2_HA07_P     IO_L24P_T3U_N10_66       AN16  FMC2高位第7路数据P
+FMC2_HA08_N     IO_L16N_T2U_N7_QBC_ 66   AT18  FMC2高位第8路数据N
+FMC2_HA08_P     IO_L16P_T2U_N6_QBC_ 66   AR18  FMC2高位第8路数据P
+FMC2_HA09_N     IO_L17N_T2U_N9_AD10N_66  AT17  FMC2高位第9路数据N
+FMC2_HA09_P     IO_L17P_T2U_N8_AD10P_66  AR17  FMC2高位第9路数据P
+FMC2_HA10_N     IO_L5N_T0U_N9_AD14N_66   AY14  FMC2高位第10路数据N
+FMC2_HA10_P     IO_L5P_T0U_N8_AD14P_66   AY15  FMC2高位第10路数据P
+FMC2_HA11_N     IO_L10N_T1U_N7_QBC_ 66   AV13  FMC2高位第11路数据N
+FMC2_HA11_P     IO_L10P_T1U_N6_QBC_ 66   AU13  FMC2高位第11路数据P
+FMC2_HA12_N     IO_L20N_T3L_N3_AD1N_66   AM18  FMC2高位第12路数据N
+FMC2_HA12_P     IO_L20P_T3L_N2_AD1P_66   AL18  FMC2高位第12路数据P
+FMC2_HA13_N     IO_L18N_T2U_N11_AD2N_66  AU16  FMC2高位第13路数据N
+FMC2_HA13_P     IO_L18P_T2U_N10_AD2P_66  AT16  FMC2高位第13路数据P
+FMC2_HA14_N     IO_L7N_T1L_N1_QBC_ 66    BA12  FMC2高位第14路数据N
+FMC2_HA14_P     IO_L7P_T1L_N0_QBC_ 66    AY12  FMC2高位第14路数据P
+FMC2_HA15_N     IO_L8N_T1L_N3_AD5N_66    BB11  FMC2高位第15路数据N
+FMC2_HA15_P     IO_L8P_T1L_N2_AD5P_66    BA11  FMC2高位第15路数据P
+FMC2_HA16_N     IO_L9N_T1L_N5_AD12N_66   BB10  FMC2高位第16路数据N
+FMC2_HA16_P     IO_L9P_T1L_N4_AD12P_66   BA10  FMC2高位第16路数据P
+FMC2_HA17_CC_N  IO_L13N_T2L_N1_GC_ 66    AV16  FMC2高位第17路数据N
+FMC2_HA17_CC_P  IO_L13P_T2L_N0_GC_ 66    AV17  FMC2高位第17路数据P
+FMC2_HA18_N     IO_L6N_T0U_N11_AD6N_66   BB13  FMC2高位第18路数据N
+FMC2_HA18_P     IO_L6P_T0U_N10_AD6P_66   BA13  FMC2高位第18路数据P
+FMC2_HA19_N     IO_L21N_T3L_N5_AD8N_66   AN17  FMC2高位第19路数据N
+FMC2_HA19_P     IO_L21P_T3L_N4_AD8P_66   AN18  FMC2高位第19路数据P
+FMC2_HA20_N     IO_L3N_T0L_N5_AD15N_66   AW16  FMC2高位第20路数据N
+FMC2_HA20_P     IO_L3P_T0L_N4_AD15P_66   AW17  FMC2高位第20路数据P
+FMC2_HA21_N     IO_L4N_T0U_N7_DBC_ 66    BB15  FMC2高位第21路数据N
+FMC2_HA21_P     IO_L4P_T0U_N6_DBC_ 66    BA15  FMC2高位第21路数据P
+FMC2_HA22_N     IO_L2N_T0L_N3_66         BB16  FMC2高位第22路数据N
+FMC2_HA22_P     IO_L2P_T0L_N2_66         BA16  FMC2高位第22路数据P
+FMC2_HA23_N     IO_L1N_T0L_N1_DBC_66     BA17  FMC2高位第23路数据N
+FMC2_HA23_P     IO_L1P_T0L_N0_DBC_66     AY17  FMC2高位第23路数据P
+FMC2_SDA        IO_L11N_AD9N_94          B5    FMC2的I2C通信数据
+FMC2_SCL        IO_L5N_HDGC_94           D3    FMC2的I2C通信时钟
+
+47 / 57                                  http://www.alinx.com
+Z19 用户手册
+
+    十九、PCIE 接口
+
+      Z19 开发板配备了一个主模式 PCIE x8 的插槽，用于连接 PCIE 外设，单通道通信速度
+高达 8Gbps。PCIE 信号直接跟 ZU19EG 的 BANK226，227 的收发器的相连接。连接器的
+参考时钟由可调时钟芯片 Si5332BD11025-4 提供。PCIE x 8 设计的示意图如下图 19-1 所
+示:
+
+            图 19-1 PCIE 接口设计示意图
+
+PCIE 接口 ZYNQ 引脚分配如下：
+
+信号名称        引脚名             引脚号          备注
+                          AE1    PCIE 数据接收 0 负
+PCIE_RX0_N  MGTHRXN3_227  AE2    PCIE 数据接收 0 正
+                          AF3    PCIE 数据接收 1 负
+PCIE_RX0_P  MGTHRXP3_227  AF4    PCIE 数据接收 1 正
+                          AG1    PCIE 数据接收 2 负
+PCIE_RX1_N  MGTHRXN2_227  AG2    PCIE 数据接收 2 正
+                          AH3    PCIE 数据接收 3 负
+PCIE_RX1_P  MGTHRXP2_227  AH4    PCIE 数据接收 3 正
+                          AJ1    PCIE 数据接收 4 负
+PCIE_RX2_N  MGTHRXN1_227  AJ2    PCIE 数据接收 4 正
+                          AK3    PCIE 数据接收 5 负
+PCIE_RX2_P  MGTHRXP1_227  AK4    PCIE 数据接收 5 正
+                          AL1    PCIE 数据接收 6 负
+PCIE_RX3_N  MGTHRXN0_227  AL2    PCIE 数据接收 6 正
+                          AM3    PCIE 数据接收 7 负
+PCIE_RX3_P  MGTHRXP0_227
+
+PCIE_RX4_N  MGTHRXN3_226
+
+PCIE_RX4_P  MGTHRXP3_226
+
+PCIE_RX5_N  MGTHRXN2_226
+
+PCIE_RX5_P  MGTHRXP2_226
+
+PCIE_RX6_N  MGTHRXN1_226
+
+PCIE_RX6_P  MGTHRXP1_226
+
+PCIE_RX7_N  MGTHRXN0_226
+
+芯驿电子科技（上海）有限公司                                  48 / 57
+                                                   Z19 用户手册
+
+PCIE_RX7_P      MGTHRXP0_226           AM4         PCIE 数据接收 7 正
+PCIE_TX0_N      MGTHTXN3_227           AD7         PCIE 数据发送 0 负
+PCIE_TX0_P      MGTHTXP3_227           AD8         PCIE 数据发送 0 正
+PCIE_TX1_N      MGTHTXN2_227           AE5         PCIE 数据发送 1 负
+PCIE_TX1_P      MGTHTXP2_227           AE6         PCIE 数据发送 1 正
+PCIE_TX2_N      MGTHTXN1_227           AF7         PCIE 数据发送 2 负
+PCIE_TX2_P      MGTHTXP1_227           AF8         PCIE 数据发送 2 正
+PCIE_TX3_N      MGTHTXN0_227           AG5         PCIE 数据发送 3 负
+PCIE_TX3_P      MGTHTXP0_227           AG6         PCIE 数据发送 3 正
+PCIE_TX4_N      MGTHTXN3_226           AH7         PCIE 数据发送 4 负
+PCIE_TX4_P      MGTHTXP3_226           AH8         PCIE 数据发送 4 正
+PCIE_TX5_N      MGTHTXN2_226           AJ5         PCIE 数据发送 5 负
+PCIE_TX5_P      MGTHTXP2_226           AJ6         PCIE 数据发送 5 正
+PCIE_TX6_N      MGTHTXN1_226           AK7         PCIE 数据发送 6 负
+PCIE_TX6_P      MGTHTXP1_226           AK8         PCIE 数据发送 6 正
+PCIE_TX7_N      MGTHTXN0_226           AL5         PCIE 数据发送 7 负
+PCIE_TX7_P      MGTHTXP0_226           AL6         PCIE 数据发送 7 正
+226_PCIE_CLK_N
+226_PCIE_CLK_P        MGTREFCLK0N_226        AF11   PCIE 参考时钟负
+227_PCIE_CLK_N        MGTREFCLK0P_226        AF12   PCIE 参考时钟正
+227_PCIE_CLK_P        MGTREFCLK0N_227        AD11   PCIE 参考时钟负
+                      MGTREFCLK0P_227        AD12   PCIE 参考时钟正
+
+二十、SATA 接口
+
+      Z19 开发板配备了 4 路 SATA 接口， SATA 的差分信号连接到 GTH BANK228 上。
+      SATA 的参考时钟 150Mhz 由可编程时钟芯片 Si5332BD11025-4 提供。SATA 接口设计
+的示意图如下图 20-1 所示:
+
+49 / 57                                            http://www.alinx.com
+Z19 用户手册
+
+            图 20-1 SATA 接口设计示意图
+
+SATA 接口 ZYNQ 引脚分配如下：
+
+信号名称        引脚名                引脚号          备注
+                             AD3    SATA1 数据接收负
+SATA1_RX_N  MGTHRXN0_228     AD4    SATA1 数据接收正
+                             AC1    SATA2 数据接收负
+SATA1_RX_P  MGTHRXP0_228     AC2    SATA2 数据接收正
+                             AB3    SATA3 数据接收负
+SATA2_RX_N  MGTHRXN1_228     AB4    SATA3 数据接收正
+                             AA1    SATA4 数据接收负
+SATA2_RX_P  MGTHRXP1_228     AA2    SATA4 数据接收正
+                             AC5    SATA1 数据发送负
+SATA3_RX_N  MGTHRXN2_228     AC6    SATA1 数据发送正
+                             AB7    SATA2 数据发送负
+SATA3_RX_P  MGTHRXP2_228     AB8    SATA2 数据发送正
+                             AA5    SATA3 数据发送负
+SATA4_RX_N  MGTHRXN3_228     AA6    SATA3 数据发送正
+                             Y7     SATA4 数据发送负
+SATA4_RX_P  MGTHRXP3_228     Y8     SATA4 数据发送正
+                             AB11   SATA 参考时钟负
+SATA1_TX_N  MGTHTXN0_228     AB12   SATA 参考时钟正
+
+SATA1_TX_P  MGTHTXP0_228
+
+SATA2_TX_N  MGTHTXN1_228
+
+SATA2_TX_P  MGTHTXP1_228
+
+SATA3_TX_N  MGTHTXN2_228
+
+SATA3_TX_P  MGTHTXP2_228
+
+SATA4_TX_N  MGTHTXN3_228
+
+SATA4_TX_P  MGTHTXP3_228
+
+SATA_CLK_N  MGTREFCLK0N_228
+
+SATA_CLK_P  MGTREFCLK0P_228
+
+芯驿电子科技（上海）有限公司                                   50 / 57
+                                                                          Z19 用户手册
+
+    二十一、 SMA 接口
+
+      Z19 开发板上带有 3 对差分线，通过 6 个 SMA 接口引出，其中一对为时钟信号，另外 2
+对是数据信号。差分信号连接到 BANK68 的 IO 上（电平标准 1.8V,1.2V 通过跳帽可调）。SMA
+接口设计的示意图如下图 21-1 所示:
+
+          图 21-1 SMA 接口设计示意图
+
+         SMA 接口 ZYNQ 引脚分配如下：
+
+信号名称      引脚名                          引脚号             备注
+                                      D14   SMA 时钟负
+CLKN_D14  IO_L14N_T2L_N3_GC_68        E15   SMA 时钟正
+                                      B15   SMA 数据 0 接收负
+CLKP_E15  IO_L14P_T2L_N2_GC_68        C15   SMA 数据 0 接收正
+                                      F18   SMA 数据 1 接收负
+DATA0N    IO_L18N_T2U_N11_AD2N_68     G18   SMA 数据 1 接收正
+
+DATA0P    IO_L18P_T2U_N10_AD2P_68
+
+DATA1N    IO_L10N_T1U_N7_QBC_AD4N_68
+
+DATA1P    IO_L10P_T1U_N6_QBC_AD4P_68
+
+    二十二、 JTAG 调试口
+
+      在 Z19 开发板上预留了一个 JTAG 接口，用于下载 ZYNQ UltraScale+程序或者固化程序
+到 FLASH。为了避免带电插拔造成对 ZYNQ UltraScale+芯片的损坏，我们在 JTAG 信号上
+添加了保护二极管来保证信号的电压在 FPGA 接受的范围。
+
+51 / 57                               http://www.alinx.com
+Z19 用户手册
+
+                                        图22-1 原理图中JTAG接口部分
+
+    二十三、 RTC 实时时钟
+
+      ZU19EG 芯片内部带有 RTC 实时时钟的功能，有年月日时分秒还有星期计时功能。外部
+需要接一个 32.768KHz 的无源时钟，提供精确的时钟源给内部时钟电路，这样才能让 RTC 可
+以准确的提供时钟信息。同时为了产品掉电以后，实时时钟还可以正常运行，一般需要另外配
+一个电池给时钟芯片供电。开发板上预留了 2pin 1.27mm 间距的接口 J22，用于外接电池，
+当系统掉电，纽扣电池还可以给 RTC 系统供电，可以提供持续不断的时间信息。图 23-1 为
+RTC 实时时钟原理图
+
+芯驿电子科技（上海）有限公司  52 / 57
+                                     Z19 用户手册
+
+                                           图 23-1 为 RTC 实时时钟原理图
+
+    二十四、 EEPROM 和温度传感器
+
+      Z19开发板板载了一片EEPROM，型号为24LC04,容量为：4Kbit（2*256*8bit），通过IIC
+总线连接到PS端进行通信。另外板上还带有一个高精度、低功耗、数字温度传感器芯片，型
+号为ON Semiconductor公司的LM75，LM75芯片的温度精度为0.5度。EEPROM和温度传感
+器通过I2C总线挂载到ZYNQ UltraScale+的Bank501 MIO上。图3-16-1为EEPROM和温度传
+感器的原理图
+
+             图 24-1 EEPROM 和传感器的原理图
+
+EEPROM 通信引脚分配如下：
+
+信号名称         引脚名               引脚号         备注
+                           AH33      I2C 时钟信号
+PS_IIC1_SCL  PS_MIO24_500  AG34      I2C 数据信号
+
+PS_IIC1_SDA  PS_MIO25_500
+
+53 / 57                             http://www.alinx.com
+Z19 用户手册
+
+    二十五、 LED 灯
+
+      Z19 开发板上有 4 个发光二极管 LED。 包含 1 个电源指示灯， 1 个 DONE 指示灯，1
+个 PS 控制指示灯，1 个 PL 控制指示灯。用户可以通过程序来控制亮和灭，用户 LED 灯硬件
+连接的示意图如图 25-1 所示：
+
+               图 25-1 用户 LED 灯硬件连接示意图
+
+用户 LED 灯的引脚分配
+
+信号名称           引脚名          管脚号               备注
+                           T30         用户 PS LED 灯
+PS_LED1  PS_MIO42_501      B3          用户 PL LED 灯
+
+PL_LED1  IO_L10P_AD10P_94
+
+    二十六、 按键
+
+      Z19 开发板上有 1 个复位按键 RESET（板边侧贴）和 2 个用户按键。复位信号连接到核
+心板的电源复位引脚，用户可以使用这个复位按键来复位 ZYNQ 系统。用户按键 1 个连接到
+PS 的 MIO 上，1 个是连接到 PL 的 IO 上。复位按键和用户按键都是低电平有效，用户按键的
+连接示意图如图 26-1 所示：
+
+芯驿电子科技（上海）有限公司                                      54 / 57
+                                          Z19 用户手册
+
+                    图 26-1 复位按键连接示意图
+
+按键的 ZYNQ 管脚分配
+
+信号名称           引脚名             引脚号                 备注
+                               L27        PS 按键输入
+PS_KEY         PS_MIO26_501    D4         PL 按键输入
+
+PL_KEY         IO_L5P_HDGC_94
+
+二十七、 拨码开关配置
+
+开发板上有一个 4 位的拨码开关 SW1 用来配置 ZYNQ 系统的启动模式。Z19 系统开发
+
+平台支持 4 种启动模式。这 4 种启动模式分别是 JTAG 调试模式, QSPI FLASH, EMMC 和 SD2.0
+
+卡启动模式。ZU9EG 芯片上电后会检测（PS_MODE0~3）的电平来决定那种启动模式。用
+
+户可以通过扩展板上的拨码开关 SW1 来选择不同的启动模式。SW1 启动模式配置如下表 27-1
+
+所示。
+
+         SW1   拨码位置（4，3，2, 1） MODE[3:0]                启动模式
+
+               ON，ON，ON，ON          0000               PS JTAG
+
+               ON，ON，OFF ,ON        0010  QSPI FLASH
+
+               ON，OFF，ON，OFF        0101               SD卡
+
+               ON，OFF，OFF，ON        0110               EMMC
+
+55 / 57                             http://www.alinx.com
+Z19 用户手册
+
+                                              表27-1 SW1启动模式配置
+
+    二十八、 风扇
+
+      因为 ZU19EG 正常工作时会产生大量的热量，我们在板上为芯片增加了一个散热片和风
+扇，防止芯片过热。风扇的控制由 ZYNQ 芯片来控制，控制管脚连接到 BANK94 的 IO 上，
+如果 IO 电平输出为高，MOSFET 管导通，风扇工作，如果 IO 电平输出为低，风扇停止。板
+上的风扇设计图如下图 28-1 所示:
+
+                                      图 28-1 开发板原理图中风扇设计
+      风扇出厂前已经用螺丝固定在开发板上，风扇的电源连接到了 J62 的插座上，红色的为正
+极，黑色的为负极。
+
+芯驿电子科技（上海）有限公司  56 / 57
+                               Z19 用户手册
+
+二十九、 结构尺寸图
+
+         图 29-1 正面图（Top View）
+
+57 / 57                        http://www.alinx.com
+

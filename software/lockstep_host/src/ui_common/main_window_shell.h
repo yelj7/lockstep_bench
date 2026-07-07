@@ -22,8 +22,10 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QStringList>
 #include <QTabWidget>
 #include <QToolButton>
+#include <QVector>
 
 #include "top_status_bar.h"
 #include "ui_contract.h"
@@ -36,6 +38,15 @@ class QWidget;
 
 namespace lockstep::ui {
 
+struct ProjectTaskViewItem final {
+    QString taskId;
+    QString taskName;
+    QString description;
+    QString statusText;
+    QString updatedAtText;
+    QString basicInfo;
+};
+
 class MainWindowShell final : public QMainWindow {
     Q_OBJECT
 
@@ -46,6 +57,30 @@ public:
     void setTopStatus(const GlobalStatus& status);
     void appendLog(LogChannel channel, LogLevel level, const QString& source, const QString& message);
     void setSerialPlaceholderText(const QString& text);
+    [[nodiscard]] QString programImagePath() const;
+    void setProgramImagePath(const QString& path);
+    void setProjectView(const QString& workspaceName, const QStringList& taskLines);
+    void setProjectTasks(
+        const QString& workspaceName,
+        const QVector<ProjectTaskViewItem>& tasks,
+        const QString& selectedTaskId);
+    void setTaskDetail(const QString& taskName, const QString& description, const QString& basicInfo);
+    void setTaskDetailEditing(bool editing);
+    [[nodiscard]] QString selectedProjectTaskId() const;
+    [[nodiscard]] QString taskNameText() const;
+    [[nodiscard]] QString taskDescriptionText() const;
+    void setWorkflowStatusText(const QString& text);
+    void setRamSummary(const QString& text, int progressPercent);
+    void setConnectionSummary(const QString& profileName, const QString& statusText);
+    void setConnectionProfileDetails(
+        const QString& profileName,
+        const QString& host,
+        int tclPort,
+        int gdbPort,
+        int jtagKhz,
+        const QString& ramBaseAddress,
+        const QString& resetStrategy,
+        const QString& statusText);
 
 signals:
     void actionRequested(lockstep::ui::UiActionRequest request);
@@ -55,6 +90,7 @@ private slots:
     void switchWorkbenchPage();
     void clearVisibleLog();
     void toggleLogDetached();
+    void updateProjectTaskSelectionState();
 
 private:
     QWidget* createWorkbenchShell();
@@ -65,6 +101,7 @@ private:
     QWidget* createConnectionPage();
     QWidget* createModePage();
     QWidget* createRamProgramPage();
+    QWidget* createEmptyPage(const QString& title);
     QWidget* createWaveformPage();
     QWidget* createProtocolPage();
     QWidget* createStatsPage();
@@ -84,6 +121,7 @@ private:
     void addWorkbenchPage(const QString& pageId, NavigationPage page, QWidget* pageWidget);
     void setActivePage(const QString& pageId);
     void emitAction(UiAction action, NavigationPage page, const QString& objectName);
+    void setActionButtonsEnabled(UiAction action, bool enabled);
     void appendFormattedLog(QPlainTextEdit* view, LogLevel level, const QString& source, const QString& message);
     QString currentLogText() const;
     QPlainTextEdit* currentLogView() const;

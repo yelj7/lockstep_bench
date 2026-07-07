@@ -70,6 +70,7 @@ struct TaskInputItem final {
 };
 
 struct TaskInputSet final {
+    TaskInputItem programFile;
     TaskInputItem programManifest;
     TaskInputItem samplingConfig;
     TaskInputItem faultInjectionConfig;
@@ -96,6 +97,7 @@ struct TaskPaths final {
 struct TaskSummary final {
     QString taskId;
     QString taskName;
+    QString description;
     WorkspaceMode mode = WorkspaceMode::Research;
     TaskStatus status = TaskStatus::Draft;
     QString relativePath;
@@ -113,6 +115,7 @@ struct TaskContext final {
 
 struct TaskCreateOptions final {
     QString taskName;
+    QString description;
     TaskInputSet inputs;
     QString stageStatus;
     QString lastErrorId;
@@ -199,6 +202,18 @@ public:
         WorkspaceMode mode,
         const QString& taskId,
         const QString& newTaskName,
+        QString* errorMessage = nullptr);
+
+    bool updateTaskMetadata(
+        WorkspaceMode mode,
+        const QString& taskId,
+        const QString& newTaskName,
+        const QString& description,
+        QString* errorMessage = nullptr);
+
+    bool deleteTask(
+        WorkspaceMode mode,
+        const QString& taskId,
         QString* errorMessage = nullptr);
 
     bool saveTaskInputs(

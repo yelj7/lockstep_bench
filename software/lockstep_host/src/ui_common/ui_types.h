@@ -31,9 +31,12 @@ enum class NavigationPage : unsigned char {
     Connection = 1U,
     Mode = 2U,
     RamProgram = 3U,
-    Waveform = 4U,
-    Protocol = 5U,
-    Stats = 6U
+    FaultInjection = 4U,
+    SamplingConfig = 5U,
+    ProgramRun = 6U,
+    Waveform = 7U,
+    Protocol = 8U,
+    Stats = 9U
 };
 
 enum class LogChannel : unsigned char {
