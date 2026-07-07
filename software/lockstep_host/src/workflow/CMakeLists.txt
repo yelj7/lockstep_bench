@@ -6,11 +6,25 @@
 # * 描述: 定义研发测试流程编排模块的 CMake 目标占位
 # **********************************************************/
 
-add_library(lockstep_workflow INTERFACE)
+add_library(lockstep_workflow STATIC
+    workflow_engine.cpp
+    workflow_engine.h
+)
 
-target_compile_features(lockstep_workflow INTERFACE cxx_std_17)
+target_link_libraries(lockstep_workflow
+    PUBLIC
+        Qt${QT_VERSION_MAJOR}::Core
+)
+
+target_compile_features(lockstep_workflow PUBLIC cxx_std_17)
 
 target_include_directories(lockstep_workflow
-    INTERFACE
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+if(MSVC)
+    target_compile_options(lockstep_workflow PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(lockstep_workflow PRIVATE -Wall -Wextra -Wpedantic)
+endif()
