@@ -20,6 +20,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -40,6 +41,11 @@ namespace lockstep::apps {
 namespace {
 
 constexpr quint64 kDebugMemorySizeBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr char kProgramWriteRecordName[] = "program_write_record.json";
+constexpr char kReadbackVerifyRecordName[] = "readback_verify_record.json";
+constexpr char kRunControlRecordName[] = "run_control_record.json";
+constexpr char kHaltControlRecordName[] = "halt_control_record.json";
+constexpr char kProgramOperationProgressName[] = "program_operation_progress.json";
 
 QString currentTimeText()
 {
@@ -268,6 +274,7 @@ QJsonObject verifyRecordToJson(const target_control::ReadbackVerifyRecord& recor
 QJsonObject runRecordToJson(const target_control::RunControlRecord& record)
 {
     QJsonObject object;
+    object.insert(QStringLiteral("operation"), target_control::toString(record.operation));
     object.insert(QStringLiteral("state"), target_control::toString(record.state));
     object.insert(QStringLiteral("task_id"), record.taskId);
     object.insert(QStringLiteral("entry_address"), addressText(record.entryAddress));
@@ -276,6 +283,139 @@ QJsonObject runRecordToJson(const target_control::RunControlRecord& record)
     object.insert(QStringLiteral("error_message"), record.errorMessage);
     object.insert(QStringLiteral("created_at"), currentTimeText());
     return object;
+}
+
+QJsonObject progressToJson(const target_control::OperationProgress& progress)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("operation"), target_control::toString(progress.operation));
+    object.insert(QStringLiteral("stage"), target_control::toString(progress.stage));
+    object.insert(QStringLiteral("percent"), progress.percent);
+    object.insert(QStringLiteral("message"), progress.message);
+    object.insert(QStringLiteral("can_cancel"), progress.canCancel);
+    object.insert(QStringLiteral("created_at"), currentTimeText());
+    return object;
+}
+
+QString progressTitle(
+    const QString& title,
+    const target_control::OperationProgress& progress,
+    const QString& detail)
+{
+    QString text = QStringLiteral("%1\n阶段: %2\n%3")
+        .arg(title, progress.message, detail);
+    return text;
+}
+
+bool readEvidenceObject(
+    const QString& evidencePath,
+    const QString& fileName,
+    QJsonObject* const object)
+{
+    if (object == nullptr) {
+        return false;
+    }
+
+    QFile file(QDir(evidencePath).filePath(fileName));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return false;
+    }
+
+    *object = document.object();
+    return true;
+}
+
+bool parseBoolText(const QJsonValue& value)
+{
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    const QString text = value.toString().trimmed().toLower();
+    return text == QStringLiteral("true") || text == QStringLiteral("1") || text == QStringLiteral("passed");
+}
+
+quint64 parseU64Text(const QJsonValue& value)
+{
+    bool ok = false;
+    const quint64 parsed = value.toString().toULongLong(&ok);
+    return ok ? parsed : 0U;
+}
+
+target_control::VerifyState parseVerifyStateText(const QString& text)
+{
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("passed")) {
+        return target_control::VerifyState::Passed;
+    }
+    if (normalized == QStringLiteral("mismatch")) {
+        return target_control::VerifyState::Mismatch;
+    }
+    if (normalized == QStringLiteral("failed")) {
+        return target_control::VerifyState::Failed;
+    }
+    return target_control::VerifyState::NotRun;
+}
+
+target_control::RunState parseRunStateText(const QString& text)
+{
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("running")) {
+        return target_control::RunState::Running;
+    }
+    if (normalized == QStringLiteral("halted")) {
+        return target_control::RunState::Halted;
+    }
+    if (normalized == QStringLiteral("failed")) {
+        return target_control::RunState::Failed;
+    }
+    if (normalized == QStringLiteral("ready")) {
+        return target_control::RunState::Ready;
+    }
+    return target_control::RunState::NotAllowed;
+}
+
+target_control::WriteRecord writeRecordFromJson(const QJsonObject& object)
+{
+    target_control::WriteRecord record;
+    record.success = parseBoolText(object.value(QStringLiteral("success")));
+    record.taskId = object.value(QStringLiteral("task_id")).toString();
+    record.rawReturn = object.value(QStringLiteral("raw_return")).toString();
+    record.errorMessage = object.value(QStringLiteral("error_message")).toString();
+    return record;
+}
+
+target_control::ReadbackVerifyRecord verifyRecordFromJson(const QJsonObject& object)
+{
+    target_control::ReadbackVerifyRecord record;
+    record.state = parseVerifyStateText(object.value(QStringLiteral("state")).toString());
+    record.taskId = object.value(QStringLiteral("task_id")).toString();
+    record.expectedLength = parseU64Text(object.value(QStringLiteral("expected_length")));
+    record.actualLength = parseU64Text(object.value(QStringLiteral("actual_length")));
+    record.diffCount = parseU64Text(object.value(QStringLiteral("diff_count")));
+    record.rawReturn = object.value(QStringLiteral("raw_return")).toString();
+    record.errorMessage = object.value(QStringLiteral("error_message")).toString();
+    return record;
+}
+
+target_control::RunControlRecord runRecordFromJson(
+    const QJsonObject& object,
+    const target_control::ProgramOperation operation)
+{
+    target_control::RunControlRecord record;
+    record.operation = operation;
+    record.state = parseRunStateText(object.value(QStringLiteral("state")).toString());
+    record.taskId = object.value(QStringLiteral("task_id")).toString();
+    record.entryAddress = 0U;
+    record.rawReturn = object.value(QStringLiteral("raw_return")).toString();
+    record.snapshot = object.value(QStringLiteral("snapshot")).toString();
+    record.errorMessage = object.value(QStringLiteral("error_message")).toString();
+    return record;
 }
 
 }  // namespace
@@ -306,6 +446,7 @@ WorkbenchController::WorkbenchController(
       hasWriteRecord_(false),
       hasVerifyRecord_(false),
       hasRunRecord_(false),
+      hasHaltRecord_(false),
       currentTask_(),
       flowState_(),
       debugProfile_(),
@@ -314,7 +455,8 @@ WorkbenchController::WorkbenchController(
       imageInfo_(),
       writeRecord_(),
       verifyRecord_(),
-      runRecord_()
+      runRecord_(),
+      haltRecord_()
 {
     debugProfile_.profileId = QStringLiteral("ui_in_memory_profile");
     debugProfile_.profileName = QStringLiteral("UI内存调试后端");
@@ -357,7 +499,7 @@ bool WorkbenchController::initialize(const QString& workspaceRootPath)
             addressText(debugProfile_.ramBaseAddress),
             debugProfile_.resetStrategy,
             QStringLiteral("调试器: 未连接"));
-        window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0);
+        window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
     }
     return true;
 }
@@ -583,8 +725,11 @@ void WorkbenchController::loadTaskToWorkbench(const QString& taskId)
         }
         window_->setTaskDetailEditing(false);
     }
+    restoreExecutionEvidenceForCurrentTask();
 
     logInfo(QStringLiteral("Workspace"), QStringLiteral("验证任务已加载到工作台: %1").arg(currentTask_.summary.taskName));
+    setRamSummaryFromCurrentState(QStringLiteral("任务证据已加载"));
+    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), hasRunRecord_ ? 100 : 0, hasHaltRecord_ ? 100 : 0);
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
@@ -828,6 +973,14 @@ void WorkbenchController::programImage()
         return;
     }
 
+    target_control::OperationProgress progress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Write, target_control::OperationStage::CheckDebugAccess);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("烧写准备中"), progress, QStringLiteral("正在确认目标连接、预检状态、片上调试器和内存写入可用性。")),
+        progress.percent,
+        0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     workspace::TaskInputSet inputs = currentTask_.inputs;
     inputs.resourceSnapshot = resourceSnapshotJson();
     QString error;
@@ -843,18 +996,69 @@ void WorkbenchController::programImage()
 
     const QString taskImagePath =
         QDir(currentTask_.paths.taskRootPath).filePath(currentTask_.inputs.programFile.relativePath);
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Write,
+        target_control::OperationStage::DetectImage);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("烧写准备中"), progress, QStringLiteral("正在识别任务内程序镜像。")),
+        progress.percent,
+        0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     imageInfo_ = programController_.detectImage(taskImagePath, debugProfile_);
     hasImage_ = (imageInfo_.type != target_control::ImageType::Unknown) && imageInfo_.errorMessage.isEmpty();
     if (!hasImage_) {
         logError(QStringLiteral("Program"), QStringLiteral("镜像识别失败: %1").arg(imageInfo_.errorMessage));
+        window_->setRamSummary(
+            QStringLiteral("烧写准备失败\n镜像格式、地址范围或资源配置确认失败: %1").arg(imageInfo_.errorMessage),
+            30,
+            0);
         return;
     }
 
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Write,
+        target_control::OperationStage::ParseWritePlan);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("烧写准备中"), progress, QStringLiteral("镜像段和写入范围已形成，准备发送写入命令。")),
+        progress.percent,
+        0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Write,
+        target_control::OperationStage::WriteSegments);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("烧写执行中"), progress, QStringLiteral("烧写可用性已确认，正在等待片上调试器返回写入结果。")),
+        progress.percent,
+        0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     writeRecord_ = programController_.programTarget(debugAccess_, currentTask_.summary.taskId, imageInfo_);
     hasWriteRecord_ = writeRecord_.success;
+
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Write,
+        writeRecord_.success ? target_control::OperationStage::ConfirmWriteResult : target_control::OperationStage::Failed);
+    window_->setRamSummary(
+        progressTitle(
+            writeRecord_.success ? QStringLiteral("烧写确认中") : QStringLiteral("烧写失败"),
+            progress,
+            writeRecord_.success ? QStringLiteral("片上调试器已返回写入成功记录。") : writeRecord_.errorMessage),
+        progress.percent,
+        0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     QString relativePath;
-    if (!writeEvidenceJson(QStringLiteral("program_write.json"), writeRecordToJson(writeRecord_), &relativePath, &error)) {
+    if (!writeEvidenceJson(QString::fromLatin1(kProgramWriteRecordName), writeRecordToJson(writeRecord_), &relativePath, &error)) {
         logWarning(QStringLiteral("Evidence"), QStringLiteral("烧写证据写入失败: %1").arg(error));
+    }
+    const target_control::OperationProgress persistedProgress =
+        target_control::makeOperationProgress(
+            target_control::ProgramOperation::Write,
+            writeRecord_.success ? target_control::OperationStage::PersistWriteRecord : target_control::OperationStage::Failed);
+    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+        logWarning(QStringLiteral("Evidence"), QStringLiteral("烧写进度证据写入失败: %1").arg(error));
     }
 
     flowState_ = workflow_.recordStageResult(
@@ -875,17 +1079,62 @@ void WorkbenchController::programImage()
 
 void WorkbenchController::verifyReadback()
 {
+    if (!hasConnection_ || !hasPrecheck_) {
+        logError(QStringLiteral("Readback"), QStringLiteral("目标尚未连接或预检未通过，不能回读校验。"));
+        return;
+    }
     if (!hasImage_ || !hasWriteRecord_) {
         logError(QStringLiteral("Readback"), QStringLiteral("尚未完成有效烧写，不能回读校验。"));
         return;
     }
 
+    target_control::OperationProgress progress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::CheckReadbackAccess);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("回读准备中"), progress, QStringLiteral("正在确认烧写记录、片上调试器和目标内存回读可用性。")),
+        100,
+        progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Readback,
+        target_control::OperationStage::PrepareReadRanges);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("回读准备中"), progress, QStringLiteral("正在准备与烧写一致的回读范围。")),
+        100,
+        progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Readback,
+        target_control::OperationStage::ReadSegments);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("回读执行中"), progress, QStringLiteral("回读可用性已确认，正在等待片上调试器返回回读数据。")),
+        100,
+        progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     verifyRecord_ = programController_.verifyReadback(debugAccess_, currentTask_.summary.taskId, imageInfo_);
     hasVerifyRecord_ = true;
+
+    progress = target_control::makeOperationProgress(
+        target_control::ProgramOperation::Readback,
+        target_control::OperationStage::CompareData);
+    window_->setRamSummary(
+        progressTitle(QStringLiteral("回读比较中"), progress, QStringLiteral("正在确认回读数据长度和差异数量。")),
+        100,
+        progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     QString error;
     QString relativePath;
-    if (!writeEvidenceJson(QStringLiteral("readback_verify.json"), verifyRecordToJson(verifyRecord_), &relativePath, &error)) {
+    if (!writeEvidenceJson(QString::fromLatin1(kReadbackVerifyRecordName), verifyRecordToJson(verifyRecord_), &relativePath, &error)) {
         logWarning(QStringLiteral("Evidence"), QStringLiteral("回读证据写入失败: %1").arg(error));
+    }
+    const target_control::OperationProgress persistedProgress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::PersistVerifyRecord);
+    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+        logWarning(QStringLiteral("Evidence"), QStringLiteral("回读进度证据写入失败: %1").arg(error));
     }
 
     const bool passed = verifyRecord_.state == target_control::VerifyState::Passed;
@@ -906,17 +1155,39 @@ void WorkbenchController::verifyReadback()
 
 void WorkbenchController::runProgram()
 {
+    if (!hasConnection_ || !hasPrecheck_) {
+        logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接或预检未通过，不能运行程序。"));
+        return;
+    }
     if (!hasVerifyRecord_ || verifyRecord_.state != target_control::VerifyState::Passed) {
         logError(QStringLiteral("Run"), QStringLiteral("回读校验未通过，禁止运行。"));
         return;
     }
 
+    target_control::OperationProgress progress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CheckRunGate);
+    setRunSummaryFromCurrentState(QStringLiteral("运行准备中 - ") + progress.message, progress.percent, 0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::DispatchRun);
+    setRunSummaryFromCurrentState(QStringLiteral("运行命令已发送 - ") + progress.message, progress.percent, 0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     runRecord_ = programController_.runTarget(debugAccess_, currentTask_.summary.taskId, imageInfo_, verifyRecord_);
     hasRunRecord_ = true;
+
+    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CaptureRunStatus);
+    setRunSummaryFromCurrentState(QStringLiteral("运行返回确认中 - ") + progress.message, progress.percent, 0);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
     QString error;
     QString relativePath;
-    if (!writeEvidenceJson(QStringLiteral("run_control.json"), runRecordToJson(runRecord_), &relativePath, &error)) {
+    if (!writeEvidenceJson(QString::fromLatin1(kRunControlRecordName), runRecordToJson(runRecord_), &relativePath, &error)) {
         logWarning(QStringLiteral("Evidence"), QStringLiteral("运行证据写入失败: %1").arg(error));
+    }
+    const target_control::OperationProgress persistedProgress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::PersistRunRecord);
+    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+        logWarning(QStringLiteral("Evidence"), QStringLiteral("运行进度证据写入失败: %1").arg(error));
     }
 
     const bool running = runRecord_.state == target_control::RunState::Running;
@@ -931,19 +1202,52 @@ void WorkbenchController::runProgram()
     } else {
         logError(QStringLiteral("Run"), QStringLiteral("程序运行失败: %1").arg(runRecord_.errorMessage));
     }
-    setRamSummaryFromCurrentState(QStringLiteral("运行控制完成"));
+    setRunSummaryFromCurrentState(QStringLiteral("运行控制完成"), 100, 0);
     updateTopStatus();
 }
 
 void WorkbenchController::stopProgram()
 {
-    const target_control::DebugResult result = debugAccess_.halt();
-    if (result.success) {
-        logInfo(QStringLiteral("Run"), QStringLiteral("程序已中止: %1").arg(result.rawReturn));
-    } else {
-        logWarning(QStringLiteral("Run"), QStringLiteral("中止请求失败: %1").arg(result.errorMessage));
+    if (!ensureTask()) {
+        return;
     }
-    setRamSummaryFromCurrentState(QStringLiteral("运行控制已更新"));
+    if (!hasConnection_) {
+        logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接，不能发送中止命令。"));
+        return;
+    }
+
+    target_control::OperationProgress progress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CheckHaltAccess);
+    setRunSummaryFromCurrentState(QStringLiteral("终止准备中 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::DispatchHalt);
+    setRunSummaryFromCurrentState(QStringLiteral("终止命令已发送 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    haltRecord_ = programController_.haltTarget(debugAccess_, currentTask_.summary.taskId);
+    hasHaltRecord_ = true;
+
+    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CaptureHaltStatus);
+    setRunSummaryFromCurrentState(QStringLiteral("终止返回确认中 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+    QString error;
+    QString relativePath;
+    if (!writeEvidenceJson(QString::fromLatin1(kHaltControlRecordName), runRecordToJson(haltRecord_), &relativePath, &error)) {
+        logWarning(QStringLiteral("Evidence"), QStringLiteral("中止证据写入失败: %1").arg(error));
+    }
+    const target_control::OperationProgress persistedProgress =
+        target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::PersistHaltRecord);
+    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+        logWarning(QStringLiteral("Evidence"), QStringLiteral("中止进度证据写入失败: %1").arg(error));
+    }
+
+    if (haltRecord_.state == target_control::RunState::Halted) {
+        logInfo(QStringLiteral("Run"), QStringLiteral("程序已中止: %1").arg(haltRecord_.rawReturn));
+    } else {
+        logWarning(QStringLiteral("Run"), QStringLiteral("中止请求失败: %1").arg(haltRecord_.errorMessage));
+    }
+    setRunSummaryFromCurrentState(QStringLiteral("终止控制完成"), hasRunRecord_ ? 100 : 0, 100);
     updateTopStatus();
 }
 
@@ -968,9 +1272,9 @@ void WorkbenchController::generateReport()
         hasVerifyRecord_ && (verifyRecord_.state == target_control::VerifyState::Passed);
     input.requiredEvidence.runControlReturned =
         hasRunRecord_ && (!runRecord_.rawReturn.isEmpty() || !runRecord_.snapshot.isEmpty());
-    input.requiredEvidence.programWriteRecordPath = QStringLiteral("evidence/program_write.json");
-    input.requiredEvidence.readbackVerifyRecordPath = QStringLiteral("evidence/readback_verify.json");
-    input.requiredEvidence.runControlRecordPath = QStringLiteral("evidence/run_control.json");
+    input.requiredEvidence.programWriteRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kProgramWriteRecordName));
+    input.requiredEvidence.readbackVerifyRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kReadbackVerifyRecordName));
+    input.requiredEvidence.runControlRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kRunControlRecordName));
     input.optionalRecords.faultInjection = reporting::OptionalRecordState::Skipped;
     input.unresolvedBlockingErrors = errorRegistry_.unresolvedBlockingErrors(errors);
     input.resourceSnapshot = resourceSnapshotJson();
@@ -1000,7 +1304,7 @@ void WorkbenchController::showVerifySummary()
 
 void WorkbenchController::showRunSummary()
 {
-    setRamSummaryFromCurrentState(QStringLiteral("运行摘要"));
+    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), hasRunRecord_ ? 100 : 0, hasHaltRecord_ ? 100 : 0);
 }
 
 void WorkbenchController::updateProjectView()
@@ -1083,7 +1387,7 @@ void WorkbenchController::setRamSummaryFromCurrentState(const QString& title)
     }
 
     const QString text = QStringLiteral(
-        "%1\n镜像: %2 / %3 bytes / %4\n烧写: %5\n回读: %6, diff=%7\n运行: %8, raw=%9, snapshot=%10")
+        "%1\n镜像: %2 / %3 bytes / %4\n烧写: %5\n回读: %6, diff=%7\n烧写返回: %8\n回读返回: %9")
         .arg(title,
              imageInfo_.fileName.isEmpty() ? QStringLiteral("未选择") : imageInfo_.fileName,
              QString::number(imageInfo_.sizeBytes),
@@ -1091,21 +1395,51 @@ void WorkbenchController::setRamSummaryFromCurrentState(const QString& title)
              hasWriteRecord_ ? (writeRecord_.success ? QStringLiteral("passed") : writeRecord_.errorMessage) : QStringLiteral("not_run"),
              hasVerifyRecord_ ? target_control::toString(verifyRecord_.state) : QStringLiteral("not_run"),
              hasVerifyRecord_ ? QString::number(verifyRecord_.diffCount) : QStringLiteral("0"),
-             hasRunRecord_ ? target_control::toString(runRecord_.state) : QStringLiteral("not_run"),
-             runRecord_.rawReturn,
-             runRecord_.snapshot);
+             writeRecord_.rawReturn,
+             verifyRecord_.rawReturn);
 
-    int progress = 0;
-    if (hasWriteRecord_ && writeRecord_.success) {
-        progress = 40;
+    int writeProgress = 0;
+    const bool writeAttempted =
+        writeRecord_.success || !writeRecord_.rawReturn.isEmpty() || !writeRecord_.errorMessage.isEmpty();
+    if (writeAttempted) {
+        writeProgress = 100;
+    } else if (hasImage_) {
+        writeProgress = 30;
     }
-    if (hasVerifyRecord_ && verifyRecord_.state == target_control::VerifyState::Passed) {
-        progress = 75;
+
+    int readbackProgress = 0;
+    if (hasVerifyRecord_) {
+        readbackProgress = 100;
     }
     if (hasRunRecord_ && runRecord_.state == target_control::RunState::Running) {
-        progress = 100;
+        writeProgress = 100;
+        readbackProgress = 100;
     }
-    window_->setRamSummary(text, progress);
+    window_->setRamSummary(text, writeProgress, readbackProgress);
+}
+
+void WorkbenchController::setRunSummaryFromCurrentState(
+    const QString& title,
+    const int runProgressPercent,
+    const int stopProgressPercent)
+{
+    if (window_ == nullptr) {
+        return;
+    }
+
+    const QString text = QStringLiteral(
+        "%1\n镜像: %2\n入口地址: %3\n运行状态: %4\n运行返回: %5\n运行快照: %6\n中止状态: %7\n中止返回: %8\n中止快照: %9\n错误: %10")
+        .arg(title,
+             imageInfo_.fileName.isEmpty() ? QStringLiteral("未确定") : imageInfo_.fileName,
+             addressText(imageInfo_.entryAddress),
+             hasRunRecord_ ? target_control::toString(runRecord_.state) : QStringLiteral("not_run"),
+             runRecord_.rawReturn,
+             runRecord_.snapshot,
+             hasHaltRecord_ ? target_control::toString(haltRecord_.state) : QStringLiteral("not_run"),
+             haltRecord_.rawReturn,
+             haltRecord_.snapshot,
+             !runRecord_.errorMessage.isEmpty() ? runRecord_.errorMessage : haltRecord_.errorMessage);
+    window_->setRunSummary(text, runProgressPercent, stopProgressPercent);
 }
 
 void WorkbenchController::resetExecutionState()
@@ -1114,12 +1448,15 @@ void WorkbenchController::resetExecutionState()
     hasWriteRecord_ = false;
     hasVerifyRecord_ = false;
     hasRunRecord_ = false;
+    hasHaltRecord_ = false;
     imageInfo_ = target_control::ProgramImageInfo();
     writeRecord_ = target_control::WriteRecord();
     verifyRecord_ = target_control::ReadbackVerifyRecord();
     runRecord_ = target_control::RunControlRecord();
+    haltRecord_ = target_control::RunControlRecord();
     if (window_ != nullptr) {
-        window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0);
+        window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
+        window_->setRunSummary(QStringLiteral("程序运行控制摘要将在这里显示。"), 0, 0);
     }
 }
 
@@ -1175,6 +1512,41 @@ bool WorkbenchController::saveProgramInputForCurrentTask(workspace::TaskInputSet
     inputs->programFile = imported;
     window_->setProgramImagePath(QDir(currentTask_.paths.taskRootPath).filePath(imported.relativePath));
     return true;
+}
+
+void WorkbenchController::restoreExecutionEvidenceForCurrentTask()
+{
+    if (!hasTask_) {
+        return;
+    }
+
+    QJsonObject object;
+    if (readEvidenceObject(currentTask_.paths.evidencePath, QString::fromLatin1(kProgramWriteRecordName), &object)) {
+        writeRecord_ = writeRecordFromJson(object);
+        hasWriteRecord_ = writeRecord_.success || !writeRecord_.rawReturn.isEmpty() || !writeRecord_.errorMessage.isEmpty();
+    }
+
+    if (readEvidenceObject(currentTask_.paths.evidencePath, QString::fromLatin1(kReadbackVerifyRecordName), &object)) {
+        verifyRecord_ = verifyRecordFromJson(object);
+        hasVerifyRecord_ = verifyRecord_.state != target_control::VerifyState::NotRun ||
+            !verifyRecord_.rawReturn.isEmpty() ||
+            !verifyRecord_.errorMessage.isEmpty();
+    }
+
+    if (readEvidenceObject(currentTask_.paths.evidencePath, QString::fromLatin1(kRunControlRecordName), &object)) {
+        runRecord_ = runRecordFromJson(object, target_control::ProgramOperation::Run);
+        runRecord_.entryAddress = imageInfo_.entryAddress;
+        hasRunRecord_ = runRecord_.state != target_control::RunState::NotAllowed ||
+            !runRecord_.rawReturn.isEmpty() ||
+            !runRecord_.snapshot.isEmpty();
+    }
+
+    if (readEvidenceObject(currentTask_.paths.evidencePath, QString::fromLatin1(kHaltControlRecordName), &object)) {
+        haltRecord_ = runRecordFromJson(object, target_control::ProgramOperation::Halt);
+        hasHaltRecord_ = haltRecord_.state != target_control::RunState::NotAllowed ||
+            !haltRecord_.rawReturn.isEmpty() ||
+            !haltRecord_.snapshot.isEmpty();
+    }
 }
 
 void WorkbenchController::logInfo(const QString& source, const QString& message) const

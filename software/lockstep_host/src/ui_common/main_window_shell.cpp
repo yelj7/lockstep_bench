@@ -21,6 +21,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -29,16 +30,21 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QStyleOptionComboBox>
 #include <QTextCursor>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include "ui_theme.h"
 
@@ -53,9 +59,55 @@ constexpr int kDiagnosticsMinHeight = 112;
 constexpr int kDiagnosticsMaxHeight = 150;
 constexpr int kDetachedLogWidth = 900;
 constexpr int kDetachedLogHeight = 420;
+constexpr int kProgramPageLeftInitialWidth = 420;
+constexpr int kProgramPageRightInitialWidth = 560;
 constexpr int kTaskIdRole = Qt::UserRole + 1;
 constexpr int kTaskDescriptionRole = Qt::UserRole + 2;
 constexpr int kTaskBasicInfoRole = Qt::UserRole + 3;
+
+class WorkbenchComboBox final : public QComboBox {
+public:
+    explicit WorkbenchComboBox(QWidget* const parent = nullptr)
+        : QComboBox(parent)
+    {
+    }
+
+protected:
+    void wheelEvent(QWheelEvent* const event) override
+    {
+        if (event != nullptr) {
+            event->ignore();
+        }
+    }
+
+    void paintEvent(QPaintEvent* const event) override
+    {
+        QComboBox::paintEvent(event);
+
+        QStyleOptionComboBox option;
+        initStyleOption(&option);
+        const QRect arrowRect =
+            style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, this);
+        if (!arrowRect.isValid()) {
+            return;
+        }
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(isEnabled() ? QColor(QStringLiteral("#64748b")) : QColor(QStringLiteral("#9ca3af")));
+        pen.setWidthF(1.8);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+
+        const QPoint center = arrowRect.center();
+        QPainterPath path;
+        path.moveTo(center.x() - 4, center.y() - 2);
+        path.lineTo(center.x(), center.y() + 2);
+        path.lineTo(center.x() + 4, center.y() - 2);
+        painter.drawPath(path);
+    }
+};
 
 QLabel* pageTitle(const QString& text, QWidget* const parent)
 {
@@ -89,25 +141,6 @@ QScrollArea* scrollPage(QWidget* const content)
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
     return scroll;
-}
-
-void setLayoutItemsVisible(QLayout* const layout, const bool visible)
-{
-    if (layout == nullptr) {
-        return;
-    }
-
-    for (int index = 0; index < layout->count(); ++index) {
-        QLayoutItem* const item = layout->itemAt(index);
-        if (item == nullptr) {
-            continue;
-        }
-        QWidget* const widget = item->widget();
-        if (widget != nullptr) {
-            widget->setVisible(visible);
-        }
-        setLayoutItemsVisible(item->layout(), visible);
-    }
 }
 
 QString pageIdForPage(const NavigationPage page)
@@ -225,15 +258,30 @@ void MainWindowShell::setSerialPlaceholderText(const QString& text)
 
 QString MainWindowShell::programImagePath() const
 {
-    const QLineEdit* const edit = findChild<QLineEdit*>(QStringLiteral("program_image_path_edit"));
+    const QWidget* const currentPage = (pageStack_ == nullptr) ? nullptr : pageStack_->currentWidget();
+    const QLineEdit* const activeEdit =
+        (currentPage == nullptr) ? nullptr : currentPage->findChild<QLineEdit*>(QStringLiteral("program_image_path_edit"));
+    const QLineEdit* const edit =
+        (activeEdit == nullptr) ? findChild<QLineEdit*>(QStringLiteral("program_image_path_edit")) : activeEdit;
     return (edit == nullptr) ? QString() : edit->text().trimmed();
 }
 
 void MainWindowShell::setProgramImagePath(const QString& path)
 {
-    QLineEdit* const edit = findChild<QLineEdit*>(QStringLiteral("program_image_path_edit"));
-    if (edit != nullptr) {
+    const QList<QLineEdit*> edits = findChildren<QLineEdit*>(QStringLiteral("program_image_path_edit"));
+    for (QLineEdit* const edit : edits) {
         edit->setText(path);
+    }
+    const QList<QLineEdit*> runPathEdits =
+        findChildren<QLineEdit*>(QStringLiteral("program_run_image_path_edit"));
+    for (QLineEdit* const edit : runPathEdits) {
+        edit->setText(path);
+    }
+    const QString fileName = QFileInfo(path).fileName();
+    const QList<QLineEdit*> runNameEdits =
+        findChildren<QLineEdit*>(QStringLiteral("program_run_image_name_edit"));
+    for (QLineEdit* const edit : runNameEdits) {
+        edit->setText(fileName);
     }
 }
 
@@ -365,18 +413,44 @@ void MainWindowShell::setWorkflowStatusText(const QString& text)
     }
 }
 
-void MainWindowShell::setRamSummary(const QString& text, const int progressPercent)
+void MainWindowShell::setRamSummary(
+    const QString& text,
+    const int writeProgressPercent,
+    const int readbackProgressPercent)
 {
-    QLabel* const stateLabel = findChild<QLabel*>(QStringLiteral("ram_summary_state_label"));
-    QProgressBar* const progress = findChild<QProgressBar*>(QStringLiteral("ram_progress_bar"));
-    QPlainTextEdit* const summary = findChild<QPlainTextEdit*>(QStringLiteral("ram_summary_edit"));
-    if (stateLabel != nullptr) {
-        stateLabel->setText(text.section(QChar::fromLatin1('\n'), 0, 0));
+    const QList<QProgressBar*> writeProgressBars =
+        findChildren<QProgressBar*>(QStringLiteral("program_write_progress_bar"));
+    const QList<QProgressBar*> readbackProgressBars =
+        findChildren<QProgressBar*>(QStringLiteral("readback_verify_progress_bar"));
+    const QList<QPlainTextEdit*> summaries = findChildren<QPlainTextEdit*>(QStringLiteral("ram_summary_edit"));
+    for (QProgressBar* const progress : writeProgressBars) {
+        progress->setValue(qBound(0, writeProgressPercent, 100));
     }
-    if (progress != nullptr) {
-        progress->setValue(qBound(0, progressPercent, 100));
+    for (QProgressBar* const progress : readbackProgressBars) {
+        progress->setValue(qBound(0, readbackProgressPercent, 100));
     }
-    if (summary != nullptr) {
+    for (QPlainTextEdit* const summary : summaries) {
+        summary->setPlainText(text);
+    }
+}
+
+void MainWindowShell::setRunSummary(
+    const QString& text,
+    const int runProgressPercent,
+    const int stopProgressPercent)
+{
+    const QList<QProgressBar*> runProgressBars =
+        findChildren<QProgressBar*>(QStringLiteral("program_run_progress_bar"));
+    const QList<QProgressBar*> stopProgressBars =
+        findChildren<QProgressBar*>(QStringLiteral("program_stop_progress_bar"));
+    const QList<QPlainTextEdit*> summaries = findChildren<QPlainTextEdit*>(QStringLiteral("run_summary_edit"));
+    for (QProgressBar* const progress : runProgressBars) {
+        progress->setValue(qBound(0, runProgressPercent, 100));
+    }
+    for (QProgressBar* const progress : stopProgressBars) {
+        progress->setValue(qBound(0, stopProgressPercent, 100));
+    }
+    for (QPlainTextEdit* const summary : summaries) {
         summary->setPlainText(text);
     }
 }
@@ -607,7 +681,7 @@ QWidget* MainWindowShell::createPageContainer(QWidget* const parent)
     addWorkbenchPage(QStringLiteral("ram_program"), NavigationPage::RamProgram, createRamProgramPage());
     addWorkbenchPage(QStringLiteral("fault_injection"), NavigationPage::FaultInjection, createEmptyPage(QStringLiteral("错误注入")));
     addWorkbenchPage(QStringLiteral("sampling_config"), NavigationPage::SamplingConfig, createEmptyPage(QStringLiteral("采集配置")));
-    addWorkbenchPage(QStringLiteral("program_run"), NavigationPage::ProgramRun, createEmptyPage(QStringLiteral("程序运行")));
+    addWorkbenchPage(QStringLiteral("program_run"), NavigationPage::ProgramRun, createProgramRunPage());
     addWorkbenchPage(QStringLiteral("waveform"), NavigationPage::Waveform, createWaveformPage());
     addWorkbenchPage(QStringLiteral("protocol"), NavigationPage::Protocol, createProtocolPage());
     addWorkbenchPage(QStringLiteral("stats"), NavigationPage::Stats, createStatsPage());
@@ -724,7 +798,6 @@ QWidget* MainWindowShell::createConnectionPage()
     QVBoxLayout* const layout = new QVBoxLayout(content);
     layout->addWidget(pageTitle(QStringLiteral("目标连接"), content));
     layout->addWidget(createControlPanel());
-    layout->addWidget(createConnectionPanel());
     layout->addWidget(createSerialConfigPanel());
     layout->addStretch(1);
     return scrollPage(content);
@@ -739,7 +812,7 @@ QWidget* MainWindowShell::createModePage()
 
     QGroupBox* const group = panelBox(QStringLiteral("处理器工作模式期望"), content);
     QFormLayout* const form = new QFormLayout(group);
-    QComboBox* const modeCombo = new QComboBox(group);
+    QComboBox* const modeCombo = new WorkbenchComboBox(group);
     modeCombo->addItem(QStringLiteral("双核锁步模式"));
     modeCombo->addItem(QStringLiteral("双核独立模式"));
     form->addRow(QStringLiteral("模式"), modeCombo);
@@ -754,66 +827,164 @@ QWidget* MainWindowShell::createModePage()
 
 QWidget* MainWindowShell::createRamProgramPage()
 {
+    return createProgramOperationPage(QStringLiteral("程序烧录"), NavigationPage::RamProgram, false);
+}
+
+QWidget* MainWindowShell::createProgramRunPage()
+{
     QWidget* const content = new QWidget(this);
-    content->setObjectName(QStringLiteral("page_ram_program"));
+    content->setObjectName(QStringLiteral("page_program_run"));
     QVBoxLayout* const layout = new QVBoxLayout(content);
-    layout->addWidget(pageTitle(QStringLiteral("程序烧录"), content));
+    layout->setSpacing(12);
+    layout->addWidget(pageTitle(QStringLiteral("程序运行"), content));
 
     QSplitter* const split = new QSplitter(content);
+    split->setChildrenCollapsible(false);
+
     QWidget* const left = new QWidget(split);
     QVBoxLayout* const leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(10);
-    leftLayout->addWidget(createImagePanel(), 1);
+    leftLayout->setSpacing(12);
+    leftLayout->addWidget(createRunImagePanel());
 
-    QGroupBox* const actionPanel = panelBox(QStringLiteral("RAM 操作"), left);
+    QGroupBox* const controlPanel = panelBox(QStringLiteral("程序运行控制"), left);
+    QGridLayout* const controlLayout = new QGridLayout(controlPanel);
+    controlLayout->setSpacing(8);
+    controlLayout->setColumnStretch(0, 1);
+    controlLayout->setColumnStretch(1, 1);
+    QPushButton* const runButton = createActionButton(UiAction::RunProgram, NavigationPage::ProgramRun, controlPanel, true);
+    QPushButton* const stopButton = createActionButton(UiAction::StopProgram, NavigationPage::ProgramRun, controlPanel, false);
+    stopButton->setProperty("danger_button", true);
+    for (QPushButton* const button : {runButton, stopButton}) {
+        button->setMinimumHeight(42);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    controlLayout->addWidget(runButton, 0, 0);
+    controlLayout->addWidget(stopButton, 0, 1);
+    leftLayout->addWidget(controlPanel);
+
+    QWidget* const progressPanel = new QWidget(left);
+    QFormLayout* const progressLayout = new QFormLayout(progressPanel);
+    progressLayout->setContentsMargins(0, 0, 0, 0);
+    progressLayout->setSpacing(6);
+    QProgressBar* const runProgress = new QProgressBar(progressPanel);
+    runProgress->setObjectName(QStringLiteral("program_run_progress_bar"));
+    runProgress->setRange(0, 100);
+    runProgress->setValue(0);
+    QProgressBar* const stopProgress = new QProgressBar(progressPanel);
+    stopProgress->setObjectName(QStringLiteral("program_stop_progress_bar"));
+    stopProgress->setRange(0, 100);
+    stopProgress->setValue(0);
+    progressLayout->addRow(QStringLiteral("运行进度"), runProgress);
+    progressLayout->addRow(QStringLiteral("终止进度"), stopProgress);
+    leftLayout->addWidget(progressPanel);
+    leftLayout->addStretch(1);
+    split->addWidget(left);
+
+    QGroupBox* const right = panelBox(QStringLiteral("运行摘要"), split);
+    QVBoxLayout* const rightLayout = new QVBoxLayout(right);
+    rightLayout->setContentsMargins(10, 2, 10, 10);
+    rightLayout->setSpacing(3);
+    QHBoxLayout* const summaryTools = new QHBoxLayout();
+    summaryTools->setContentsMargins(0, 0, 0, 0);
+    QPushButton* const clearSummaryButton = new QPushButton(QStringLiteral("清空窗口"), right);
+    clearSummaryButton->setObjectName(QStringLiteral("log_clear_button"));
+    clearSummaryButton->setFixedSize(70, 22);
+    summaryTools->addStretch(1);
+    summaryTools->addWidget(clearSummaryButton);
+    rightLayout->addLayout(summaryTools);
+
+    QPlainTextEdit* const runSummaryView = new QPlainTextEdit(right);
+    runSummaryView->setObjectName(QStringLiteral("run_summary_edit"));
+    runSummaryView->setReadOnly(true);
+    runSummaryView->setMinimumHeight(180);
+    runSummaryView->setPlainText(QStringLiteral("程序运行控制摘要将在这里显示。"));
+    rightLayout->addWidget(runSummaryView, 1);
+    connect(clearSummaryButton, &QPushButton::clicked, runSummaryView, &QPlainTextEdit::clear);
+
+    split->addWidget(right);
+    split->setStretchFactor(0, 3);
+    split->setStretchFactor(1, 4);
+    split->setSizes({kProgramPageLeftInitialWidth, kProgramPageRightInitialWidth});
+    layout->addWidget(split, 1);
+    return content;
+}
+
+QWidget* MainWindowShell::createProgramOperationPage(
+    const QString& title,
+    const NavigationPage page,
+    const bool includeRunControls)
+{
+    QWidget* const content = new QWidget(this);
+    content->setObjectName(includeRunControls ? QStringLiteral("page_program_run") : QStringLiteral("page_ram_program"));
+    QVBoxLayout* const layout = new QVBoxLayout(content);
+    layout->setSpacing(12);
+    layout->addWidget(pageTitle(title, content));
+
+    QSplitter* const split = new QSplitter(content);
+    split->setChildrenCollapsible(false);
+
+    QWidget* const left = new QWidget(split);
+    QVBoxLayout* const leftLayout = new QVBoxLayout(left);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(12);
+    leftLayout->addWidget(createImagePanel(page));
+
+    QGroupBox* const actionPanel = panelBox(QStringLiteral("烧录与回读"), left);
     QGridLayout* const actionLayout = new QGridLayout(actionPanel);
     actionLayout->setSpacing(8);
-    QPushButton* const programButton = createActionButton(UiAction::ProgramImage, NavigationPage::RamProgram, actionPanel, true);
-    QPushButton* const verifyButton = createActionButton(UiAction::VerifyReadback, NavigationPage::RamProgram, actionPanel, false);
-    QPushButton* const runButton = createActionButton(UiAction::RunProgram, NavigationPage::RamProgram, actionPanel, false);
-    QPushButton* const stopButton = createActionButton(UiAction::StopProgram, NavigationPage::RamProgram, actionPanel, false);
-    stopButton->setProperty("danger_button", true);
-    for (QPushButton* const button : {programButton, verifyButton, runButton, stopButton}) {
+    actionLayout->setColumnStretch(0, 1);
+    actionLayout->setColumnStretch(1, 1);
+    QPushButton* const programButton = createActionButton(UiAction::ProgramImage, page, actionPanel, true);
+    QPushButton* const verifyButton = createActionButton(UiAction::VerifyReadback, page, actionPanel, false);
+    for (QPushButton* const button : {programButton, verifyButton}) {
         button->setMinimumHeight(42);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
     actionLayout->addWidget(programButton, 0, 0);
     actionLayout->addWidget(verifyButton, 0, 1);
-    actionLayout->addWidget(runButton, 1, 0);
-    actionLayout->addWidget(stopButton, 1, 1);
     leftLayout->addWidget(actionPanel);
+    QWidget* const progressPanel = new QWidget(left);
+    QFormLayout* const progressLayout = new QFormLayout(progressPanel);
+    progressLayout->setContentsMargins(0, 0, 0, 0);
+    progressLayout->setSpacing(6);
+    QProgressBar* const writeProgress = new QProgressBar(progressPanel);
+    writeProgress->setObjectName(QStringLiteral("program_write_progress_bar"));
+    writeProgress->setRange(0, 100);
+    writeProgress->setValue(0);
+    QProgressBar* const readbackProgress = new QProgressBar(progressPanel);
+    readbackProgress->setObjectName(QStringLiteral("readback_verify_progress_bar"));
+    readbackProgress->setRange(0, 100);
+    readbackProgress->setValue(0);
+    progressLayout->addRow(QStringLiteral("烧写进度"), writeProgress);
+    progressLayout->addRow(QStringLiteral("回读进度"), readbackProgress);
+    leftLayout->addWidget(progressPanel);
+    leftLayout->addStretch(1);
     split->addWidget(left);
 
-    QGroupBox* const right = panelBox(QStringLiteral("摘要"), split);
+    QGroupBox* const right = panelBox(QStringLiteral("烧录与回读摘要"), split);
     QVBoxLayout* const rightLayout = new QVBoxLayout(right);
-    QHBoxLayout* const summaryTabs = new QHBoxLayout();
-    QPushButton* const verifySummary = createActionButton(UiAction::ShowVerifySummary, NavigationPage::RamProgram, right, false);
-    QPushButton* const runSummary = createActionButton(UiAction::ShowRunSummary, NavigationPage::RamProgram, right, false);
-    for (QPushButton* const button : {verifySummary, runSummary}) {
-        button->setCheckable(true);
-        button->setProperty("summaryTab", true);
-        summaryTabs->addWidget(button);
-    }
-    verifySummary->setChecked(true);
-    summaryTabs->addStretch(1);
-    rightLayout->addLayout(summaryTabs);
-    QLabel* const summaryState = mutedLabel(QStringLiteral("尚未执行回读校验。"), right);
-    summaryState->setObjectName(QStringLiteral("ram_summary_state_label"));
-    rightLayout->addWidget(summaryState);
-    QProgressBar* const progress = new QProgressBar(right);
-    progress->setObjectName(QStringLiteral("ram_progress_bar"));
-    progress->setRange(0, 100);
-    progress->setValue(0);
-    rightLayout->addWidget(progress);
+    rightLayout->setContentsMargins(10, 2, 10, 10);
+    rightLayout->setSpacing(3);
+    QPushButton* const clearSummaryButton = new QPushButton(QStringLiteral("清空窗口"), right);
+    clearSummaryButton->setObjectName(QStringLiteral("log_clear_button"));
+    clearSummaryButton->setFixedSize(70, 22);
+    QHBoxLayout* const summaryTools = new QHBoxLayout();
+    summaryTools->setContentsMargins(0, 0, 0, 0);
+    summaryTools->addStretch(1);
+    summaryTools->addWidget(clearSummaryButton);
+    rightLayout->addLayout(summaryTools);
     QPlainTextEdit* const readbackView = new QPlainTextEdit(right);
     readbackView->setObjectName(QStringLiteral("ram_summary_edit"));
     readbackView->setReadOnly(true);
-    readbackView->setMinimumHeight(120);
-    readbackView->setPlainText(QStringLiteral("回读原文和运行摘要将在这里占位显示。"));
+    readbackView->setMinimumHeight(180);
+    readbackView->setPlainText(QStringLiteral("烧录记录和回读校验摘要将在这里显示。"));
     rightLayout->addWidget(readbackView, 1);
+    connect(clearSummaryButton, &QPushButton::clicked, readbackView, &QPlainTextEdit::clear);
     split->addWidget(right);
-    split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 2);
+    split->setStretchFactor(0, 3);
+    split->setStretchFactor(1, 4);
+    split->setSizes({kProgramPageLeftInitialWidth, kProgramPageRightInitialWidth});
     layout->addWidget(split, 1);
     return content;
 }
@@ -1054,12 +1225,12 @@ QWidget* MainWindowShell::createSerialConfigPanel()
     QFormLayout* const layout = new QFormLayout(group);
     layout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-    QComboBox* const portCombo = new QComboBox(group);
+    QComboBox* const portCombo = new WorkbenchComboBox(group);
     portCombo->addItem(QStringLiteral("COM 占位"));
-    QComboBox* const baudCombo = new QComboBox(group);
+    QComboBox* const baudCombo = new WorkbenchComboBox(group);
     baudCombo->addItems({QStringLiteral("9600"), QStringLiteral("115200"), QStringLiteral("921600")});
     baudCombo->setCurrentText(QStringLiteral("115200"));
-    QComboBox* const displayModeCombo = new QComboBox(group);
+    QComboBox* const displayModeCombo = new WorkbenchComboBox(group);
     displayModeCombo->addItems({QStringLiteral("文本"), QStringLiteral("HEX")});
     QPushButton* const refreshButton = createActionButton(UiAction::RefreshSerialPorts, NavigationPage::Connection, group, false);
     QPushButton* const openButton = createActionButton(UiAction::ToggleSerialMonitor, NavigationPage::Connection, group, false);
@@ -1107,69 +1278,7 @@ QWidget* MainWindowShell::createSerialMonitorPanel()
     return panel;
 }
 
-QWidget* MainWindowShell::createConnectionPanel()
-{
-    QGroupBox* const group = panelBox(QStringLiteral("高级连接设置"), this);
-    group->setObjectName(QStringLiteral("connection"));
-    group->setCheckable(true);
-    group->setChecked(false);
-    QFormLayout* const layout = new QFormLayout(group);
-    QLineEdit* const profileName = new QLineEdit(group);
-    profileName->setObjectName(QStringLiteral("profile_name_edit"));
-    profileName->setText(QStringLiteral("ui-placeholder-profile"));
-    profileName->setReadOnly(true);
-    layout->addRow(QStringLiteral("目标配置(profile)"), profileName);
-    QLineEdit* const hostEdit = new QLineEdit(group);
-    hostEdit->setObjectName(QStringLiteral("target_host_edit"));
-    hostEdit->setText(QStringLiteral("127.0.0.1"));
-    hostEdit->setReadOnly(true);
-    layout->addRow(QStringLiteral("Tcl Host"), hostEdit);
-    QWidget* const portsRow = new QWidget(group);
-    QHBoxLayout* const portsLayout = new QHBoxLayout(portsRow);
-    portsLayout->setContentsMargins(0, 0, 0, 0);
-    QSpinBox* const tclPort = new QSpinBox(group);
-    tclPort->setObjectName(QStringLiteral("target_tcl_port_spin"));
-    tclPort->setRange(1, 65535);
-    tclPort->setValue(6666);
-    tclPort->setReadOnly(true);
-    tclPort->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    QSpinBox* const gdbPort = new QSpinBox(group);
-    gdbPort->setObjectName(QStringLiteral("target_gdb_port_spin"));
-    gdbPort->setRange(1, 65535);
-    gdbPort->setValue(3333);
-    gdbPort->setReadOnly(true);
-    gdbPort->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    portsLayout->addWidget(new QLabel(QStringLiteral("Tcl"), group));
-    portsLayout->addWidget(tclPort);
-    portsLayout->addWidget(new QLabel(QStringLiteral("GDB"), group));
-    portsLayout->addWidget(gdbPort);
-    layout->addRow(QStringLiteral("端口"), portsRow);
-    QSpinBox* const khz = new QSpinBox(group);
-    khz->setObjectName(QStringLiteral("target_jtag_khz_spin"));
-    khz->setRange(1, 50000);
-    khz->setValue(10000);
-    khz->setSuffix(QStringLiteral(" kHz"));
-    khz->setReadOnly(true);
-    khz->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    layout->addRow(QStringLiteral("JTAG 速率"), khz);
-    QLineEdit* const ramBaseEdit = new QLineEdit(QStringLiteral("0x80000000"), group);
-    ramBaseEdit->setObjectName(QStringLiteral("ram_base_address_edit"));
-    ramBaseEdit->setReadOnly(true);
-    layout->addRow(QStringLiteral("RAM Base"), ramBaseEdit);
-    QComboBox* const reset = new QComboBox(group);
-    reset->setObjectName(QStringLiteral("reset_strategy_combo"));
-    reset->addItems({QStringLiteral("halt"), QStringLiteral("reset halt"), QStringLiteral("reset init")});
-    reset->setEnabled(false);
-    layout->addRow(QStringLiteral("复位策略"), reset);
-    layout->addRow(QStringLiteral("资源来源"), mutedLabel(QStringLiteral("连接参数来自 exe 同级 resources/manifest.json 中的固化 profile。"), group));
-    connect(group, &QGroupBox::toggled, group, [group](const bool checked) {
-        setLayoutItemsVisible(group->layout(), checked);
-    });
-    setLayoutItemsVisible(group->layout(), group->isChecked());
-    return group;
-}
-
-QWidget* MainWindowShell::createImagePanel()
+QWidget* MainWindowShell::createImagePanel(const NavigationPage page)
 {
     QGroupBox* const group = panelBox(QStringLiteral("程序镜像"), this);
     group->setObjectName(QStringLiteral("image_load"));
@@ -1179,8 +1288,27 @@ QWidget* MainWindowShell::createImagePanel()
     layout->addRow(QStringLiteral("文件"),
                    createPathInputRow(group,
                                       programImageEdit,
-                                      createActionButton(UiAction::BrowseProgramImage, NavigationPage::RamProgram, group, false)));
-    layout->addRow(QStringLiteral("固化配置"), mutedLabel(QStringLiteral("镜像格式、写入地址和运行入口均来自固化 profile 或镜像内容。"), group));
+                                      createActionButton(UiAction::BrowseProgramImage, page, group, false)));
+    return group;
+}
+
+QWidget* MainWindowShell::createRunImagePanel()
+{
+    QGroupBox* const group = panelBox(QStringLiteral("程序镜像"), this);
+    group->setObjectName(QStringLiteral("run_image_info"));
+    QFormLayout* const layout = new QFormLayout(group);
+
+    QLineEdit* const imageNameEdit = new QLineEdit(group);
+    imageNameEdit->setObjectName(QStringLiteral("program_run_image_name_edit"));
+    imageNameEdit->setReadOnly(true);
+    imageNameEdit->setPlaceholderText(QStringLiteral("等待程序烧录确定镜像"));
+    QLineEdit* const imagePathEdit = new QLineEdit(group);
+    imagePathEdit->setObjectName(QStringLiteral("program_run_image_path_edit"));
+    imagePathEdit->setReadOnly(true);
+    imagePathEdit->setPlaceholderText(QStringLiteral("等待程序烧录确定镜像路径"));
+
+    layout->addRow(QStringLiteral("名称"), imageNameEdit);
+    layout->addRow(QStringLiteral("路径"), imagePathEdit);
     return group;
 }
 
@@ -1189,10 +1317,6 @@ QWidget* MainWindowShell::createControlPanel()
     QGroupBox* const group = panelBox(QStringLiteral("研发调试控制"), this);
     group->setObjectName(QStringLiteral("run_control"));
     QVBoxLayout* const layout = new QVBoxLayout(group);
-    QHBoxLayout* const profileRow = new QHBoxLayout();
-    profileRow->addWidget(createActionButton(UiAction::LoadProfile, NavigationPage::Connection, group, false));
-    profileRow->addWidget(createActionButton(UiAction::SaveProfile, NavigationPage::Connection, group, false));
-    layout->addLayout(profileRow);
     QHBoxLayout* const debugRow = new QHBoxLayout();
     debugRow->addWidget(createActionButton(UiAction::StartDebugService, NavigationPage::Connection, group, false));
     debugRow->addWidget(createActionButton(UiAction::StopDebugService, NavigationPage::Connection, group, false));

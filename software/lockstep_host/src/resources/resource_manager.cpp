@@ -145,6 +145,43 @@ QString addressText(const quint64 value)
     return QStringLiteral("0x%1").arg(value, 0, 16);
 }
 
+bool isPortableResourcePath(const QString& value)
+{
+    const QString normalized = QDir::fromNativeSeparators(value.trimmed());
+    if (normalized.isEmpty()) {
+        return false;
+    }
+    if (QDir::isAbsolutePath(normalized)) {
+        return false;
+    }
+    if (normalized == QStringLiteral("..") ||
+        normalized.startsWith(QStringLiteral("../")) ||
+        normalized.contains(QStringLiteral("/../"))) {
+        return false;
+    }
+    return true;
+}
+
+bool validateProfileResourcePath(
+    const QString& resourceRootPath,
+    const QString& key,
+    const QJsonObject& object,
+    QString* const errorMessage)
+{
+    const QString value = object.value(key).toString();
+    if (!isPortableResourcePath(value)) {
+        setError(errorMessage, QStringLiteral("profile 字段必须是资源包相对路径: %1").arg(key));
+        return false;
+    }
+
+    const QString path = QDir(resourceRootPath).filePath(value);
+    if (!QFileInfo::exists(path)) {
+        setError(errorMessage, QStringLiteral("profile 引用资源缺失: %1").arg(value));
+        return false;
+    }
+    return true;
+}
+
 bool findItem(const QList<ResourceItem>& items, const QString& id, ResourceItem* const item)
 {
     for (const ResourceItem& current : items) {
@@ -238,6 +275,11 @@ bool profileFromItem(
             setError(errorMessage, QStringLiteral("profile 缺少字段: %1").arg(key));
             return false;
         }
+    }
+    if (!validateProfileResourcePath(resourceRootPath, QStringLiteral("interfaceConfigPath"), object, errorMessage) ||
+        !validateProfileResourcePath(resourceRootPath, QStringLiteral("targetConfigPath"), object, errorMessage) ||
+        !validateProfileResourcePath(resourceRootPath, QStringLiteral("targetDebugToolPath"), object, errorMessage)) {
+        return false;
     }
 
     BoardProfile parsed;
@@ -353,6 +395,8 @@ QJsonObject toJson(const ResourceSnapshot& snapshot)
     object.insert(QStringLiteral("profile_sha256"), snapshot.profileSha256);
     object.insert(QStringLiteral("report_template_id"), snapshot.reportTemplateId);
     object.insert(QStringLiteral("report_template_sha256"), snapshot.reportTemplateSha256);
+    object.insert(QStringLiteral("debug_adapter_id"), snapshot.debugAdapterId);
+    object.insert(QStringLiteral("debug_adapter_status"), snapshot.debugAdapterStatus);
     object.insert(QStringLiteral("protocol_rule_id"), snapshot.protocolRuleId);
     object.insert(QStringLiteral("protocol_rule_status"), snapshot.protocolRuleStatus);
     return object;
@@ -434,6 +478,12 @@ ResourceSnapshot ResourceManager::getModeResourceSnapshot(const QString& mode) c
     ResourceItem templateItem;
     if (findItem(reportTemplateItems_, snapshot.reportTemplateId, &templateItem)) {
         snapshot.reportTemplateSha256 = templateItem.sha256;
+    }
+
+    if (!debugAdapterItems_.isEmpty()) {
+        const ResourceItem item = debugAdapterItems_.first();
+        snapshot.debugAdapterId = item.id;
+        snapshot.debugAdapterStatus = toString(item.status);
     }
 
     if (!protocolRuleItems_.isEmpty()) {

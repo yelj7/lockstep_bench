@@ -209,6 +209,9 @@ QString UiTheme::workbenchStyleSheet()
             selection-background-color: #1677ff;
             selection-color: #ffffff;
         }
+        QComboBox {
+            padding: 6px 30px 6px 8px;
+        }
         QLineEdit:focus,
         QComboBox:focus,
         QSpinBox:focus,
@@ -257,7 +260,22 @@ QString UiTheme::workbenchStyleSheet()
             font-family: "Consolas", "JetBrains Mono", monospace;
             font-size: 12px;
         }
-        QComboBox::drop-down,
+        QComboBox::drop-down {
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            background-color: #eef2f6;
+            border: 1px solid #cfd6df;
+            border-top-right-radius: 5px;
+            border-bottom-right-radius: 5px;
+            width: 24px;
+        }
+        QComboBox:focus::drop-down {
+            border-color: #1677ff;
+        }
+        QComboBox:disabled::drop-down {
+            background-color: #e8ecf2;
+            border-color: #d7dde5;
+        }
         QSpinBox::up-button,
         QSpinBox::down-button {
             background-color: #eef2f6;

@@ -60,6 +60,38 @@ enum class RunState : unsigned char {
     Failed = 4U
 };
 
+enum class ProgramOperation : unsigned char {
+    Write = 0U,
+    Readback = 1U,
+    Run = 2U,
+    Halt = 3U
+};
+
+enum class OperationStage : unsigned char {
+    NotStarted = 0U,
+    CheckDebugAccess = 1U,
+    DetectImage = 2U,
+    ParseWritePlan = 3U,
+    WriteSegments = 4U,
+    ConfirmWriteResult = 5U,
+    PersistWriteRecord = 6U,
+    CheckReadbackAccess = 7U,
+    PrepareReadRanges = 8U,
+    ReadSegments = 9U,
+    CompareData = 10U,
+    PersistVerifyRecord = 11U,
+    CheckRunGate = 12U,
+    DispatchRun = 13U,
+    CaptureRunStatus = 14U,
+    PersistRunRecord = 15U,
+    CheckHaltAccess = 16U,
+    DispatchHalt = 17U,
+    CaptureHaltStatus = 18U,
+    PersistHaltRecord = 19U,
+    Completed = 20U,
+    Failed = 21U
+};
+
 struct DebugProfile final {
     QString profileId;
     QString profileName;
@@ -128,12 +160,21 @@ struct ReadbackVerifyRecord final {
 };
 
 struct RunControlRecord final {
+    ProgramOperation operation = ProgramOperation::Run;
     RunState state = RunState::NotAllowed;
     QString taskId;
     quint64 entryAddress = 0U;
     QString rawReturn;
     QString snapshot;
     QString errorMessage;
+};
+
+struct OperationProgress final {
+    ProgramOperation operation = ProgramOperation::Write;
+    OperationStage stage = OperationStage::NotStarted;
+    int percent = 0;
+    QString message;
+    bool canCancel = false;
 };
 
 struct ProgramGate final {
@@ -148,6 +189,9 @@ struct ProgramGate final {
 QString toString(ImageType type);
 QString toString(VerifyState state);
 QString toString(RunState state);
+QString toString(ProgramOperation operation);
+QString toString(OperationStage stage);
+OperationProgress makeOperationProgress(ProgramOperation operation, OperationStage stage);
 
 class DebugAccess {
 public:
@@ -206,6 +250,9 @@ public:
         const QString& taskId,
         const ProgramImageInfo& image,
         const ReadbackVerifyRecord& verifyRecord) const;
+    RunControlRecord haltTarget(
+        DebugAccess& access,
+        const QString& taskId) const;
     ProgramGate getProgramGate(
         const ConnectionRecord& connection,
         const PrecheckRecord& precheck,

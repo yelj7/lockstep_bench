@@ -44,12 +44,6 @@ QString toDisplayText(const UiAction action)
     case UiAction::CancelTaskEdit:
         text = QStringLiteral("放弃修改");
         break;
-    case UiAction::LoadProfile:
-        text = QStringLiteral("加载目标配置(profile)");
-        break;
-    case UiAction::SaveProfile:
-        text = QStringLiteral("保存目标配置(profile)");
-        break;
     case UiAction::StartDebugService:
         text = QStringLiteral("启动片上调试器");
         break;

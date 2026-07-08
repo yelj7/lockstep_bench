@@ -320,6 +320,209 @@ bool parseIntelHex(
     return true;
 }
 
+quint16 readU16(const QByteArray& raw, const int offset, const bool littleEndian)
+{
+    const quint8 b0 = static_cast<quint8>(raw.at(offset));
+    const quint8 b1 = static_cast<quint8>(raw.at(offset + 1));
+    if (littleEndian) {
+        return static_cast<quint16>(static_cast<quint16>(b1) << 8U) | static_cast<quint16>(b0);
+    }
+    return static_cast<quint16>(static_cast<quint16>(b0) << 8U) | static_cast<quint16>(b1);
+}
+
+quint32 readU32(const QByteArray& raw, const int offset, const bool littleEndian)
+{
+    quint32 value = 0U;
+    if (littleEndian) {
+        for (int i = 3; i >= 0; --i) {
+            value = (value << 8U) | static_cast<quint32>(static_cast<quint8>(raw.at(offset + i)));
+        }
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            value = (value << 8U) | static_cast<quint32>(static_cast<quint8>(raw.at(offset + i)));
+        }
+    }
+    return value;
+}
+
+quint64 readU64(const QByteArray& raw, const int offset, const bool littleEndian)
+{
+    quint64 value = 0U;
+    if (littleEndian) {
+        for (int i = 7; i >= 0; --i) {
+            value = (value << 8U) | static_cast<quint64>(static_cast<quint8>(raw.at(offset + i)));
+        }
+    } else {
+        for (int i = 0; i < 8; ++i) {
+            value = (value << 8U) | static_cast<quint64>(static_cast<quint8>(raw.at(offset + i)));
+        }
+    }
+    return value;
+}
+
+bool sliceInRange(const QByteArray& raw, const quint64 offset, const quint64 size)
+{
+    const quint64 rawSize = static_cast<quint64>(raw.size());
+    if (offset > rawSize) {
+        return false;
+    }
+    return size <= (rawSize - offset);
+}
+
+bool parseElf32(
+    const QByteArray& raw,
+    const bool littleEndian,
+    QList<ImageSegment>* const segments,
+    quint64* const entryAddress)
+{
+    if (raw.size() < 52 || segments == nullptr || entryAddress == nullptr) {
+        return false;
+    }
+
+    *entryAddress = static_cast<quint64>(readU32(raw, 24, littleEndian));
+    const quint64 programHeaderOffset = static_cast<quint64>(readU32(raw, 28, littleEndian));
+    const quint16 programHeaderEntrySize = readU16(raw, 42, littleEndian);
+    const quint16 programHeaderCount = readU16(raw, 44, littleEndian);
+    if (programHeaderEntrySize < 32U || programHeaderCount == 0U) {
+        return false;
+    }
+
+    QList<ImageSegment> parsed;
+    for (quint16 i = 0U; i < programHeaderCount; ++i) {
+        const quint64 entryOffset = programHeaderOffset + (static_cast<quint64>(i) * programHeaderEntrySize);
+        if (!sliceInRange(raw, entryOffset, programHeaderEntrySize)) {
+            return false;
+        }
+        const int base = static_cast<int>(entryOffset);
+        const quint32 type = readU32(raw, base, littleEndian);
+        constexpr quint32 kLoadableSegment = 1U;
+        if (type != kLoadableSegment) {
+            continue;
+        }
+
+        const quint64 fileOffset = static_cast<quint64>(readU32(raw, base + 4, littleEndian));
+        const quint64 virtualAddress = static_cast<quint64>(readU32(raw, base + 8, littleEndian));
+        const quint64 physicalAddress = static_cast<quint64>(readU32(raw, base + 12, littleEndian));
+        const quint64 fileSize = static_cast<quint64>(readU32(raw, base + 16, littleEndian));
+        if (fileSize == 0U) {
+            continue;
+        }
+        if (!sliceInRange(raw, fileOffset, fileSize)) {
+            return false;
+        }
+
+        ImageSegment segment;
+        segment.address = (physicalAddress != 0U) ? physicalAddress : virtualAddress;
+        segment.data = raw.mid(static_cast<int>(fileOffset), static_cast<int>(fileSize));
+        parsed.append(segment);
+    }
+
+    if (parsed.isEmpty()) {
+        return false;
+    }
+
+    *segments = parsed;
+    return true;
+}
+
+bool parseElf64(
+    const QByteArray& raw,
+    const bool littleEndian,
+    QList<ImageSegment>* const segments,
+    quint64* const entryAddress)
+{
+    if (raw.size() < 64 || segments == nullptr || entryAddress == nullptr) {
+        return false;
+    }
+
+    *entryAddress = readU64(raw, 24, littleEndian);
+    const quint64 programHeaderOffset = readU64(raw, 32, littleEndian);
+    const quint16 programHeaderEntrySize = readU16(raw, 54, littleEndian);
+    const quint16 programHeaderCount = readU16(raw, 56, littleEndian);
+    if (programHeaderEntrySize < 56U || programHeaderCount == 0U) {
+        return false;
+    }
+
+    QList<ImageSegment> parsed;
+    for (quint16 i = 0U; i < programHeaderCount; ++i) {
+        const quint64 entryOffset = programHeaderOffset + (static_cast<quint64>(i) * programHeaderEntrySize);
+        if (!sliceInRange(raw, entryOffset, programHeaderEntrySize)) {
+            return false;
+        }
+        const int base = static_cast<int>(entryOffset);
+        const quint32 type = readU32(raw, base, littleEndian);
+        constexpr quint32 kLoadableSegment = 1U;
+        if (type != kLoadableSegment) {
+            continue;
+        }
+
+        const quint64 fileOffset = readU64(raw, base + 8, littleEndian);
+        const quint64 virtualAddress = readU64(raw, base + 16, littleEndian);
+        const quint64 physicalAddress = readU64(raw, base + 24, littleEndian);
+        const quint64 fileSize = readU64(raw, base + 32, littleEndian);
+        if (fileSize == 0U) {
+            continue;
+        }
+        if (!sliceInRange(raw, fileOffset, fileSize)) {
+            return false;
+        }
+
+        ImageSegment segment;
+        segment.address = (physicalAddress != 0U) ? physicalAddress : virtualAddress;
+        segment.data = raw.mid(static_cast<int>(fileOffset), static_cast<int>(fileSize));
+        parsed.append(segment);
+    }
+
+    if (parsed.isEmpty()) {
+        return false;
+    }
+
+    *segments = parsed;
+    return true;
+}
+
+bool parseElf(
+    const QByteArray& raw,
+    QList<ImageSegment>* const segments,
+    quint64* const entryAddress,
+    QString* const errorMessage)
+{
+    if (segments == nullptr || entryAddress == nullptr) {
+        return false;
+    }
+    if (raw.size() < 16 ||
+        raw.at(0) != '\x7f' ||
+        raw.at(1) != 'E' ||
+        raw.at(2) != 'L' ||
+        raw.at(3) != 'F') {
+        return false;
+    }
+
+    const quint8 elfClass = static_cast<quint8>(raw.at(4));
+    const quint8 dataEncoding = static_cast<quint8>(raw.at(5));
+    const bool littleEndian = (dataEncoding == 1U);
+    if (dataEncoding != 1U && dataEncoding != 2U) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("ELF 字节序不可识别");
+        }
+        return false;
+    }
+
+    bool parsed = false;
+    if (elfClass == 1U) {
+        parsed = parseElf32(raw, littleEndian, segments, entryAddress);
+    } else if (elfClass == 2U) {
+        parsed = parseElf64(raw, littleEndian, segments, entryAddress);
+    } else if (errorMessage != nullptr) {
+        *errorMessage = QStringLiteral("ELF 类型不可识别");
+    }
+
+    if (!parsed && errorMessage != nullptr && errorMessage->isEmpty()) {
+        *errorMessage = QStringLiteral("ELF 可加载段解析失败");
+    }
+    return parsed;
+}
+
 bool hasSrecSuffix(const QString& suffix)
 {
     const QString normalized = suffix.toLower();
@@ -345,6 +548,128 @@ quint64 totalLength(const QList<ImageSegment>& segments)
         length += static_cast<quint64>(segment.data.size());
     }
     return length;
+}
+
+int stagePercent(const OperationStage stage)
+{
+    int percent = 0;
+    switch (stage) {
+    case OperationStage::CheckDebugAccess:
+    case OperationStage::CheckReadbackAccess:
+    case OperationStage::CheckRunGate:
+    case OperationStage::CheckHaltAccess:
+        percent = 15;
+        break;
+    case OperationStage::DetectImage:
+    case OperationStage::PrepareReadRanges:
+        percent = 30;
+        break;
+    case OperationStage::ParseWritePlan:
+        percent = 45;
+        break;
+    case OperationStage::WriteSegments:
+    case OperationStage::ReadSegments:
+    case OperationStage::DispatchRun:
+    case OperationStage::DispatchHalt:
+        percent = 65;
+        break;
+    case OperationStage::ConfirmWriteResult:
+    case OperationStage::CompareData:
+    case OperationStage::CaptureRunStatus:
+    case OperationStage::CaptureHaltStatus:
+        percent = 85;
+        break;
+    case OperationStage::PersistWriteRecord:
+    case OperationStage::PersistVerifyRecord:
+    case OperationStage::PersistRunRecord:
+    case OperationStage::PersistHaltRecord:
+    case OperationStage::Completed:
+        percent = 100;
+        break;
+    case OperationStage::Failed:
+        percent = 100;
+        break;
+    case OperationStage::NotStarted:
+    default:
+        percent = 0;
+        break;
+    }
+    return percent;
+}
+
+QString stageMessage(const OperationStage stage)
+{
+    QString message;
+    switch (stage) {
+    case OperationStage::CheckDebugAccess:
+        message = QStringLiteral("确认片上调试器和写入通道可用");
+        break;
+    case OperationStage::DetectImage:
+        message = QStringLiteral("识别程序镜像格式");
+        break;
+    case OperationStage::ParseWritePlan:
+        message = QStringLiteral("解析写入地址和段信息");
+        break;
+    case OperationStage::WriteSegments:
+        message = QStringLiteral("发送写入命令并等待返回");
+        break;
+    case OperationStage::ConfirmWriteResult:
+        message = QStringLiteral("确认烧写结果");
+        break;
+    case OperationStage::PersistWriteRecord:
+        message = QStringLiteral("保存烧写记录");
+        break;
+    case OperationStage::CheckReadbackAccess:
+        message = QStringLiteral("确认回读通道可用");
+        break;
+    case OperationStage::PrepareReadRanges:
+        message = QStringLiteral("准备回读地址范围");
+        break;
+    case OperationStage::ReadSegments:
+        message = QStringLiteral("发送回读命令并等待返回");
+        break;
+    case OperationStage::CompareData:
+        message = QStringLiteral("比较回读数据");
+        break;
+    case OperationStage::PersistVerifyRecord:
+        message = QStringLiteral("保存回读校验记录");
+        break;
+    case OperationStage::CheckRunGate:
+        message = QStringLiteral("确认运行前置条件");
+        break;
+    case OperationStage::DispatchRun:
+        message = QStringLiteral("发送程序运行命令");
+        break;
+    case OperationStage::CaptureRunStatus:
+        message = QStringLiteral("获取运行返回或状态快照");
+        break;
+    case OperationStage::PersistRunRecord:
+        message = QStringLiteral("保存运行控制记录");
+        break;
+    case OperationStage::CheckHaltAccess:
+        message = QStringLiteral("确认中止控制通道可用");
+        break;
+    case OperationStage::DispatchHalt:
+        message = QStringLiteral("发送程序中止命令");
+        break;
+    case OperationStage::CaptureHaltStatus:
+        message = QStringLiteral("获取中止返回或状态快照");
+        break;
+    case OperationStage::PersistHaltRecord:
+        message = QStringLiteral("保存中止控制记录");
+        break;
+    case OperationStage::Completed:
+        message = QStringLiteral("操作完成");
+        break;
+    case OperationStage::Failed:
+        message = QStringLiteral("操作失败");
+        break;
+    case OperationStage::NotStarted:
+    default:
+        message = QStringLiteral("尚未开始");
+        break;
+    }
+    return message;
 }
 
 }  // namespace
@@ -416,6 +741,117 @@ QString toString(const RunState state)
         break;
     }
     return text;
+}
+
+QString toString(const ProgramOperation operation)
+{
+    QString text;
+    switch (operation) {
+    case ProgramOperation::Readback:
+        text = QStringLiteral("readback");
+        break;
+    case ProgramOperation::Run:
+        text = QStringLiteral("run");
+        break;
+    case ProgramOperation::Halt:
+        text = QStringLiteral("halt");
+        break;
+    case ProgramOperation::Write:
+    default:
+        text = QStringLiteral("write");
+        break;
+    }
+    return text;
+}
+
+QString toString(const OperationStage stage)
+{
+    QString text;
+    switch (stage) {
+    case OperationStage::CheckDebugAccess:
+        text = QStringLiteral("check_debug_access");
+        break;
+    case OperationStage::DetectImage:
+        text = QStringLiteral("detect_image");
+        break;
+    case OperationStage::ParseWritePlan:
+        text = QStringLiteral("parse_write_plan");
+        break;
+    case OperationStage::WriteSegments:
+        text = QStringLiteral("write_segments");
+        break;
+    case OperationStage::ConfirmWriteResult:
+        text = QStringLiteral("confirm_write_result");
+        break;
+    case OperationStage::PersistWriteRecord:
+        text = QStringLiteral("persist_write_record");
+        break;
+    case OperationStage::CheckReadbackAccess:
+        text = QStringLiteral("check_readback_access");
+        break;
+    case OperationStage::PrepareReadRanges:
+        text = QStringLiteral("prepare_read_ranges");
+        break;
+    case OperationStage::ReadSegments:
+        text = QStringLiteral("read_segments");
+        break;
+    case OperationStage::CompareData:
+        text = QStringLiteral("compare_data");
+        break;
+    case OperationStage::PersistVerifyRecord:
+        text = QStringLiteral("persist_verify_record");
+        break;
+    case OperationStage::CheckRunGate:
+        text = QStringLiteral("check_run_gate");
+        break;
+    case OperationStage::DispatchRun:
+        text = QStringLiteral("dispatch_run");
+        break;
+    case OperationStage::CaptureRunStatus:
+        text = QStringLiteral("capture_run_status");
+        break;
+    case OperationStage::PersistRunRecord:
+        text = QStringLiteral("persist_run_record");
+        break;
+    case OperationStage::CheckHaltAccess:
+        text = QStringLiteral("check_halt_access");
+        break;
+    case OperationStage::DispatchHalt:
+        text = QStringLiteral("dispatch_halt");
+        break;
+    case OperationStage::CaptureHaltStatus:
+        text = QStringLiteral("capture_halt_status");
+        break;
+    case OperationStage::PersistHaltRecord:
+        text = QStringLiteral("persist_halt_record");
+        break;
+    case OperationStage::Completed:
+        text = QStringLiteral("completed");
+        break;
+    case OperationStage::Failed:
+        text = QStringLiteral("failed");
+        break;
+    case OperationStage::NotStarted:
+    default:
+        text = QStringLiteral("not_started");
+        break;
+    }
+    return text;
+}
+
+OperationProgress makeOperationProgress(
+    const ProgramOperation operation,
+    const OperationStage stage)
+{
+    OperationProgress progress;
+    progress.operation = operation;
+    progress.stage = stage;
+    progress.percent = stagePercent(stage);
+    progress.message = stageMessage(stage);
+    progress.canCancel = (operation == ProgramOperation::Run || operation == ProgramOperation::Halt) &&
+        (stage != OperationStage::Completed) &&
+        (stage != OperationStage::Failed);
+    return progress;
 }
 
 InMemoryDebugAccess::InMemoryDebugAccess(const quint64 memorySizeBytes)
@@ -596,10 +1032,14 @@ ProgramImageInfo ProgramController::detectImage(
         raw.at(2) == 'L' &&
         raw.at(3) == 'F') {
         info.type = ImageType::Elf;
-        ImageSegment segment;
-        segment.address = profile.ramBaseAddress;
-        segment.data = raw;
-        info.segments.append(segment);
+        QString elfError;
+        if (!parseElf(raw, &info.segments, &info.entryAddress, &elfError)) {
+            info.type = ImageType::Unknown;
+            info.errorMessage = elfError.isEmpty()
+                ? QStringLiteral("ELF 可加载段解析失败")
+                : elfError;
+            return info;
+        }
     } else if (parseSrec(raw, &info.segments) || hasSrecSuffix(suffix)) {
         if (info.segments.isEmpty() && !parseSrec(raw, &info.segments)) {
             info.errorMessage = QStringLiteral("SREC 内容不可识别");
@@ -715,6 +1155,7 @@ RunControlRecord ProgramController::runTarget(
     const ReadbackVerifyRecord& verifyRecord) const
 {
     RunControlRecord record;
+    record.operation = ProgramOperation::Run;
     record.taskId = taskId;
     record.entryAddress = image.entryAddress;
     if (verifyRecord.state != VerifyState::Passed) {
@@ -728,6 +1169,22 @@ RunControlRecord ProgramController::runTarget(
     record.snapshot = result.success ? QStringLiteral("target_running") : QString();
     record.errorMessage = result.errorMessage;
     record.state = result.success ? RunState::Running : RunState::Failed;
+    return record;
+}
+
+RunControlRecord ProgramController::haltTarget(
+    DebugAccess& access,
+    const QString& taskId) const
+{
+    RunControlRecord record;
+    record.operation = ProgramOperation::Halt;
+    record.taskId = taskId;
+
+    const DebugResult result = access.halt();
+    record.rawReturn = result.rawReturn;
+    record.snapshot = result.success ? QStringLiteral("target_halted") : QString();
+    record.errorMessage = result.errorMessage;
+    record.state = result.success ? RunState::Halted : RunState::Failed;
     return record;
 }
 

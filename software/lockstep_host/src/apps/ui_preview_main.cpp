@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr int kSplashDurationMs = 3000;
+constexpr int kSplashDurationMs = 1000;
 
 lockstep::ui::UiMode parseMode(const QStringList& arguments)
 {

@@ -86,6 +86,8 @@ struct ResourceSnapshot final {
     QString profileSha256;
     QString reportTemplateId;
     QString reportTemplateSha256;
+    QString debugAdapterId;
+    QString debugAdapterStatus;
     QString protocolRuleId;
     QString protocolRuleStatus;
 };

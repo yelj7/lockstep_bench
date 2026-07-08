@@ -20,7 +20,38 @@
       "status": "enabled"
     }
   ],
-  "debug_adapters": [],
+  "debug_adapters": [
+    {
+      "id": "debug.openocd.placeholder",
+      "name": "OpenOCD Placeholder Adapter",
+      "version": "0.0.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "debug_adapters/openocd/openocd",
+      "sha256": "",
+      "status": "placeholder"
+    },
+    {
+      "id": "debug.openocd.cmsis_dap_cfg",
+      "name": "CMSIS-DAP Interface Config Placeholder",
+      "version": "0.0.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "debug_adapters/openocd/cmsis-dap-explicit.cfg",
+      "sha256": "",
+      "status": "placeholder"
+    },
+    {
+      "id": "debug.openocd.riscv_target_cfg",
+      "name": "RISC-V Target Config Placeholder",
+      "version": "0.0.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "debug_adapters/openocd/target-riscv-direct.cfg",
+      "sha256": "",
+      "status": "placeholder"
+    }
+  ],
   "report_templates": [
     {
       "id": "report_template_default",

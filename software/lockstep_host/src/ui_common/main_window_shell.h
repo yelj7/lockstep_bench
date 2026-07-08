@@ -70,7 +70,8 @@ public:
     [[nodiscard]] QString taskNameText() const;
     [[nodiscard]] QString taskDescriptionText() const;
     void setWorkflowStatusText(const QString& text);
-    void setRamSummary(const QString& text, int progressPercent);
+    void setRamSummary(const QString& text, int writeProgressPercent, int readbackProgressPercent);
+    void setRunSummary(const QString& text, int runProgressPercent, int stopProgressPercent);
     void setConnectionSummary(const QString& profileName, const QString& statusText);
     void setConnectionProfileDetails(
         const QString& profileName,
@@ -101,6 +102,9 @@ private:
     QWidget* createConnectionPage();
     QWidget* createModePage();
     QWidget* createRamProgramPage();
+    QWidget* createProgramRunPage();
+    QWidget* createProgramOperationPage(const QString& title, NavigationPage page, bool includeRunControls);
+    QWidget* createRunImagePanel();
     QWidget* createEmptyPage(const QString& title);
     QWidget* createWaveformPage();
     QWidget* createProtocolPage();
@@ -109,8 +113,7 @@ private:
     QWidget* createLogPanel();
     QWidget* createSerialConfigPanel();
     QWidget* createSerialMonitorPanel();
-    QWidget* createConnectionPanel();
-    QWidget* createImagePanel();
+    QWidget* createImagePanel(NavigationPage page);
     QWidget* createControlPanel();
     QWidget* createTodoCard(const QString& title, const QString& body, QWidget* parent);
     QWidget* createMetricCard(const QString& title, const QString& value, const QString& detail, QWidget* parent);

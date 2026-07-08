@@ -68,8 +68,10 @@ private:
     void updateTaskDetail();
     void updateTopStatus();
     void setRamSummaryFromCurrentState(const QString& title);
+    void setRunSummaryFromCurrentState(const QString& title, int runProgressPercent, int stopProgressPercent);
     void resetExecutionState();
     bool saveProgramInputForCurrentTask(workspace::TaskInputSet* inputs);
+    void restoreExecutionEvidenceForCurrentTask();
     void logInfo(const QString& source, const QString& message) const;
     void logWarning(const QString& source, const QString& message) const;
     void logError(const QString& source, const QString& message);
@@ -110,6 +112,7 @@ private:
     bool hasWriteRecord_;
     bool hasVerifyRecord_;
     bool hasRunRecord_;
+    bool hasHaltRecord_;
 
     lockstep::workspace::TaskContext currentTask_;
     lockstep::workflow::FlowState flowState_;
@@ -120,6 +123,7 @@ private:
     lockstep::target_control::WriteRecord writeRecord_;
     lockstep::target_control::ReadbackVerifyRecord verifyRecord_;
     lockstep::target_control::RunControlRecord runRecord_;
+    lockstep::target_control::RunControlRecord haltRecord_;
 };
 
 }  // namespace lockstep::apps

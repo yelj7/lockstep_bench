@@ -20,6 +20,11 @@ target_link_libraries(lockstep_ui_preview
 
 target_compile_features(lockstep_ui_preview PRIVATE cxx_std_17)
 
+set_target_properties(lockstep_ui_preview
+    PROPERTIES
+        WIN32_EXECUTABLE TRUE
+)
+
 if(MSVC)
     target_compile_options(lockstep_ui_preview PRIVATE /W4 /permissive-)
 else()
