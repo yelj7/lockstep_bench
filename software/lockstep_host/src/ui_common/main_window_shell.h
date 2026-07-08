@@ -47,6 +47,15 @@ struct ProjectTaskViewItem final {
     QString basicInfo;
 };
 
+struct TraceGroupViewItem final {
+    QString id;
+    QString displayName;
+    QString status;
+    QString reason;
+    QStringList fields;
+    QStringList transactions;
+};
+
 class MainWindowShell final : public QMainWindow {
     Q_OBJECT
 
@@ -72,6 +81,18 @@ public:
     void setWorkflowStatusText(const QString& text);
     void setRamSummary(const QString& text, int writeProgressPercent, int readbackProgressPercent);
     void setRunSummary(const QString& text, int runProgressPercent, int stopProgressPercent);
+    void setWaveformTraceView(
+        const QString& statusText,
+        const QString& pathText,
+        const QString& timeRangeText,
+        const QVector<TraceGroupViewItem>& groups,
+        const QStringList& keyBehaviors,
+        const QStringList& diagnostics);
+    void setProtocolAnalysisView(
+        const QString& statusText,
+        const QString& analysisPath,
+        const QStringList& keyBehaviors,
+        const QStringList& diagnostics);
     void setConnectionSummary(const QString& profileName, const QString& statusText);
     void setConnectionProfileDetails(
         const QString& profileName,

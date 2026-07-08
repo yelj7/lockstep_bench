@@ -399,6 +399,8 @@ QJsonObject toJson(const ResourceSnapshot& snapshot)
     object.insert(QStringLiteral("debug_adapter_status"), snapshot.debugAdapterStatus);
     object.insert(QStringLiteral("protocol_rule_id"), snapshot.protocolRuleId);
     object.insert(QStringLiteral("protocol_rule_status"), snapshot.protocolRuleStatus);
+    object.insert(QStringLiteral("trace_profile_id"), snapshot.lockstepTraceProfileId);
+    object.insert(QStringLiteral("trace_profile_status"), snapshot.lockstepTraceProfileStatus);
     return object;
 }
 
@@ -434,22 +436,30 @@ ResourceValidationResult ResourceManager::validateResourcePack(const QString& in
         defaultsObject.value(QStringLiteral("research_report_template_id")).toString();
     defaults_.testReportTemplateId =
         defaultsObject.value(QStringLiteral("test_report_template_id")).toString();
+    defaults_.lockstepTraceProfileId =
+        defaultsObject.value(QStringLiteral("lockstep_trace_profile_id")).toString();
 
     boardProfileItems_ = itemListFromJson(manifest.value(QStringLiteral("board_profiles")).toArray());
     debugAdapterItems_ = itemListFromJson(manifest.value(QStringLiteral("debug_adapters")).toArray());
     reportTemplateItems_ = itemListFromJson(manifest.value(QStringLiteral("report_templates")).toArray());
     protocolRuleItems_ = itemListFromJson(manifest.value(QStringLiteral("protocol_rules")).toArray());
+    lockstepTraceProfileItems_ =
+        itemListFromJson(manifest.value(QStringLiteral("lockstep_trace_profiles")).toArray());
 
     validateItemFiles(resourceRootPath_, boardProfileItems_, false, &result);
     validateItemFiles(resourceRootPath_, debugAdapterItems_, false, &result);
     validateItemFiles(resourceRootPath_, reportTemplateItems_, false, &result);
     validateItemFiles(resourceRootPath_, protocolRuleItems_, true, &result);
+    validateItemFiles(resourceRootPath_, lockstepTraceProfileItems_, false, &result);
 
     if (resourcePackId_.isEmpty() || resourcePackVersion_.isEmpty()) {
         result.errors.append(QStringLiteral("manifest 缺少资源包标识或版本"));
     }
     if (defaults_.researchProfileId.isEmpty() || defaults_.testProfileId.isEmpty()) {
         result.errors.append(QStringLiteral("manifest 缺少默认 profile"));
+    }
+    if (defaults_.lockstepTraceProfileId.isEmpty()) {
+        result.errors.append(QStringLiteral("manifest 缺少默认 lockstep trace profile"));
     }
 
     result.success = result.errors.isEmpty();
@@ -490,6 +500,12 @@ ResourceSnapshot ResourceManager::getModeResourceSnapshot(const QString& mode) c
         const ResourceItem item = protocolRuleItems_.first();
         snapshot.protocolRuleId = item.id;
         snapshot.protocolRuleStatus = toString(item.status);
+    }
+
+    snapshot.lockstepTraceProfileId = defaults_.lockstepTraceProfileId;
+    ResourceItem traceItem;
+    if (findItem(lockstepTraceProfileItems_, snapshot.lockstepTraceProfileId, &traceItem)) {
+        snapshot.lockstepTraceProfileStatus = toString(traceItem.status);
     }
 
     return snapshot;
@@ -550,6 +566,18 @@ bool ResourceManager::resolveProtocolRule(
 {
     if (!findItem(protocolRuleItems_, ruleId, item)) {
         setError(errorMessage, QStringLiteral("协议规则未注册: %1").arg(ruleId));
+        return false;
+    }
+    return true;
+}
+
+bool ResourceManager::resolveLockstepTraceProfile(
+    const QString& profileId,
+    ResourceItem* const item,
+    QString* const errorMessage) const
+{
+    if (!findItem(lockstepTraceProfileItems_, profileId, item)) {
+        setError(errorMessage, QStringLiteral("lockstep trace profile 未注册: %1").arg(profileId));
         return false;
     }
     return true;

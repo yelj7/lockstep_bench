@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "decoder_version": "1.0.0.0",
+  "implemented": [
+    {
+      "group": "mismatch",
+      "behaviors": ["mismatch_event"],
+      "multi_bit_event_policy": "merge_until_all_bits_clear"
+    }
+  ],
+  "pending": [
+    "ahb",
+    "uart",
+    "spi",
+    "can",
+    "i2c",
+    "eth",
+    "usb",
+    "jtag"
+  ]
+}

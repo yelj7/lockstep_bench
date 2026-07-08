@@ -124,6 +124,12 @@ public:
         ErrorRecord* record,
         QString* errorMessage = nullptr) const;
 
+    bool appendTaskErrorsBulk(
+        const QString& taskRootPath,
+        const QList<ErrorEvent>& events,
+        QList<ErrorRecord>* records,
+        QString* errorMessage = nullptr) const;
+
     bool appendSystemError(
         const QString& systemLogRootPath,
         const ErrorEvent& event,

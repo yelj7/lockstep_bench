@@ -7,10 +7,12 @@ qt_add_executable(lockstep_ui_preview
 target_link_libraries(lockstep_ui_preview
     PRIVATE
         lockstep_error_handling
+        lockstep_protocol_analyzer
         lockstep_reporting
         lockstep_resources
         lockstep_target_control
         lockstep_ui_common
+        lockstep_waveform_viewer
         lockstep_workflow
         lockstep_workspace
         Qt${QT_VERSION_MAJOR}::Core

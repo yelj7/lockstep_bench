@@ -470,6 +470,54 @@ bool ErrorRegistry::appendTaskError(
     return true;
 }
 
+bool ErrorRegistry::appendTaskErrorsBulk(
+    const QString& taskRootPath,
+    const QList<ErrorEvent>& events,
+    QList<ErrorRecord>* const records,
+    QString* const errorMessage) const
+{
+    if (records != nullptr) {
+        records->clear();
+    }
+    if (events.isEmpty()) {
+        return true;
+    }
+
+    QList<ErrorRecord> existingRecords;
+    if (!loadTaskErrors(taskRootPath, &existingRecords, errorMessage)) {
+        return false;
+    }
+
+    QList<ErrorRecord> createdRecords;
+    for (const ErrorEvent& event : events) {
+        const ErrorRecord created = createRecord(event);
+        existingRecords.append(created);
+        createdRecords.append(created);
+    }
+
+    if (!writeTaskErrors(taskRootPath, existingRecords, errorMessage)) {
+        return false;
+    }
+
+    for (const ErrorRecord& created : createdRecords) {
+        LogEntry entry;
+        entry.scope = LogScope::Task;
+        entry.taskId = created.taskId;
+        entry.source = created.source;
+        entry.level = toString(created.severity);
+        entry.message = created.message;
+        entry.context = toJson(created);
+        if (!appendLog(taskLogRootPath(taskRootPath), entry, errorMessage)) {
+            return false;
+        }
+    }
+
+    if (records != nullptr) {
+        *records = createdRecords;
+    }
+    return true;
+}
+
 bool ErrorRegistry::appendSystemError(
     const QString& systemLogRootPath,
     const ErrorEvent& event,

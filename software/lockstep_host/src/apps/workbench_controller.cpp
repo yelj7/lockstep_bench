@@ -17,10 +17,12 @@
 #include "workbench_controller.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -297,6 +299,55 @@ QJsonObject progressToJson(const target_control::OperationProgress& progress)
     return object;
 }
 
+QVector<ui::TraceGroupViewItem> traceGroupsToUi(const QList<waveform_viewer::WaveformGroupView>& groups)
+{
+    QVector<ui::TraceGroupViewItem> items;
+    items.reserve(groups.size());
+    for (const waveform_viewer::WaveformGroupView& group : groups) {
+        ui::TraceGroupViewItem item;
+        item.id = group.id;
+        item.displayName = group.displayName;
+        item.status = group.status;
+        item.reason = group.reason;
+        item.fields = group.fields;
+        item.transactions = group.transactions;
+        items.append(item);
+    }
+    return items;
+}
+
+QString fileSha256Text(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return QString();
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while (!file.atEnd()) {
+        hash.addData(file.read(64 * 1024));
+    }
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+workspace::ArtifactRecord waveformArtifact(
+    const QString& artifactId,
+    const QString& absolutePath,
+    const QString& relativePath,
+    const QJsonObject& metadata)
+{
+    workspace::ArtifactRecord artifact;
+    artifact.artifactId = artifactId;
+    artifact.kind = workspace::ArtifactKind::Waveform;
+    artifact.relativePath = relativePath;
+    artifact.name = QFileInfo(absolutePath).fileName();
+    artifact.sha256 = fileSha256Text(absolutePath);
+    artifact.sizeBytes = QFileInfo(absolutePath).size();
+    artifact.createdAt = currentTimeText();
+    artifact.metadata = metadata;
+    return artifact;
+}
+
 QString progressTitle(
     const QString& title,
     const target_control::OperationProgress& progress,
@@ -434,6 +485,8 @@ WorkbenchController::WorkbenchController(
       programController_(),
       reportGenerator_(),
       errorRegistry_(),
+      protocolAnalyzer_(),
+      waveformViewer_(),
       debugAccess_(kDebugMemorySizeBytes),
       workspaceRootPath_(),
       selectedTaskId_(),
@@ -468,6 +521,11 @@ WorkbenchController::WorkbenchController(
     if (window_ != nullptr) {
         connect(window_, &ui::MainWindowShell::actionRequested, this, [this](const ui::UiActionRequest& request) {
             handleAction(request);
+        });
+        connect(window_, &ui::MainWindowShell::pageChanged, this, [this](const ui::NavigationPage page) {
+            if (page == ui::NavigationPage::Waveform || page == ui::NavigationPage::Protocol) {
+                refreshWaveformViewWithAutoAnalysis();
+            }
         });
     }
 }
@@ -568,14 +626,19 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
         generateReport();
         break;
     case ui::UiAction::BrowseWaveform:
-    case ui::UiAction::ImportWaveform:
-    case ui::UiAction::ClearWaveform:
     case ui::UiAction::ShowWaveformEmbedded:
     case ui::UiAction::ShowWaveformDetached:
     case ui::UiAction::BrowseProtocolWaveform:
     case ui::UiAction::BrowseProtocolOutput:
+        refreshWaveformViewWithAutoAnalysis();
+        break;
+    case ui::UiAction::ImportWaveform:
     case ui::UiAction::AnalyzeProtocol:
-        logWarning(QStringLiteral("UI"), QStringLiteral("波形/协议模块本轮仅保留接口占位，不作为 pass 阻塞条件。"));
+        analyzeCurrentTrace();
+        break;
+    case ui::UiAction::ClearWaveform:
+        logInfo(QStringLiteral("Waveform"), QStringLiteral("波形显示已切回当前任务固定文件视图。"));
+        refreshWaveformView();
         break;
     default:
         logInfo(QStringLiteral("UI"), QStringLiteral("动作已接收: %1").arg(ui::toDisplayText(request.action)));
@@ -1275,6 +1338,14 @@ void WorkbenchController::generateReport()
     input.requiredEvidence.programWriteRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kProgramWriteRecordName));
     input.requiredEvidence.readbackVerifyRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kReadbackVerifyRecordName));
     input.requiredEvidence.runControlRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kRunControlRecordName));
+    input.optionalRecords.vcdWaveform =
+        QFileInfo::exists(QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedWaveformRelativePath()))
+        ? reporting::OptionalRecordState::Available
+        : reporting::OptionalRecordState::NotAvailable;
+    input.optionalRecords.protocolAnalysis =
+        QFileInfo::exists(QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedTraceAnalysisRelativePath()))
+        ? reporting::OptionalRecordState::Available
+        : reporting::OptionalRecordState::NotAvailable;
     input.optionalRecords.faultInjection = reporting::OptionalRecordState::Skipped;
     input.unresolvedBlockingErrors = errorRegistry_.unresolvedBlockingErrors(errors);
     input.resourceSnapshot = resourceSnapshotJson();
@@ -1305,6 +1376,115 @@ void WorkbenchController::showVerifySummary()
 void WorkbenchController::showRunSummary()
 {
     setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), hasRunRecord_ ? 100 : 0, hasHaltRecord_ ? 100 : 0);
+}
+
+void WorkbenchController::refreshWaveformView()
+{
+    if (!ensureTask()) {
+        return;
+    }
+
+    const waveform_viewer::WaveformViewModel model = waveformViewer_.loadTask(currentTask_.paths.taskRootPath);
+    const QString statusText = model.analysisStale
+        ? QStringLiteral("%1, analysis_stale").arg(model.status)
+        : model.status;
+    if (window_ != nullptr) {
+        window_->setWaveformTraceView(
+            statusText,
+            model.vcdPath,
+            model.timeRangeText,
+            traceGroupsToUi(model.groups),
+            model.keyBehaviors,
+            model.diagnostics);
+        window_->setProtocolAnalysisView(
+            statusText,
+            model.analysisPath,
+            model.keyBehaviors,
+            model.diagnostics);
+    }
+
+    if (!model.hasVcd) {
+        logWarning(QStringLiteral("Waveform"), QStringLiteral("当前任务未生成固定 VCD: %1").arg(model.vcdPath));
+    } else if (!model.hasAnalysis || model.analysisStale) {
+        logWarning(QStringLiteral("Waveform"), QStringLiteral("协议解析结果缺失或过期，可点击“重新解析”。"));
+    } else {
+        logInfo(QStringLiteral("Waveform"), QStringLiteral("已读取当前任务波形解析结果: %1").arg(model.analysisPath));
+    }
+}
+
+void WorkbenchController::refreshWaveformViewWithAutoAnalysis()
+{
+    if (!ensureTask()) {
+        return;
+    }
+
+    const waveform_viewer::WaveformViewModel model = waveformViewer_.loadTask(currentTask_.paths.taskRootPath);
+    if (model.hasVcd && (!model.hasAnalysis || model.analysisStale)) {
+        const QString message = model.hasAnalysis
+            ? QStringLiteral("analysis 与当前 VCD 不一致，自动重新解析。")
+            : QStringLiteral("检测到当前任务固定 VCD，自动生成协议解析结果。");
+        logInfo(QStringLiteral("Waveform"), message);
+        analyzeCurrentTrace(false);
+    }
+
+    refreshWaveformView();
+}
+
+void WorkbenchController::analyzeCurrentTrace(const bool refreshAfterAnalysis)
+{
+    if (!ensureTask()) {
+        return;
+    }
+
+    protocol_analyzer::ProtocolAnalysisRequest request;
+    request.taskRootPath = currentTask_.paths.taskRootPath;
+    request.taskId = currentTask_.summary.taskId;
+    request.errorRegistry = &errorRegistry_;
+    request.reportDiagnosticsToErrorRegistry = true;
+
+    const protocol_analyzer::ProtocolAnalysisResult result = protocolAnalyzer_.analyzeTask(request);
+    if (!result.success) {
+        logWarning(
+            QStringLiteral("Protocol"),
+            QStringLiteral("协议解析未完整完成: %1").arg(result.errorMessage.isEmpty() ? result.status : result.errorMessage));
+    } else {
+        logInfo(QStringLiteral("Protocol"), QStringLiteral("协议解析完成: %1").arg(result.analysisPath));
+    }
+
+    const QString vcdPath = QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedWaveformRelativePath());
+    const QString schemaPath = QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedTraceSchemaRelativePath());
+    const QString analysisPath = QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedTraceAnalysisRelativePath());
+    if (QFileInfo::exists(vcdPath)) {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("source_module"), QStringLiteral("M10_ACQUISITION"));
+        workspace_.attachArtifact(
+            workspaceMode(),
+            currentTask_.summary.taskId,
+            waveformArtifact(QStringLiteral("lockstep_trace_vcd"), vcdPath, protocol_analyzer::fixedWaveformRelativePath(), metadata),
+            nullptr);
+    }
+    if (QFileInfo::exists(schemaPath)) {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("source_module"), QStringLiteral("M10_ACQUISITION"));
+        workspace_.attachArtifact(
+            workspaceMode(),
+            currentTask_.summary.taskId,
+            waveformArtifact(QStringLiteral("lockstep_trace_schema"), schemaPath, protocol_analyzer::fixedTraceSchemaRelativePath(), metadata),
+            nullptr);
+    }
+    if (QFileInfo::exists(analysisPath)) {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("source_module"), QStringLiteral("M12_PROTOCOL_ANALYZER"));
+        workspace_.attachArtifact(
+            workspaceMode(),
+            currentTask_.summary.taskId,
+            waveformArtifact(QStringLiteral("lockstep_trace_analysis"), analysisPath, protocol_analyzer::fixedTraceAnalysisRelativePath(), metadata),
+            nullptr);
+    }
+
+    if (refreshAfterAnalysis) {
+        refreshWaveformView();
+    }
 }
 
 void WorkbenchController::updateProjectView()

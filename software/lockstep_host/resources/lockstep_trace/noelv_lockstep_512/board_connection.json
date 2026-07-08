@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "board": "NOEL-V",
+  "capture_hardware": "lockstep trace 512-bit capture",
+  "sample_signal": "lockstep_trace_sample[511:0]",
+  "notes": [
+    "采集硬件输出固定 512-bit packed trace。",
+    "mismatch[4:0] 来自 NOEL-V comparator equals[4:0]。"
+  ]
+}

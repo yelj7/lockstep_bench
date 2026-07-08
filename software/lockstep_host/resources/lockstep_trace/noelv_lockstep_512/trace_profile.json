@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "id": "trace.noelv.lockstep_512",
+  "name": "NOEL-V Lockstep 512-bit Trace Profile",
+  "version": "1.0.0.0",
+  "sample_signal": "lockstep_trace_sample",
+  "sample_width": 512,
+  "channel_map": "channel_map.json",
+  "protocol_decoders": "protocol_decoders.json",
+  "display_profile": "display_profile.json",
+  "board_connection": "board_connection.json",
+  "groups": ["ahb", "uart", "spi", "can", "i2c", "eth", "usb", "jtag", "mismatch"]
+}

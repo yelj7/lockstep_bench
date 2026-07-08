@@ -49,6 +49,7 @@ struct ManifestDefaults final {
     QString testProfileId;
     QString researchReportTemplateId;
     QString testReportTemplateId;
+    QString lockstepTraceProfileId;
 };
 
 struct BoardProfile final {
@@ -90,6 +91,8 @@ struct ResourceSnapshot final {
     QString debugAdapterStatus;
     QString protocolRuleId;
     QString protocolRuleStatus;
+    QString lockstepTraceProfileId;
+    QString lockstepTraceProfileStatus;
 };
 
 struct ResourceValidationResult final {
@@ -129,6 +132,11 @@ public:
         ResourceItem* item,
         QString* errorMessage = nullptr) const;
 
+    bool resolveLockstepTraceProfile(
+        const QString& profileId,
+        ResourceItem* item,
+        QString* errorMessage = nullptr) const;
+
     ManifestDefaults defaults() const;
     QString resourcePackId() const;
     QString resourcePackVersion() const;
@@ -142,6 +150,7 @@ private:
     QList<ResourceItem> boardProfileItems_;
     QList<ResourceItem> reportTemplateItems_;
     QList<ResourceItem> protocolRuleItems_;
+    QList<ResourceItem> lockstepTraceProfileItems_;
     QList<ResourceItem> debugAdapterItems_;
 };
 

@@ -455,6 +455,87 @@ void MainWindowShell::setRunSummary(
     }
 }
 
+void MainWindowShell::setWaveformTraceView(
+    const QString& statusText,
+    const QString& pathText,
+    const QString& timeRangeText,
+    const QVector<TraceGroupViewItem>& groups,
+    const QStringList& keyBehaviors,
+    const QStringList& diagnostics)
+{
+    QLabel* const statusLabel = findChild<QLabel*>(QStringLiteral("waveform_status_label"));
+    QLabel* const timeRangeLabel = findChild<QLabel*>(QStringLiteral("waveform_time_range_label"));
+    QLineEdit* const pathEdit = findChild<QLineEdit*>(QStringLiteral("waveform_trace_path_edit"));
+    QTreeWidget* const tree = findChild<QTreeWidget*>(QStringLiteral("waveform_group_tree"));
+    QPlainTextEdit* const keyEdit = findChild<QPlainTextEdit*>(QStringLiteral("waveform_key_behaviors_edit"));
+    QPlainTextEdit* const diagnosticsEdit = findChild<QPlainTextEdit*>(QStringLiteral("waveform_diagnostics_edit"));
+
+    if (statusLabel != nullptr) {
+        statusLabel->setText(statusText);
+    }
+    if (timeRangeLabel != nullptr) {
+        timeRangeLabel->setText(timeRangeText.isEmpty() ? QStringLiteral("时间范围: 未知") : QStringLiteral("时间范围: %1").arg(timeRangeText));
+    }
+    if (pathEdit != nullptr) {
+        pathEdit->setText(pathText);
+    }
+    if (tree != nullptr) {
+        tree->clear();
+        tree->setColumnCount(3);
+        tree->setHeaderLabels({QStringLiteral("协议/字段"), QStringLiteral("状态"), QStringLiteral("说明")});
+        for (const TraceGroupViewItem& group : groups) {
+            QTreeWidgetItem* const groupItem = new QTreeWidgetItem(tree, {group.displayName, group.status, group.reason});
+            groupItem->setExpanded(group.id == QStringLiteral("mismatch"));
+            if (!group.transactions.isEmpty()) {
+                QTreeWidgetItem* const transactionsItem = new QTreeWidgetItem(groupItem, {QStringLiteral("transactions"), QString(), QString()});
+                for (const QString& transaction : group.transactions) {
+                    new QTreeWidgetItem(transactionsItem, {transaction, QString(), QString()});
+                }
+                transactionsItem->setExpanded(true);
+            }
+            if (!group.fields.isEmpty()) {
+                QTreeWidgetItem* const fieldsItem = new QTreeWidgetItem(groupItem, {QStringLiteral("fields"), QString(), QString()});
+                for (const QString& field : group.fields) {
+                    new QTreeWidgetItem(fieldsItem, {field, QString(), QString()});
+                }
+                fieldsItem->setExpanded(group.id == QStringLiteral("mismatch"));
+            }
+        }
+        tree->resizeColumnToContents(0);
+    }
+    if (keyEdit != nullptr) {
+        keyEdit->setPlainText(keyBehaviors.isEmpty() ? QStringLiteral("暂无关键行为。") : keyBehaviors.join(QLatin1Char('\n')));
+    }
+    if (diagnosticsEdit != nullptr) {
+        diagnosticsEdit->setPlainText(diagnostics.isEmpty() ? QStringLiteral("暂无诊断。") : diagnostics.join(QLatin1Char('\n')));
+    }
+}
+
+void MainWindowShell::setProtocolAnalysisView(
+    const QString& statusText,
+    const QString& analysisPath,
+    const QStringList& keyBehaviors,
+    const QStringList& diagnostics)
+{
+    QLabel* const statusLabel = findChild<QLabel*>(QStringLiteral("protocol_status_label"));
+    QLineEdit* const analysisEdit = findChild<QLineEdit*>(QStringLiteral("protocol_analysis_path_edit"));
+    QPlainTextEdit* const keyEdit = findChild<QPlainTextEdit*>(QStringLiteral("protocol_key_behaviors_edit"));
+    QPlainTextEdit* const diagnosticsEdit = findChild<QPlainTextEdit*>(QStringLiteral("protocol_diagnostics_edit"));
+
+    if (statusLabel != nullptr) {
+        statusLabel->setText(statusText);
+    }
+    if (analysisEdit != nullptr) {
+        analysisEdit->setText(analysisPath);
+    }
+    if (keyEdit != nullptr) {
+        keyEdit->setPlainText(keyBehaviors.isEmpty() ? QStringLiteral("暂无关键行为。") : keyBehaviors.join(QLatin1Char('\n')));
+    }
+    if (diagnosticsEdit != nullptr) {
+        diagnosticsEdit->setPlainText(diagnostics.isEmpty() ? QStringLiteral("暂无诊断。") : diagnostics.join(QLatin1Char('\n')));
+    }
+}
+
 void MainWindowShell::setConnectionSummary(const QString& profileName, const QString& statusText)
 {
     QLineEdit* const profileEdit = findChild<QLineEdit*>(QStringLiteral("profile_name_edit"));
@@ -1021,7 +1102,8 @@ QWidget* MainWindowShell::createWaveformPage()
     titleRow->addWidget(pageTitle(QStringLiteral("波形显示"), titleControls));
     titleRow->addWidget(createActionButton(UiAction::ShowWaveformEmbedded, NavigationPage::Waveform, titleControls, false));
     titleRow->addWidget(createActionButton(UiAction::ShowWaveformDetached, NavigationPage::Waveform, titleControls, false));
-    QLabel* const statusLabel = mutedLabel(QStringLiteral("等待导入波形文件。"), titleControls);
+    QLabel* const statusLabel = mutedLabel(QStringLiteral("等待读取当前任务波形。"), titleControls);
+    statusLabel->setObjectName(QStringLiteral("waveform_status_label"));
     statusLabel->setWordWrap(false);
     statusLabel->setMinimumWidth(120);
     titleRow->addWidget(statusLabel);
@@ -1035,10 +1117,12 @@ QWidget* MainWindowShell::createWaveformPage()
     inputGrid->setContentsMargins(0, 0, 0, 0);
     inputGrid->setHorizontalSpacing(6);
     inputGrid->setVerticalSpacing(4);
-    QLabel* const label = new QLabel(QStringLiteral("波形文件"), inputPanel);
+    QLabel* const label = new QLabel(QStringLiteral("固定波形"), inputPanel);
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     QLineEdit* const edit = new QLineEdit(inputPanel);
-    edit->setPlaceholderText(QStringLiteral("VCD/采集文件路径；默认保存到当前任务 logic_analyzier_file/capture.vcd"));
+    edit->setObjectName(QStringLiteral("waveform_trace_path_edit"));
+    edit->setReadOnly(true);
+    edit->setPlaceholderText(QStringLiteral("当前任务 waveform/lockstep_trace.vcd"));
     QPushButton* const browse = createActionButton(UiAction::BrowseWaveform, NavigationPage::Waveform, inputPanel, false);
     QPushButton* const importButton = createActionButton(UiAction::ImportWaveform, NavigationPage::Waveform, inputPanel, true);
     QPushButton* const clearButton = createActionButton(UiAction::ClearWaveform, NavigationPage::Waveform, inputPanel, false);
@@ -1051,22 +1135,45 @@ QWidget* MainWindowShell::createWaveformPage()
     header->addWidget(inputPanel, 1);
     layout->addLayout(header);
 
+    QLabel* const timeRangeLabel = mutedLabel(QStringLiteral("时间范围: 未知"), content);
+    timeRangeLabel->setObjectName(QStringLiteral("waveform_time_range_label"));
+    timeRangeLabel->setWordWrap(false);
+    layout->addWidget(timeRangeLabel);
+
     QWidget* const analyzerPanel = new QWidget(content);
     analyzerPanel->setObjectName(QStringLiteral("waveform_analyzer_panel"));
     analyzerPanel->setAttribute(Qt::WA_StyledBackground, true);
-    QGridLayout* const analyzerLayout = new QGridLayout(analyzerPanel);
+    QVBoxLayout* const analyzerLayout = new QVBoxLayout(analyzerPanel);
     analyzerLayout->setContentsMargins(1, 1, 1, 1);
     analyzerLayout->setSpacing(0);
-    QWidget* const embedHost = new QWidget(analyzerPanel);
-    embedHost->setObjectName(QStringLiteral("waveform_embed_host"));
-    embedHost->setMinimumHeight(220);
-    embedHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    QVBoxLayout* const embedLayout = new QVBoxLayout(embedHost);
-    embedLayout->setContentsMargins(0, 0, 0, 0);
-    embedLayout->setSpacing(0);
-    embedLayout->addWidget(mutedLabel(QStringLiteral("未加载采集文件"), embedHost), 0, Qt::AlignCenter);
-    analyzerLayout->addWidget(embedHost, 0, 0);
+    QTreeWidget* const groupTree = new QTreeWidget(analyzerPanel);
+    groupTree->setObjectName(QStringLiteral("waveform_group_tree"));
+    groupTree->setRootIsDecorated(true);
+    groupTree->setAlternatingRowColors(true);
+    groupTree->setMinimumHeight(260);
+    analyzerLayout->addWidget(groupTree, 1);
     layout->addWidget(analyzerPanel, 8);
+
+    QSplitter* const bottomSplitter = new QSplitter(Qt::Horizontal, content);
+    QGroupBox* const keyPanel = panelBox(QStringLiteral("关键行为"), bottomSplitter);
+    QVBoxLayout* const keyLayout = new QVBoxLayout(keyPanel);
+    QPlainTextEdit* const keyEdit = new QPlainTextEdit(keyPanel);
+    keyEdit->setObjectName(QStringLiteral("waveform_key_behaviors_edit"));
+    keyEdit->setReadOnly(true);
+    keyEdit->setMaximumBlockCount(1000);
+    keyLayout->addWidget(keyEdit);
+    QGroupBox* const diagnosticsPanel = panelBox(QStringLiteral("诊断"), bottomSplitter);
+    QVBoxLayout* const diagnosticsLayout = new QVBoxLayout(diagnosticsPanel);
+    QPlainTextEdit* const diagnosticsEdit = new QPlainTextEdit(diagnosticsPanel);
+    diagnosticsEdit->setObjectName(QStringLiteral("waveform_diagnostics_edit"));
+    diagnosticsEdit->setReadOnly(true);
+    diagnosticsEdit->setMaximumBlockCount(1000);
+    diagnosticsLayout->addWidget(diagnosticsEdit);
+    bottomSplitter->addWidget(keyPanel);
+    bottomSplitter->addWidget(diagnosticsPanel);
+    bottomSplitter->setStretchFactor(0, 1);
+    bottomSplitter->setStretchFactor(1, 1);
+    layout->addWidget(bottomSplitter, 3);
     return content;
 }
 
@@ -1075,23 +1182,26 @@ QWidget* MainWindowShell::createProtocolPage()
     QWidget* const content = new QWidget(this);
     content->setObjectName(QStringLiteral("page_protocol"));
     QVBoxLayout* const layout = new QVBoxLayout(content);
-    layout->addWidget(pageTitle(QStringLiteral("协议解析"), content));
+    QHBoxLayout* const header = new QHBoxLayout();
+    header->addWidget(pageTitle(QStringLiteral("协议解析"), content));
+    QLabel* const statusLabel = mutedLabel(QStringLiteral("等待解析当前任务固定 VCD。"), content);
+    statusLabel->setObjectName(QStringLiteral("protocol_status_label"));
+    statusLabel->setWordWrap(false);
+    header->addWidget(statusLabel);
+    header->addStretch(1);
+    layout->addLayout(header);
 
-    QGroupBox* const inputPanel = panelBox(QStringLiteral("波形文件协议解析"), content);
+    QGroupBox* const inputPanel = panelBox(QStringLiteral("当前任务协议解析"), content);
     QFormLayout* const form = new QFormLayout(inputPanel);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     QLineEdit* const vcdEdit = new QLineEdit(inputPanel);
-    vcdEdit->setPlaceholderText(QStringLiteral("VCD/采集文件路径；会同步到当前任务采集输入"));
-    form->addRow(QStringLiteral("波形文件"),
+    vcdEdit->setObjectName(QStringLiteral("protocol_analysis_path_edit"));
+    vcdEdit->setReadOnly(true);
+    vcdEdit->setPlaceholderText(QStringLiteral("当前任务 waveform/lockstep_trace_analysis.json"));
+    form->addRow(QStringLiteral("解析结果"),
                  createPathInputRow(inputPanel,
                                     vcdEdit,
                                     createActionButton(UiAction::BrowseProtocolWaveform, NavigationPage::Protocol, inputPanel, false)));
-    QLineEdit* const outputEdit = new QLineEdit(inputPanel);
-    outputEdit->setPlaceholderText(QStringLiteral("空表示写入当前任务报告目录下的 bus_analysis.json"));
-    form->addRow(QStringLiteral("输出文件"),
-                 createPathInputRow(inputPanel,
-                                    outputEdit,
-                                    createActionButton(UiAction::BrowseProtocolOutput, NavigationPage::Protocol, inputPanel, false)));
     QWidget* const buttonRow = new QWidget(inputPanel);
     QHBoxLayout* const buttonLayout = new QHBoxLayout(buttonRow);
     buttonLayout->setContentsMargins(0, 0, 0, 0);
@@ -1100,17 +1210,26 @@ QWidget* MainWindowShell::createProtocolPage()
     form->addRow(QString(), buttonRow);
     layout->addWidget(inputPanel);
 
-    layout->addWidget(createTodoCard(QStringLiteral("TODO: expected / rule set 判定"),
-                                     QStringLiteral("当前仅保留协议解析 UI 占位；缺少期望结果或规则集合时，不输出通过结论。"),
-                                     content));
-
-    QGroupBox* const resultPanel = panelBox(QStringLiteral("解析结果"), content);
-    QVBoxLayout* const resultLayout = new QVBoxLayout(resultPanel);
-    QPlainTextEdit* const resultEdit = new QPlainTextEdit(resultPanel);
-    resultEdit->setReadOnly(true);
-    resultEdit->setPlaceholderText(QStringLiteral("解析日志、事务数量、输出文件和缺证说明会显示在这里。"));
-    resultLayout->addWidget(resultEdit);
-    layout->addWidget(resultPanel, 1);
+    QSplitter* const splitter = new QSplitter(Qt::Horizontal, content);
+    QGroupBox* const keyPanel = panelBox(QStringLiteral("关键行为"), splitter);
+    QVBoxLayout* const keyLayout = new QVBoxLayout(keyPanel);
+    QPlainTextEdit* const keyEdit = new QPlainTextEdit(keyPanel);
+    keyEdit->setObjectName(QStringLiteral("protocol_key_behaviors_edit"));
+    keyEdit->setReadOnly(true);
+    keyEdit->setPlaceholderText(QStringLiteral("M12 输出的总线、外设和 mismatch 行为会显示在这里。"));
+    keyLayout->addWidget(keyEdit);
+    QGroupBox* const diagnosticsPanel = panelBox(QStringLiteral("诊断"), splitter);
+    QVBoxLayout* const diagnosticsLayout = new QVBoxLayout(diagnosticsPanel);
+    QPlainTextEdit* const diagnosticsEdit = new QPlainTextEdit(diagnosticsPanel);
+    diagnosticsEdit->setObjectName(QStringLiteral("protocol_diagnostics_edit"));
+    diagnosticsEdit->setReadOnly(true);
+    diagnosticsEdit->setPlaceholderText(QStringLiteral("缺字段、未采集和 VCD 合同问题会显示在这里。"));
+    diagnosticsLayout->addWidget(diagnosticsEdit);
+    splitter->addWidget(keyPanel);
+    splitter->addWidget(diagnosticsPanel);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 1);
+    layout->addWidget(splitter, 1);
     return scrollPage(content);
 }
 

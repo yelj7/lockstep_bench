@@ -6,7 +6,8 @@
     "research_profile_id": "noelv_zcu102_cmsis_dap",
     "test_profile_id": "noelv_zcu102_cmsis_dap",
     "research_report_template_id": "report_template_default",
-    "test_report_template_id": "report_template_default"
+    "test_report_template_id": "report_template_default",
+    "lockstep_trace_profile_id": "trace.noelv.lockstep_512"
   },
   "board_profiles": [
     {
@@ -64,16 +65,16 @@
       "status": "enabled"
     }
   ],
-  "protocol_rules": [
+  "lockstep_trace_profiles": [
     {
-      "id": "protocol_rules_placeholder",
-      "name": "Protocol Rules Placeholder",
-      "version": "0.0.0.0",
+      "id": "trace.noelv.lockstep_512",
+      "name": "NOEL-V Lockstep 512-bit Trace Profile",
+      "version": "1.0.0.0",
       "mode": "test",
       "modes": ["research", "test"],
-      "relative_path": "protocol_rules/placeholder.json",
+      "relative_path": "lockstep_trace/noelv_lockstep_512/trace_profile.json",
       "sha256": "",
-      "status": "placeholder"
+      "status": "enabled"
     }
   ]
 }

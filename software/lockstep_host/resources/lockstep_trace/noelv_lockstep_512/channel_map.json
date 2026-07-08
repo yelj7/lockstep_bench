@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "sample_signal": "lockstep_trace_sample",
+  "sample_width": 512,
+  "fields": [
+    {
+      "group": "mismatch",
+      "name": "mismatch[4]",
+      "sample_bit": 506,
+      "semantic": "ahb_master_output_mismatch"
+    },
+    {
+      "group": "mismatch",
+      "name": "mismatch[3]",
+      "sample_bit": 505,
+      "semantic": "irq_output_mismatch"
+    },
+    {
+      "group": "mismatch",
+      "name": "mismatch[2]",
+      "sample_bit": 504,
+      "semantic": "debug_output_mismatch"
+    },
+    {
+      "group": "mismatch",
+      "name": "mismatch[1]",
+      "sample_bit": 503,
+      "semantic": "trace_output_mismatch"
+    },
+    {
+      "group": "mismatch",
+      "name": "mismatch[0]",
+      "sample_bit": 502,
+      "semantic": "counter_output_mismatch"
+    }
+  ],
+  "pending_protocol_groups": ["ahb", "uart", "spi", "can", "i2c", "eth", "usb", "jtag"]
+}

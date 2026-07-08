@@ -72,13 +72,13 @@ QString toDisplayText(const UiAction action)
         text = QStringLiteral("运行摘要");
         break;
     case UiAction::BrowseWaveform:
-        text = QStringLiteral("选择波形文件");
+        text = QStringLiteral("读取当前任务波形");
         break;
     case UiAction::ImportWaveform:
-        text = QStringLiteral("导入波形");
+        text = QStringLiteral("重新解析");
         break;
     case UiAction::ClearWaveform:
-        text = QStringLiteral("清除波形");
+        text = QStringLiteral("刷新视图");
         break;
     case UiAction::ShowWaveformEmbedded:
         text = QStringLiteral("嵌入显示");
@@ -87,13 +87,13 @@ QString toDisplayText(const UiAction action)
         text = QStringLiteral("独立窗口");
         break;
     case UiAction::BrowseProtocolWaveform:
-        text = QStringLiteral("选择协议波形");
+        text = QStringLiteral("查看解析结果");
         break;
     case UiAction::BrowseProtocolOutput:
-        text = QStringLiteral("选择协议输出");
+        text = QStringLiteral("查看诊断");
         break;
     case UiAction::AnalyzeProtocol:
-        text = QStringLiteral("解析波形文件");
+        text = QStringLiteral("解析当前 VCD");
         break;
     case UiAction::RefreshSerialPorts:
         text = QStringLiteral("刷新串口");

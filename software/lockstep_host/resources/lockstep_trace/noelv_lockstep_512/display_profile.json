@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "default_groups": ["ahb", "uart", "spi", "can", "i2c", "eth", "usb", "jtag", "mismatch"],
+  "number_format": {
+    "bus": "hex_prefix",
+    "address": "hex_prefix",
+    "single_bit": "level"
+  },
+  "indent": {
+    "group": 0,
+    "field": 1
+  },
+  "merge_fields": [
+    {
+      "group": "ahb",
+      "field": "data",
+      "display": "data[127:0]",
+      "format": "hex_prefix"
+    }
+  ]
+}

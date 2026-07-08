@@ -22,9 +22,11 @@
 
 #include "error_registry.h"
 #include "main_window_shell.h"
+#include "protocol_analysis.h"
 #include "report_generator.h"
 #include "resource_manager.h"
 #include "target_control.h"
+#include "waveform_trace_viewer.h"
 #include "workflow_engine.h"
 #include "workspace_manager.h"
 
@@ -64,6 +66,9 @@ private:
     void generateReport();
     void showVerifySummary();
     void showRunSummary();
+    void refreshWaveformView();
+    void refreshWaveformViewWithAutoAnalysis();
+    void analyzeCurrentTrace(bool refreshAfterAnalysis = true);
     void updateProjectView();
     void updateTaskDetail();
     void updateTopStatus();
@@ -99,6 +104,8 @@ private:
     lockstep::target_control::ProgramController programController_;
     lockstep::reporting::ReportGenerator reportGenerator_;
     lockstep::error_handling::ErrorRegistry errorRegistry_;
+    lockstep::protocol_analyzer::ProtocolAnalyzer protocolAnalyzer_;
+    lockstep::waveform_viewer::WaveformTraceViewer waveformViewer_;
     lockstep::target_control::InMemoryDebugAccess debugAccess_;
 
     QString workspaceRootPath_;
