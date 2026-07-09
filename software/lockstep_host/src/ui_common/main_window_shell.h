@@ -112,6 +112,8 @@ private slots:
     void switchWorkbenchPage();
     void clearVisibleLog();
     void toggleLogDetached();
+    void showWaveformEmbedded();
+    void showWaveformDetached();
     void updateProjectTaskSelectionState();
 
 private:
@@ -146,6 +148,7 @@ private:
     void setActivePage(const QString& pageId);
     void emitAction(UiAction action, NavigationPage page, const QString& objectName);
     void setActionButtonsEnabled(UiAction action, bool enabled);
+    void applyWaveformTraceToDisplay(QWidget* widget) const;
     void appendFormattedLog(QPlainTextEdit* view, LogLevel level, const QString& source, const QString& message);
     QString currentLogText() const;
     QPlainTextEdit* currentLogView() const;
@@ -161,6 +164,13 @@ private:
     QPlainTextEdit* serialOutputEdit_;
     QDialog* detachedLogDialog_;
     QPlainTextEdit* detachedLogEdit_;
+    QWidget* waveformDisplayWidget_;
+    QDialog* detachedWaveformDialog_;
+    QWidget* detachedWaveformDisplayWidget_;
+    QString waveformStatusText_;
+    QString waveformPathText_;
+    QString waveformTimeRangeText_;
+    QVector<TraceGroupViewItem> waveformGroups_;
 };
 
 }  // namespace lockstep::ui
