@@ -1602,35 +1602,11 @@ void MainWindowShell::showWaveformDetached()
 
     QVBoxLayout* const layout = new QVBoxLayout(detachedWaveformDialog_);
     layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
-
-    QWidget* const toolbar = new QWidget(detachedWaveformDialog_);
-    toolbar->setObjectName(QStringLiteral("waveform_detached_toolbar"));
-    QHBoxLayout* const toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(0, 0, 0, 0);
-    toolbarLayout->setSpacing(6);
-    toolbarLayout->addStretch(1);
-    QPushButton* const fullscreenButton = new QPushButton(QStringLiteral("放大到全屏"), toolbar);
-    fullscreenButton->setObjectName(QStringLiteral("waveform_fullscreen_button"));
-    toolbarLayout->addWidget(fullscreenButton);
-    layout->addWidget(toolbar);
+    layout->setSpacing(0);
 
     detachedWaveformDisplayWidget_ = new WaveformDisplayWidget(detachedWaveformDialog_);
     layout->addWidget(detachedWaveformDisplayWidget_, 1);
     applyWaveformTraceToDisplay(detachedWaveformDisplayWidget_);
-
-    connect(fullscreenButton, &QPushButton::clicked, detachedWaveformDialog_, [this, fullscreenButton]() {
-        if (detachedWaveformDialog_ == nullptr) {
-            return;
-        }
-        if (detachedWaveformDialog_->isFullScreen()) {
-            detachedWaveformDialog_->showNormal();
-            fullscreenButton->setText(QStringLiteral("放大到全屏"));
-        } else {
-            detachedWaveformDialog_->showFullScreen();
-            fullscreenButton->setText(QStringLiteral("退出全屏"));
-        }
-    });
 
     connect(detachedWaveformDialog_, &QDialog::finished, this, [this]() {
         detachedWaveformDialog_ = nullptr;
