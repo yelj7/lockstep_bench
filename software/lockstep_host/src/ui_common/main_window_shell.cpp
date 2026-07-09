@@ -27,13 +27,17 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
 #include <QScrollArea>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -117,9 +121,9 @@ struct WaveformVisualRow final {
     bool event = false;
 };
 
-class WaveformDisplayWidget final : public QWidget {
+class LegacyWaveformDisplayWidget final : public QWidget {
 public:
-    explicit WaveformDisplayWidget(QWidget* const parent = nullptr)
+    explicit LegacyWaveformDisplayWidget(QWidget* const parent = nullptr)
         : QWidget(parent),
           statusText_(),
           pathText_(),
@@ -429,6 +433,767 @@ private:
     QString pathText_;
     QString timeRangeText_;
     QVector<TraceGroupViewItem> groups_;
+};
+
+struct WaveformTimeAxis final {
+    qint64 start = 0;
+    qint64 end = 400;
+    QString unit = QStringLiteral("ns");
+};
+
+struct WaveformProtocolRow final {
+    QString groupId;
+    QString name;
+    QString status;
+    QString reason;
+    QStringList transactions;
+    bool group = false;
+    bool child = false;
+    bool expanded = false;
+    int groupIndex = 0;
+    int childIndex = -1;
+};
+
+class WaveformDisplayWidget final : public QWidget {
+public:
+    explicit WaveformDisplayWidget(QWidget* const parent = nullptr)
+        : QWidget(parent),
+          statusText_(),
+          pathText_(),
+          timeRangeText_(),
+          groups_(),
+          expandedGroups_(),
+          selectedRow_(0),
+          verticalOffset_(0),
+          horizontalZoom_(1.0)
+    {
+        setObjectName(QStringLiteral("waveform_display_widget"));
+        setMinimumHeight(390);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setFocusPolicy(Qt::StrongFocus);
+        setMouseTracking(true);
+        setAttribute(Qt::WA_OpaquePaintEvent, true);
+    }
+
+    void setTrace(
+        const QString& statusText,
+        const QString& pathText,
+        const QString& timeRangeText,
+        const QVector<TraceGroupViewItem>& groups)
+    {
+        statusText_ = statusText;
+        pathText_ = pathText;
+        timeRangeText_ = timeRangeText;
+        groups_ = groups;
+        verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
+        selectedRow_ = qBound(0, selectedRow_, qMax(0, rows().size() - 1));
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent* const event) override
+    {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect bounds = rect();
+        painter.fillRect(bounds, QColor(QStringLiteral("#ffffff")));
+        painter.setPen(QColor(QStringLiteral("#d6dde6")));
+        painter.drawRect(bounds.adjusted(0, 0, -1, -1));
+
+        const int leftWidth = leftPaneWidth();
+        const QRect leftHeader(0, 0, leftWidth, kRulerHeight);
+        const QRect rulerRect(leftWidth, 0, width() - leftWidth, kRulerHeight);
+        painter.fillRect(leftHeader, QColor(QStringLiteral("#fbfcfe")));
+        painter.fillRect(rulerRect, QColor(QStringLiteral("#fbfcfe")));
+        painter.setPen(QColor(QStringLiteral("#dbe2ea")));
+        painter.drawLine(leftWidth, 0, leftWidth, height());
+        painter.drawLine(0, kRulerHeight - 1, width(), kRulerHeight - 1);
+        drawRuler(&painter, rulerRect);
+
+        const QVector<WaveformProtocolRow> visibleRows = rows();
+        painter.setClipRect(QRect(0, kRulerHeight, width(), height() - kRulerHeight));
+        for (int index = 0; index < visibleRows.size(); ++index) {
+            const int y = kRulerHeight + index * kRowHeight - verticalOffset_;
+            if (y + kRowHeight < kRulerHeight) {
+                continue;
+            }
+            if (y > height()) {
+                break;
+            }
+            drawRow(&painter, QRect(0, y, width(), kRowHeight), leftWidth, visibleRows.at(index), index);
+        }
+        painter.setClipping(false);
+
+        drawRemainingGrid(&painter, leftWidth, visibleRows.size());
+        drawScrollBar(&painter, QRect(width() - 8, kRulerHeight, 6, height() - kRulerHeight));
+    }
+
+    void mousePressEvent(QMouseEvent* const event) override
+    {
+        if (event == nullptr || event->button() != Qt::LeftButton) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+
+        setFocus(Qt::MouseFocusReason);
+        const int index = rowIndexAt(event->pos().y());
+        const QVector<WaveformProtocolRow> visibleRows = rows();
+        if (index < 0 || index >= visibleRows.size()) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+
+        selectedRow_ = index;
+        if (visibleRows.at(index).group) {
+            toggleGroup(visibleRows.at(index).groupId);
+        } else {
+            update();
+        }
+        event->accept();
+    }
+
+    void keyPressEvent(QKeyEvent* const event) override
+    {
+        if (event == nullptr) {
+            return;
+        }
+
+        const QVector<WaveformProtocolRow> visibleRows = rows();
+        if (visibleRows.isEmpty()) {
+            QWidget::keyPressEvent(event);
+            return;
+        }
+
+        switch (event->key()) {
+        case Qt::Key_Down:
+            selectedRow_ = qMin(visibleRows.size() - 1, selectedRow_ + 1);
+            ensureSelectedVisible();
+            update();
+            event->accept();
+            return;
+        case Qt::Key_Up:
+            selectedRow_ = qMax(0, selectedRow_ - 1);
+            ensureSelectedVisible();
+            update();
+            event->accept();
+            return;
+        case Qt::Key_Home:
+            selectedRow_ = 0;
+            ensureSelectedVisible();
+            update();
+            event->accept();
+            return;
+        case Qt::Key_End:
+            selectedRow_ = visibleRows.size() - 1;
+            ensureSelectedVisible();
+            update();
+            event->accept();
+            return;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+        case Qt::Key_Space:
+            if (visibleRows.at(selectedRow_).group) {
+                toggleGroup(visibleRows.at(selectedRow_).groupId);
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_Left:
+            if (visibleRows.at(selectedRow_).group &&
+                expandedGroups_.contains(visibleRows.at(selectedRow_).groupId)) {
+                expandedGroups_.remove(visibleRows.at(selectedRow_).groupId);
+                verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
+                update();
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_Right:
+            if (visibleRows.at(selectedRow_).group &&
+                !expandedGroups_.contains(visibleRows.at(selectedRow_).groupId)) {
+                expandedGroups_.insert(visibleRows.at(selectedRow_).groupId);
+                update();
+                event->accept();
+                return;
+            }
+            break;
+        default:
+            break;
+        }
+
+        QWidget::keyPressEvent(event);
+    }
+
+    void wheelEvent(QWheelEvent* const event) override
+    {
+        if (event == nullptr) {
+            return;
+        }
+
+        const int delta = event->pixelDelta().isNull() ? event->angleDelta().y() : event->pixelDelta().y();
+        if (event->modifiers().testFlag(Qt::ControlModifier)) {
+            if (delta != 0) {
+                horizontalZoom_ = qBound(0.5, horizontalZoom_ * (delta > 0 ? 1.15 : 1.0 / 1.15), 8.0);
+                update();
+            }
+            event->accept();
+            return;
+        }
+
+        const int maxOffset = maxVerticalOffset();
+        if (maxOffset > 0 && delta != 0) {
+            verticalOffset_ = qBound(0, verticalOffset_ - delta / 4, maxOffset);
+            update();
+            event->accept();
+            return;
+        }
+
+        QWidget::wheelEvent(event);
+    }
+
+private:
+    static constexpr int kRulerHeight = 28;
+    static constexpr int kRowHeight = 27;
+
+    static QStringList fixedGroupIds()
+    {
+        return {
+            QStringLiteral("ahb"),
+            QStringLiteral("uart"),
+            QStringLiteral("spi"),
+            QStringLiteral("can"),
+            QStringLiteral("i2c"),
+            QStringLiteral("eth"),
+            QStringLiteral("usb"),
+            QStringLiteral("jtag"),
+            QStringLiteral("mismatch"),
+        };
+    }
+
+    static QString displayNameForId(const QString& groupId)
+    {
+        if (groupId == QStringLiteral("mismatch")) {
+            return QStringLiteral("Mismatch");
+        }
+        return groupId.toUpper();
+    }
+
+    static QStringList fallbackFields(const QString& groupId)
+    {
+        if (groupId == QStringLiteral("ahb")) {
+            return {QStringLiteral("addr[31:0]"), QStringLiteral("data[127:0]"), QStringLiteral("burst")};
+        }
+        if (groupId == QStringLiteral("uart")) {
+            return {QStringLiteral("rx"), QStringLiteral("tx")};
+        }
+        if (groupId == QStringLiteral("spi")) {
+            return {QStringLiteral("sclk"), QStringLiteral("mosi"), QStringLiteral("miso"), QStringLiteral("cs")};
+        }
+        if (groupId == QStringLiteral("can")) {
+            return {QStringLiteral("rx"), QStringLiteral("tx")};
+        }
+        if (groupId == QStringLiteral("i2c")) {
+            return {QStringLiteral("scl"), QStringLiteral("sda")};
+        }
+        if (groupId == QStringLiteral("eth")) {
+            return {QStringLiteral("rx"), QStringLiteral("tx")};
+        }
+        if (groupId == QStringLiteral("usb")) {
+            return {QStringLiteral("dp"), QStringLiteral("dm")};
+        }
+        if (groupId == QStringLiteral("jtag")) {
+            return {QStringLiteral("tck"), QStringLiteral("tms"), QStringLiteral("tdi"), QStringLiteral("tdo")};
+        }
+        return {
+            QStringLiteral("mismatch[4]"),
+            QStringLiteral("mismatch[3]"),
+            QStringLiteral("mismatch[2]"),
+            QStringLiteral("mismatch[1]"),
+            QStringLiteral("mismatch[0]"),
+        };
+    }
+
+    const TraceGroupViewItem* findGroup(const QString& groupId) const
+    {
+        for (const TraceGroupViewItem& group : groups_) {
+            const QString id = group.id.trimmed().toLower();
+            const QString display = group.displayName.trimmed().toLower();
+            if (id == groupId || display == groupId) {
+                return &group;
+            }
+        }
+        return nullptr;
+    }
+
+    QVector<WaveformProtocolRow> rows() const
+    {
+        QVector<WaveformProtocolRow> result;
+        const QStringList groupIds = fixedGroupIds();
+        result.reserve(groupIds.size() * 3);
+        for (int groupIndex = 0; groupIndex < groupIds.size(); ++groupIndex) {
+            const QString groupId = groupIds.at(groupIndex);
+            const TraceGroupViewItem* const group = findGroup(groupId);
+            WaveformProtocolRow row;
+            row.groupId = groupId;
+            row.name = group == nullptr ? displayNameForId(groupId) :
+                (group->displayName.trimmed().isEmpty() ? displayNameForId(groupId) : group->displayName.trimmed().toUpper());
+            if (groupId == QStringLiteral("mismatch")) {
+                row.name = QStringLiteral("Mismatch");
+            }
+            row.status = group == nullptr ? QStringLiteral("not_captured") : group->status;
+            row.reason = group == nullptr ? QString() : group->reason;
+            row.transactions = group == nullptr ? QStringList() : group->transactions;
+            row.group = true;
+            row.expanded = expandedGroups_.contains(groupId);
+            row.groupIndex = groupIndex;
+            result.append(row);
+
+            if (!row.expanded) {
+                continue;
+            }
+
+            const QStringList fields = group != nullptr && !group->fields.isEmpty() ? group->fields : fallbackFields(groupId);
+            for (int fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex) {
+                WaveformProtocolRow fieldRow;
+                fieldRow.groupId = groupId;
+                fieldRow.name = fields.at(fieldIndex);
+                fieldRow.status = row.status;
+                fieldRow.reason = row.reason;
+                fieldRow.child = true;
+                fieldRow.groupIndex = groupIndex;
+                fieldRow.childIndex = fieldIndex;
+                result.append(fieldRow);
+            }
+        }
+        return result;
+    }
+
+    bool hasLoadedData() const
+    {
+        return !groups_.isEmpty();
+    }
+
+    int leftPaneWidth() const
+    {
+        return qBound(190, width() / 4, 245);
+    }
+
+    WaveformTimeAxis timeAxis() const
+    {
+        WaveformTimeAxis axis;
+        static const QRegularExpression rangeExpression(QStringLiteral("(-?\\d+)\\s*\\.\\.\\s*(-?\\d+)\\s*(\\S+)"));
+        const QRegularExpressionMatch match = rangeExpression.match(timeRangeText_);
+        if (match.hasMatch()) {
+            bool startOk = false;
+            bool endOk = false;
+            const qint64 start = match.captured(1).toLongLong(&startOk);
+            const qint64 end = match.captured(2).toLongLong(&endOk);
+            if (startOk && endOk && end > start) {
+                axis.start = start;
+                axis.end = end;
+                axis.unit = match.captured(3);
+            }
+        }
+
+        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
+        axis.end = axis.start + qMax<qint64>(1, static_cast<qint64>(span / horizontalZoom_));
+        return axis;
+    }
+
+    void drawRuler(QPainter* const painter, const QRect& rect) const
+    {
+        if (painter == nullptr || rect.width() <= 0) {
+            return;
+        }
+
+        const WaveformTimeAxis axis = timeAxis();
+        constexpr int majorTicks = 8;
+        constexpr int minorPerMajor = 5;
+        painter->setPen(QColor(QStringLiteral("#c7d0dc")));
+        for (int index = 0; index <= majorTicks * minorPerMajor; ++index) {
+            const int x = rect.left() + rect.width() * index / (majorTicks * minorPerMajor);
+            const bool major = (index % minorPerMajor) == 0;
+            painter->drawLine(x, rect.bottom() - (major ? 10 : 5), x, rect.bottom());
+            if (major) {
+                const qint64 time = axis.start + (axis.end - axis.start) * (index / minorPerMajor) / majorTicks;
+                painter->setPen(QColor(QStringLiteral("#4b5563")));
+                painter->drawText(QRect(x + 3, rect.top() + 1, 70, 15),
+                                  Qt::AlignLeft | Qt::AlignVCenter,
+                                  QStringLiteral("%1%2").arg(time).arg(axis.unit));
+                painter->setPen(QColor(QStringLiteral("#c7d0dc")));
+            }
+        }
+
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(QStringLiteral("#1677ff")));
+        painter->drawRect(QRect(rect.left() - 2, rect.top(), 4, rect.height()));
+        painter->drawRoundedRect(QRect(rect.left() - 10, rect.top(), 20, 14), 2, 2);
+        painter->setPen(QColor(QStringLiteral("#ffffff")));
+        painter->drawText(QRect(rect.left() - 10, rect.top(), 20, 14), Qt::AlignCenter, QStringLiteral("0"));
+    }
+
+    void drawRow(
+        QPainter* const painter,
+        const QRect& rowRect,
+        const int leftWidth,
+        const WaveformProtocolRow& row,
+        const int index) const
+    {
+        if (painter == nullptr) {
+            return;
+        }
+
+        painter->fillRect(rowRect, row.child ? QColor(QStringLiteral("#ffffff")) : QColor(QStringLiteral("#fbfcfe")));
+        if (hasFocus() && index == selectedRow_) {
+            painter->fillRect(rowRect, QColor(QStringLiteral("#e8f1ff")));
+        }
+
+        painter->setPen(QColor(QStringLiteral("#e1e7ef")));
+        painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(), rowRect.bottom());
+
+        if (row.group) {
+            drawDisclosure(painter, QRect(10, rowRect.top() + 8, 11, 11), row.expanded);
+        }
+
+        QFont nameFont = painter->font();
+        nameFont.setFamily(QStringLiteral("Consolas"));
+        nameFont.setBold(row.group);
+        painter->setFont(nameFont);
+        painter->setPen(QColor(QStringLiteral("#111827")));
+        const int nameLeft = row.child ? 38 : 25;
+        const QRect nameRect(nameLeft, rowRect.top(), leftWidth - nameLeft - 24, rowRect.height());
+        painter->drawText(nameRect,
+                          Qt::AlignVCenter | Qt::AlignLeft,
+                          painter->fontMetrics().elidedText(row.name, Qt::ElideRight, nameRect.width()));
+
+        if (hasLoadedData() && row.group) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(statusColor(row.status));
+            painter->drawEllipse(QRect(leftWidth - 18, rowRect.center().y() - 3, 6, 6));
+        }
+
+        drawTrack(painter, QRect(leftWidth + 1, rowRect.top(), rowRect.width() - leftWidth - 2, rowRect.height()), row);
+    }
+
+    static void drawDisclosure(QPainter* const painter, const QRect& rect, const bool expanded)
+    {
+        if (painter == nullptr) {
+            return;
+        }
+
+        const QPoint center = rect.center();
+        QPainterPath path;
+        if (expanded) {
+            path.moveTo(center.x() - 4, center.y() - 2);
+            path.lineTo(center.x(), center.y() + 2);
+            path.lineTo(center.x() + 4, center.y() - 2);
+        } else {
+            path.moveTo(center.x() - 2, center.y() - 4);
+            path.lineTo(center.x() + 2, center.y());
+            path.lineTo(center.x() - 2, center.y() + 4);
+        }
+
+        QPen pen(QColor(QStringLiteral("#334155")));
+        pen.setWidthF(1.2);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path);
+    }
+
+    static QColor statusColor(const QString& status)
+    {
+        const QString normalized = status.trimmed().toLower();
+        if (normalized.contains(QStringLiteral("mismatch")) || normalized.contains(QStringLiteral("event"))) {
+            return QColor(QStringLiteral("#ff4d4f"));
+        }
+        if (normalized.contains(QStringLiteral("missing")) || normalized.contains(QStringLiteral("invalid"))) {
+            return QColor(QStringLiteral("#fa8c16"));
+        }
+        if (normalized == QStringLiteral("complete") || normalized == QStringLiteral("ok")) {
+            return QColor(QStringLiteral("#22c55e"));
+        }
+        return QColor(QStringLiteral("#94a3b8"));
+    }
+
+    static bool unavailableStatus(const QString& status)
+    {
+        const QString normalized = status.trimmed().toLower();
+        return normalized.contains(QStringLiteral("not_captured")) ||
+            normalized.contains(QStringLiteral("missing")) ||
+            normalized.contains(QStringLiteral("invalid")) ||
+            normalized.contains(QStringLiteral("not_available"));
+    }
+
+    void drawTrack(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
+    {
+        if (painter == nullptr || rect.width() <= 0) {
+            return;
+        }
+
+        drawGrid(painter, rect);
+        if (!hasLoadedData()) {
+            return;
+        }
+
+        if (row.group) {
+            if (!row.transactions.isEmpty()) {
+                drawTransactions(painter, rect.adjusted(0, 4, 0, -4), row);
+            } else if (unavailableStatus(row.status)) {
+                drawUnavailable(painter, rect, row.reason);
+            }
+            return;
+        }
+
+        if (unavailableStatus(row.status)) {
+            drawUnavailable(painter, rect, row.reason);
+            return;
+        }
+
+        if (isBusField(row.name)) {
+            drawBusField(painter, rect, row);
+        } else {
+            drawDigitalField(painter, rect, row.groupIndex + row.childIndex);
+        }
+    }
+
+    static void drawGrid(QPainter* const painter, const QRect& rect)
+    {
+        constexpr int majorTicks = 8;
+        constexpr int minorPerMajor = 5;
+        for (int index = 0; index <= majorTicks * minorPerMajor; ++index) {
+            const int x = rect.left() + rect.width() * index / (majorTicks * minorPerMajor);
+            painter->setPen((index % minorPerMajor) == 0
+                                ? QColor(QStringLiteral("#e1e7ef"))
+                                : QColor(QStringLiteral("#f3f6fa")));
+            painter->drawLine(x, rect.top(), x, rect.bottom());
+        }
+    }
+
+    static void drawUnavailable(QPainter* const painter, const QRect& rect, const QString& reason)
+    {
+        QPen pen(QColor(QStringLiteral("#b8c2cf")));
+        pen.setStyle(Qt::DashLine);
+        painter->setPen(pen);
+        painter->drawLine(rect.left() + 18, rect.center().y(), rect.right() - 18, rect.center().y());
+        if (!reason.trimmed().isEmpty()) {
+            painter->setPen(QColor(QStringLiteral("#8a96a6")));
+            painter->drawText(rect.adjusted(24, 0, -10, 0),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              painter->fontMetrics().elidedText(reason.trimmed(), Qt::ElideRight, rect.width() - 34));
+        }
+    }
+
+    static bool isBusField(const QString& name)
+    {
+        return name.contains(QStringLiteral(":")) ||
+            name.contains(QStringLiteral("addr"), Qt::CaseInsensitive) ||
+            name.contains(QStringLiteral("data"), Qt::CaseInsensitive);
+    }
+
+    static QString sampleFieldValue(const QString& name, const int index)
+    {
+        if (name.contains(QStringLiteral("127:0"))) {
+            return QStringLiteral("0x%1").arg(0x1000 + index * 0x40, 32, 16, QLatin1Char('0'));
+        }
+        if (name.contains(QStringLiteral("31:0"))) {
+            return QStringLiteral("0x%1").arg(0x80000000ULL + static_cast<quint64>(index) * 0x20ULL, 8, 16, QLatin1Char('0'));
+        }
+        return QStringLiteral("0x%1").arg(index + 1, 2, 16, QLatin1Char('0'));
+    }
+
+    static void drawBusField(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row)
+    {
+        const int blockCount = qMax(2, qMin(4, rect.width() / 150));
+        const int span = qMax(1, rect.width() - 60);
+        for (int index = 0; index < blockCount; ++index) {
+            const int x = rect.left() + 24 + span * index / blockCount;
+            const QRect blockRect(x, rect.top() + 6, qMin(qMax(70, span / (blockCount + 1)), rect.right() - x - 8), rect.height() - 12);
+            if (blockRect.width() <= 20) {
+                continue;
+            }
+            painter->setPen(QColor(QStringLiteral("#60a5fa")));
+            painter->setBrush(QColor(QStringLiteral("#eff6ff")));
+            painter->drawRoundedRect(blockRect, 2, 2);
+            painter->setPen(QColor(QStringLiteral("#1d4ed8")));
+            painter->drawText(blockRect.adjusted(6, 0, -6, 0),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              painter->fontMetrics().elidedText(sampleFieldValue(row.name, index),
+                                                                Qt::ElideRight,
+                                                                blockRect.width() - 12));
+        }
+    }
+
+    static void drawDigitalField(QPainter* const painter, const QRect& rect, const int seed)
+    {
+        QPainterPath path;
+        const int high = rect.top() + 8;
+        const int low = rect.bottom() - 8;
+        const int step = qMax(28, rect.width() / 12);
+        int x = rect.left() + 20;
+        int y = (seed % 2 == 0) ? high : low;
+        path.moveTo(x, y);
+        while (x < rect.right() - 18) {
+            const int nextX = qMin(rect.right() - 18, x + step);
+            path.lineTo(nextX, y);
+            y = (y == high) ? low : high;
+            path.lineTo(nextX, y);
+            x = nextX;
+        }
+        QPen pen(QColor(QStringLiteral("#0f766e")));
+        pen.setWidthF(1.2);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path);
+    }
+
+    void drawTransactions(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
+    {
+        const WaveformTimeAxis axis = timeAxis();
+        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
+        const int count = qMin(row.transactions.size(), 5);
+        for (int index = 0; index < count; ++index) {
+            qint64 start = 0;
+            qint64 end = 0;
+            const bool hasTime = parseTransactionRange(row.transactions.at(index), &start, &end);
+            int x = rect.left() + 24 + ((index * 67 + row.groupIndex * 19) % qMax(1, rect.width() - 120));
+            int blockWidth = qMax(64, rect.width() / 8);
+            if (hasTime) {
+                const qint64 clampedStart = qBound(axis.start, start, axis.end);
+                const qint64 clampedEnd = qBound(axis.start, qMax(start + 1, end), axis.end);
+                x = rect.left() + static_cast<int>((clampedStart - axis.start) * rect.width() / span);
+                blockWidth = qMin(qMax(56, static_cast<int>((clampedEnd - clampedStart) * rect.width() / span)), rect.right() - x - 4);
+            }
+
+            const QRect blockRect(x, rect.top(), blockWidth, rect.height());
+            if (blockRect.width() <= 16) {
+                continue;
+            }
+            const bool mismatch = row.groupId == QStringLiteral("mismatch") ||
+                row.transactions.at(index).contains(QStringLiteral("mismatch"), Qt::CaseInsensitive);
+            painter->setPen(mismatch ? QColor(QStringLiteral("#ff4d4f")) : QColor(QStringLiteral("#fa8c16")));
+            painter->setBrush(mismatch ? QColor(QStringLiteral("#fff1f0")) : QColor(QStringLiteral("#fff7e6")));
+            painter->drawRoundedRect(blockRect, 2, 2);
+            painter->setPen(mismatch ? QColor(QStringLiteral("#a8071a")) : QColor(QStringLiteral("#ad4e00")));
+            painter->drawText(blockRect.adjusted(6, 0, -6, 0),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              painter->fontMetrics().elidedText(transactionLabel(row.transactions.at(index)),
+                                                                Qt::ElideRight,
+                                                                blockRect.width() - 12));
+        }
+    }
+
+    static bool parseTransactionRange(const QString& text, qint64* const start, qint64* const end)
+    {
+        static const QRegularExpression rangeExpression(QStringLiteral("\\[(-?\\d+)\\.\\.(-?\\d+)\\]"));
+        const QRegularExpressionMatch match = rangeExpression.match(text);
+        if (!match.hasMatch()) {
+            return false;
+        }
+        bool startOk = false;
+        bool endOk = false;
+        const qint64 parsedStart = match.captured(1).toLongLong(&startOk);
+        const qint64 parsedEnd = match.captured(2).toLongLong(&endOk);
+        if (!startOk || !endOk) {
+            return false;
+        }
+        if (start != nullptr) {
+            *start = parsedStart;
+        }
+        if (end != nullptr) {
+            *end = parsedEnd;
+        }
+        return true;
+    }
+
+    static QString transactionLabel(const QString& text)
+    {
+        const int bracketEnd = text.indexOf(QLatin1Char(']'));
+        const QString label = bracketEnd >= 0 ? text.mid(bracketEnd + 1).trimmed() : text.trimmed();
+        return label.isEmpty() ? QStringLiteral("event") : label;
+    }
+
+    void drawRemainingGrid(QPainter* const painter, const int leftWidth, const int rowCount) const
+    {
+        const int y = kRulerHeight + rowCount * kRowHeight - verticalOffset_;
+        if (y >= height()) {
+            return;
+        }
+        const QRect leftRect(0, qMax(kRulerHeight, y), leftWidth, height() - qMax(kRulerHeight, y));
+        const QRect waveRect(leftWidth + 1, leftRect.top(), width() - leftWidth - 2, leftRect.height());
+        painter->fillRect(leftRect, QColor(QStringLiteral("#fbfcfe")));
+        drawGrid(painter, waveRect);
+        painter->setPen(QColor(QStringLiteral("#eef2f7")));
+        for (int rowY = leftRect.top(); rowY < height(); rowY += kRowHeight) {
+            painter->drawLine(0, rowY, width(), rowY);
+        }
+    }
+
+    void drawScrollBar(QPainter* const painter, const QRect& rect) const
+    {
+        const int maxOffset = maxVerticalOffset();
+        if (maxOffset <= 0 || rect.height() <= 20) {
+            return;
+        }
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(QStringLiteral("#eef2f7")));
+        painter->drawRoundedRect(rect, 3, 3);
+        const int contentHeight = rows().size() * kRowHeight;
+        const int thumbHeight = qMax(28, rect.height() * rect.height() / qMax(1, contentHeight));
+        const int thumbY = rect.top() + (rect.height() - thumbHeight) * verticalOffset_ / maxOffset;
+        painter->setBrush(QColor(QStringLiteral("#aeb9c8")));
+        painter->drawRoundedRect(QRect(rect.left(), thumbY, rect.width(), thumbHeight), 3, 3);
+    }
+
+    int rowIndexAt(const int y) const
+    {
+        if (y < kRulerHeight) {
+            return -1;
+        }
+        return (y - kRulerHeight + verticalOffset_) / kRowHeight;
+    }
+
+    int maxVerticalOffset() const
+    {
+        return qMax(0, rows().size() * kRowHeight - qMax(0, height() - kRulerHeight));
+    }
+
+    void ensureSelectedVisible()
+    {
+        const int bodyHeight = qMax(0, height() - kRulerHeight);
+        const int rowTop = selectedRow_ * kRowHeight;
+        const int rowBottom = rowTop + kRowHeight;
+        if (rowTop < verticalOffset_) {
+            verticalOffset_ = rowTop;
+        } else if (rowBottom > verticalOffset_ + bodyHeight) {
+            verticalOffset_ = rowBottom - bodyHeight;
+        }
+        verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
+    }
+
+    void toggleGroup(const QString& groupId)
+    {
+        if (expandedGroups_.contains(groupId)) {
+            expandedGroups_.remove(groupId);
+        } else {
+            expandedGroups_.insert(groupId);
+        }
+        verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
+        update();
+    }
+
+    QString statusText_;
+    QString pathText_;
+    QString timeRangeText_;
+    QVector<TraceGroupViewItem> groups_;
+    QSet<QString> expandedGroups_;
+    int selectedRow_;
+    int verticalOffset_;
+    double horizontalZoom_;
 };
 
 QLabel* pageTitle(const QString& text, QWidget* const parent)
