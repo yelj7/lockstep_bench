@@ -436,13 +436,23 @@ QString UiTheme::workbenchStyleSheet()
             padding: 4px;
         }
         QWidget#waveform_title_controls,
-        QWidget#waveform_header_export_row {
+        QWidget#waveform_inputs_header_panel,
+        QWidget#waveform_detached_toolbar {
             background-color: #eceff3;
+        }
+        QWidget#waveform_inputs_header_panel {
+            border: 1px solid #d7dde5;
+            border-radius: 6px;
+            padding: 6px;
         }
         QWidget#waveform_analyzer_panel {
             background-color: #f7f8fa;
             border: 1px solid #cfd6df;
             border-radius: 6px;
+        }
+        QPushButton#waveform_fullscreen_button {
+            padding: 5px 12px;
+            min-height: 24px;
         }
         QWidget#waveform_embed_host {
             background-color: #f7f8fa;

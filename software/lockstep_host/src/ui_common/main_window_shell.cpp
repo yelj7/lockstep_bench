@@ -113,328 +113,6 @@ protected:
     }
 };
 
-struct WaveformVisualRow final {
-    QString name;
-    QString value;
-    QString detail;
-    bool child = false;
-    bool event = false;
-};
-
-class LegacyWaveformDisplayWidget final : public QWidget {
-public:
-    explicit LegacyWaveformDisplayWidget(QWidget* const parent = nullptr)
-        : QWidget(parent),
-          statusText_(),
-          pathText_(),
-          timeRangeText_(),
-          groups_()
-    {
-        setObjectName(QStringLiteral("waveform_display_widget"));
-        setMinimumHeight(390);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    }
-
-    void setTrace(
-        const QString& statusText,
-        const QString& pathText,
-        const QString& timeRangeText,
-        const QVector<TraceGroupViewItem>& groups)
-    {
-        statusText_ = statusText;
-        pathText_ = pathText;
-        timeRangeText_ = timeRangeText;
-        groups_ = groups;
-        update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent* const event) override
-    {
-        Q_UNUSED(event);
-
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-
-        const QRect bounds = rect();
-        painter.fillRect(bounds, QColor(QStringLiteral("#07111c")));
-        painter.setPen(QColor(QStringLiteral("#25394b")));
-        painter.drawRect(bounds.adjusted(0, 0, -1, -1));
-
-        const int toolbarHeight = 42;
-        const int rulerHeight = 34;
-        const int leftWidth = qBound(210, width() / 4, 285);
-        const int rowHeight = 34;
-        const QRect toolbarRect(0, 0, width(), toolbarHeight);
-        const QRect rulerRect(leftWidth, toolbarHeight, width() - leftWidth, rulerHeight);
-        const QRect signalHeaderRect(0, toolbarHeight, leftWidth, rulerHeight);
-
-        painter.fillRect(toolbarRect, QColor(QStringLiteral("#0b1724")));
-        painter.setPen(QColor(QStringLiteral("#1e3448")));
-        painter.drawLine(toolbarRect.bottomLeft(), toolbarRect.bottomRight());
-
-        painter.setPen(QColor(QStringLiteral("#e2eef7")));
-        QFont titleFont = painter.font();
-        titleFont.setBold(true);
-        titleFont.setPointSize(titleFont.pointSize() + 1);
-        painter.setFont(titleFont);
-        painter.drawText(QRect(14, 0, 190, toolbarHeight), Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("Waveform Analyzer"));
-
-        QFont normalFont = painter.font();
-        normalFont.setBold(false);
-        normalFont.setPointSize(qMax(8, normalFont.pointSize() - 1));
-        painter.setFont(normalFont);
-        const QString statusText = statusText_.trimmed().isEmpty() ? QStringLiteral("not_loaded") : statusText_.trimmed();
-        const QRect statusRect(204, 10, 132, 22);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(QStringLiteral("#123c3e")));
-        painter.drawRoundedRect(statusRect, 4, 4);
-        painter.setPen(QColor(QStringLiteral("#8df5e6")));
-        painter.drawText(statusRect.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, statusText);
-
-        painter.setPen(QColor(QStringLiteral("#91a8b8")));
-        const QString sourceText = pathText_.trimmed().isEmpty()
-            ? QStringLiteral("等待当前任务生成 waveform/lockstep_trace.vcd")
-            : QFileInfo(pathText_).fileName();
-        painter.drawText(QRect(352, 0, width() - 366, toolbarHeight), Qt::AlignVCenter | Qt::AlignRight, sourceText);
-
-        painter.fillRect(signalHeaderRect, QColor(QStringLiteral("#0f1f2d")));
-        painter.fillRect(rulerRect, QColor(QStringLiteral("#0b1a29")));
-        painter.setPen(QColor(QStringLiteral("#2c4355")));
-        painter.drawLine(leftWidth, toolbarHeight, leftWidth, height());
-        painter.drawLine(0, toolbarHeight + rulerHeight, width(), toolbarHeight + rulerHeight);
-
-        painter.setPen(QColor(QStringLiteral("#a9bac8")));
-        painter.drawText(signalHeaderRect.adjusted(14, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("协议 / 字段"));
-        drawRuler(&painter, rulerRect);
-
-        const QVector<WaveformVisualRow> rows = visualRows();
-        const int firstRowY = toolbarHeight + rulerHeight;
-        if (rows.isEmpty()) {
-            drawEmptyState(&painter, QRect(0, firstRowY, width(), height() - firstRowY));
-            return;
-        }
-
-        painter.setClipRect(QRect(0, firstRowY, width(), height() - firstRowY));
-        for (int index = 0; index < rows.size(); ++index) {
-            const int y = firstRowY + (index * rowHeight);
-            if (y > height()) {
-                break;
-            }
-            const QRect rowRect(0, y, width(), rowHeight);
-            drawRow(&painter, rowRect, leftWidth, rows.at(index), index);
-        }
-        painter.setClipping(false);
-    }
-
-private:
-    QVector<WaveformVisualRow> visualRows() const
-    {
-        QVector<WaveformVisualRow> rows;
-        for (const TraceGroupViewItem& group : groups_) {
-            WaveformVisualRow groupRow;
-            groupRow.name = group.displayName.isEmpty() ? group.id : group.displayName;
-            groupRow.value = group.status;
-            groupRow.detail = group.reason;
-            rows.append(groupRow);
-
-            int fieldCount = 0;
-            for (const QString& field : group.fields) {
-                WaveformVisualRow fieldRow;
-                fieldRow.name = field;
-                fieldRow.value = QStringLiteral("signal");
-                fieldRow.child = true;
-                rows.append(fieldRow);
-                ++fieldCount;
-                if (fieldCount >= 5) {
-                    break;
-                }
-            }
-
-            int transactionCount = 0;
-            for (const QString& transaction : group.transactions) {
-                WaveformVisualRow transactionRow;
-                transactionRow.name = transaction;
-                transactionRow.value = QStringLiteral("transaction");
-                transactionRow.child = true;
-                transactionRow.event = true;
-                rows.append(transactionRow);
-                ++transactionCount;
-                if (transactionCount >= 3) {
-                    break;
-                }
-            }
-        }
-        return rows;
-    }
-
-    void drawRuler(QPainter* const painter, const QRect& rect) const
-    {
-        if (painter == nullptr) {
-            return;
-        }
-
-        painter->setPen(QColor(QStringLiteral("#39566a")));
-        const int tickCount = 8;
-        for (int index = 0; index <= tickCount; ++index) {
-            const int x = rect.left() + (rect.width() * index / tickCount);
-            const int tickHeight = (index % 2 == 0) ? 14 : 8;
-            painter->drawLine(x, rect.bottom() - tickHeight, x, rect.bottom());
-            if (index % 2 == 0) {
-                const QString label = index == 0
-                    ? QStringLiteral("0")
-                    : QStringLiteral("+%1").arg(index);
-                painter->setPen(QColor(QStringLiteral("#8ba0b2")));
-                painter->drawText(QRect(x + 4, rect.top() + 2, 64, 16), Qt::AlignLeft | Qt::AlignVCenter, label);
-                painter->setPen(QColor(QStringLiteral("#39566a")));
-            }
-        }
-
-        painter->setPen(QColor(QStringLiteral("#b5c8d7")));
-        painter->drawText(rect.adjusted(0, 0, -12, -2), Qt::AlignRight | Qt::AlignVCenter,
-                          timeRangeText_.isEmpty() ? QStringLiteral("time axis") : timeRangeText_);
-    }
-
-    void drawEmptyState(QPainter* const painter, const QRect& rect) const
-    {
-        if (painter == nullptr) {
-            return;
-        }
-
-        painter->fillRect(rect, QColor(QStringLiteral("#07111c")));
-        painter->setPen(QColor(QStringLiteral("#1d3447")));
-        const int gridStep = 42;
-        for (int x = rect.left(); x < rect.right(); x += gridStep) {
-            painter->drawLine(x, rect.top(), x, rect.bottom());
-        }
-        for (int y = rect.top(); y < rect.bottom(); y += gridStep) {
-            painter->drawLine(rect.left(), y, rect.right(), y);
-        }
-
-        painter->setPen(QColor(QStringLiteral("#8ba0b2")));
-        painter->drawText(rect, Qt::AlignCenter, QStringLiteral("等待固定 VCD 与协议解析结果"));
-    }
-
-    void drawRow(
-        QPainter* const painter,
-        const QRect& rowRect,
-        const int leftWidth,
-        const WaveformVisualRow& row,
-        const int index) const
-    {
-        if (painter == nullptr) {
-            return;
-        }
-
-        const QColor rowColor = (index % 2 == 0)
-            ? QColor(QStringLiteral("#091522"))
-            : QColor(QStringLiteral("#0b1928"));
-        painter->fillRect(rowRect, rowColor);
-        painter->setPen(QColor(QStringLiteral("#132b3e")));
-        painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(), rowRect.bottom());
-
-        const QRect nameRect(rowRect.left() + (row.child ? 26 : 12), rowRect.top(), leftWidth - 108, rowRect.height());
-        QFont nameFont = painter->font();
-        nameFont.setBold(!row.child);
-        painter->setFont(nameFont);
-        painter->setPen(row.child ? QColor(QStringLiteral("#b4c4d1")) : QColor(QStringLiteral("#e2eef7")));
-        painter->drawText(nameRect, Qt::AlignVCenter | Qt::AlignLeft, painter->fontMetrics().elidedText(row.name, Qt::ElideRight, nameRect.width()));
-
-        painter->setFont(QFont());
-        const QRect valueRect(rowRect.left() + leftWidth - 96, rowRect.top(), 84, rowRect.height());
-        painter->setPen(valueColor(row.value));
-        painter->drawText(valueRect, Qt::AlignVCenter | Qt::AlignRight, painter->fontMetrics().elidedText(row.value, Qt::ElideRight, valueRect.width()));
-
-        const QRect waveRect(leftWidth + 1, rowRect.top(), rowRect.width() - leftWidth - 2, rowRect.height());
-        drawWaveTrack(painter, waveRect, row, index);
-    }
-
-    QColor valueColor(const QString& value) const
-    {
-        if (value == QStringLiteral("event_detected")) {
-            return QColor(QStringLiteral("#fbbf24"));
-        }
-        if (value == QStringLiteral("complete")) {
-            return QColor(QStringLiteral("#34d399"));
-        }
-        if (value == QStringLiteral("not_captured")) {
-            return QColor(QStringLiteral("#94a3b8"));
-        }
-        if (value == QStringLiteral("transaction")) {
-            return QColor(QStringLiteral("#38bdf8"));
-        }
-        return QColor(QStringLiteral("#9fb3c4"));
-    }
-
-    void drawWaveTrack(
-        QPainter* const painter,
-        const QRect& rect,
-        const WaveformVisualRow& row,
-        const int index) const
-    {
-        if (painter == nullptr) {
-            return;
-        }
-
-        painter->setPen(QColor(QStringLiteral("#143049")));
-        const int segmentCount = 8;
-        for (int tick = 0; tick <= segmentCount; ++tick) {
-            const int x = rect.left() + (rect.width() * tick / segmentCount);
-            painter->drawLine(x, rect.top(), x, rect.bottom());
-        }
-
-        if (row.value == QStringLiteral("not_captured")) {
-            QPen pen(QColor(QStringLiteral("#475569")));
-            pen.setStyle(Qt::DashLine);
-            painter->setPen(pen);
-            const int y = rect.center().y();
-            painter->drawLine(rect.left() + 16, y, rect.right() - 16, y);
-            painter->setPen(QColor(QStringLiteral("#64748b")));
-            painter->drawText(rect.adjusted(22, 0, -12, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                              row.detail.isEmpty() ? QStringLiteral("not captured") : row.detail);
-            return;
-        }
-
-        if (row.event) {
-            const int blockWidth = qMax(72, rect.width() / 5);
-            const int x = rect.left() + 24 + ((index * 37) % qMax(1, rect.width() - blockWidth - 48));
-            const QRect blockRect(x, rect.top() + 7, blockWidth, rect.height() - 14);
-            painter->setPen(QColor(QStringLiteral("#f59e0b")));
-            painter->setBrush(QColor(QStringLiteral("#7c2d12")));
-            painter->drawRoundedRect(blockRect, 4, 4);
-            painter->setPen(QColor(QStringLiteral("#fde68a")));
-            painter->drawText(blockRect.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                              painter->fontMetrics().elidedText(row.name, Qt::ElideRight, blockRect.width() - 16));
-            return;
-        }
-
-        QPainterPath path;
-        const int high = rect.top() + 9;
-        const int low = rect.bottom() - 9;
-        const int step = qMax(34, rect.width() / 9);
-        int x = rect.left() + 14;
-        int y = ((index % 3) == 0) ? high : low;
-        path.moveTo(x, y);
-        while (x < rect.right() - 14) {
-            const int nextX = qMin(rect.right() - 14, x + step);
-            path.lineTo(nextX, y);
-            y = (y == high) ? low : high;
-            path.lineTo(nextX, y);
-            x = nextX;
-        }
-        QPen wavePen(row.child ? QColor(QStringLiteral("#22d3ee")) : QColor(QStringLiteral("#2dd4bf")));
-        wavePen.setWidthF(row.child ? 1.3 : 1.8);
-        painter->setPen(wavePen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawPath(path);
-    }
-
-    QString statusText_;
-    QString pathText_;
-    QString timeRangeText_;
-    QVector<TraceGroupViewItem> groups_;
-};
-
 struct WaveformTimeAxis final {
     qint64 start = 0;
     qint64 end = 400;
@@ -449,6 +127,7 @@ struct WaveformProtocolRow final {
     QStringList transactions;
     bool group = false;
     bool child = false;
+    bool section = false;
     bool expanded = false;
     int groupIndex = 0;
     int childIndex = -1;
@@ -499,18 +178,21 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing, true);
 
         const QRect bounds = rect();
-        painter.fillRect(bounds, QColor(QStringLiteral("#ffffff")));
-        painter.setPen(QColor(QStringLiteral("#d6dde6")));
+        painter.fillRect(bounds, canvasColor());
+        painter.setPen(gridMajorColor());
         painter.drawRect(bounds.adjusted(0, 0, -1, -1));
 
         const int leftWidth = leftPaneWidth();
         const QRect leftHeader(0, 0, leftWidth, kRulerHeight);
         const QRect rulerRect(leftWidth, 0, width() - leftWidth, kRulerHeight);
-        painter.fillRect(leftHeader, QColor(QStringLiteral("#fbfcfe")));
-        painter.fillRect(rulerRect, QColor(QStringLiteral("#fbfcfe")));
-        painter.setPen(QColor(QStringLiteral("#dbe2ea")));
+        painter.fillRect(leftHeader, rulerSurfaceColor());
+        painter.fillRect(rulerRect, rulerSurfaceColor());
+        painter.setPen(gridMajorColor());
         painter.drawLine(leftWidth, 0, leftWidth, height());
         painter.drawLine(0, kRulerHeight - 1, width(), kRulerHeight - 1);
+        painter.setPen(textMutedColor());
+        painter.drawText(leftHeader.adjusted(12, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                         hasLoadedData() ? QStringLiteral("协议 / 信号") : QStringLiteral("协议通道"));
         drawRuler(&painter, rulerRect);
 
         const QVector<WaveformProtocolRow> visibleRows = rows();
@@ -658,6 +340,96 @@ private:
     static constexpr int kRulerHeight = 28;
     static constexpr int kRowHeight = 27;
 
+    static QColor canvasColor()
+    {
+        return QColor(QStringLiteral("#ffffff"));
+    }
+
+    static QColor rulerSurfaceColor()
+    {
+        return QColor(QStringLiteral("#fbfcfe"));
+    }
+
+    static QColor gridMajorColor()
+    {
+        return QColor(QStringLiteral("#dbe2ea"));
+    }
+
+    static QColor gridMinorColor()
+    {
+        return QColor(QStringLiteral("#edf2f7"));
+    }
+
+    static QColor signalWaveColor()
+    {
+        return QColor(QStringLiteral("#0f766e"));
+    }
+
+    static QColor busFillColor()
+    {
+        return QColor(QStringLiteral("#e8f1ff"));
+    }
+
+    static QColor busStrokeColor()
+    {
+        return QColor(QStringLiteral("#1677ff"));
+    }
+
+    static QColor protocolFillColor()
+    {
+        return QColor(QStringLiteral("#fff7e6"));
+    }
+
+    static QColor protocolStrokeColor()
+    {
+        return QColor(QStringLiteral("#fa8c16"));
+    }
+
+    static QColor mismatchFillColor()
+    {
+        return QColor(QStringLiteral("#fff1f0"));
+    }
+
+    static QColor mismatchStrokeColor()
+    {
+        return QColor(QStringLiteral("#ff4d4f"));
+    }
+
+    static QColor selectedRowColor()
+    {
+        return QColor(QStringLiteral("#f0e9ff"));
+    }
+
+    static QColor sectionSurfaceColor()
+    {
+        return QColor(QStringLiteral("#eef2f7"));
+    }
+
+    static QColor unavailableColor()
+    {
+        return QColor(QStringLiteral("#94a3b8"));
+    }
+
+    static QColor textStrongColor()
+    {
+        return QColor(QStringLiteral("#111827"));
+    }
+
+    static QColor textMutedColor()
+    {
+        return QColor(QStringLiteral("#64748b"));
+    }
+
+    static QColor okColor()
+    {
+        return QColor(QStringLiteral("#22c55e"));
+    }
+
+    static QColor okFillColor()
+    {
+        return QColor(QStringLiteral("#f0fdf4"));
+    }
+
     static QStringList fixedGroupIds()
     {
         return {
@@ -732,7 +504,38 @@ private:
     {
         QVector<WaveformProtocolRow> result;
         const QStringList groupIds = fixedGroupIds();
-        result.reserve(groupIds.size() * 3);
+        result.reserve(groupIds.size() * 6);
+
+        if (hasLoadedData()) {
+            WaveformProtocolRow signalSection;
+            signalSection.name = QStringLiteral("信号波形");
+            signalSection.section = true;
+            result.append(signalSection);
+
+            for (int groupIndex = 0; groupIndex < groupIds.size(); ++groupIndex) {
+                const QString groupId = groupIds.at(groupIndex);
+                const TraceGroupViewItem* const group = findGroup(groupId);
+                const QStringList fields = group != nullptr && !group->fields.isEmpty() ? group->fields : fallbackFields(groupId);
+                const int visibleFieldCount = qMin(fields.size(), groupId == QStringLiteral("mismatch") ? 5 : 4);
+                for (int fieldIndex = 0; fieldIndex < visibleFieldCount; ++fieldIndex) {
+                    WaveformProtocolRow fieldRow;
+                    fieldRow.groupId = groupId;
+                    fieldRow.name = QStringLiteral("%1: %2").arg(displayNameForId(groupId), fields.at(fieldIndex));
+                    fieldRow.status = group == nullptr ? QStringLiteral("not_captured") : group->status;
+                    fieldRow.reason = group == nullptr ? QString() : group->reason;
+                    fieldRow.child = true;
+                    fieldRow.groupIndex = groupIndex;
+                    fieldRow.childIndex = fieldIndex;
+                    result.append(fieldRow);
+                }
+            }
+
+            WaveformProtocolRow protocolSection;
+            protocolSection.name = QStringLiteral("协议解析");
+            protocolSection.section = true;
+            result.append(protocolSection);
+        }
+
         for (int groupIndex = 0; groupIndex < groupIds.size(); ++groupIndex) {
             const QString groupId = groupIds.at(groupIndex);
             const TraceGroupViewItem* const group = findGroup(groupId);
@@ -812,7 +615,7 @@ private:
         const WaveformTimeAxis axis = timeAxis();
         constexpr int majorTicks = 8;
         constexpr int minorPerMajor = 5;
-        painter->setPen(QColor(QStringLiteral("#c7d0dc")));
+        painter->setPen(gridMajorColor());
         for (int index = 0; index <= majorTicks * minorPerMajor; ++index) {
             const int x = rect.left() + rect.width() * index / (majorTicks * minorPerMajor);
             const bool major = (index % minorPerMajor) == 0;
@@ -823,12 +626,12 @@ private:
                 painter->drawText(QRect(x + 3, rect.top() + 1, 70, 15),
                                   Qt::AlignLeft | Qt::AlignVCenter,
                                   QStringLiteral("%1%2").arg(time).arg(axis.unit));
-                painter->setPen(QColor(QStringLiteral("#c7d0dc")));
+                painter->setPen(gridMajorColor());
             }
         }
 
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(QStringLiteral("#1677ff")));
+        painter->setBrush(busStrokeColor());
         painter->drawRect(QRect(rect.left() - 2, rect.top(), 4, rect.height()));
         painter->drawRoundedRect(QRect(rect.left() - 10, rect.top(), 20, 14), 2, 2);
         painter->setPen(QColor(QStringLiteral("#ffffff")));
@@ -846,12 +649,28 @@ private:
             return;
         }
 
-        painter->fillRect(rowRect, row.child ? QColor(QStringLiteral("#ffffff")) : QColor(QStringLiteral("#fbfcfe")));
-        if (hasFocus() && index == selectedRow_) {
-            painter->fillRect(rowRect, QColor(QStringLiteral("#e8f1ff")));
+        if (row.section) {
+            painter->fillRect(rowRect, sectionSurfaceColor());
+            painter->setPen(gridMajorColor());
+            painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(), rowRect.bottom());
+
+            QFont sectionFont = painter->font();
+            sectionFont.setBold(true);
+            painter->setFont(sectionFont);
+            painter->setPen(textMutedColor());
+            painter->drawText(QRect(12, rowRect.top(), leftWidth - 24, rowRect.height()),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              row.name);
+            drawGrid(painter, QRect(leftWidth + 1, rowRect.top(), rowRect.width() - leftWidth - 2, rowRect.height()));
+            return;
         }
 
-        painter->setPen(QColor(QStringLiteral("#e1e7ef")));
+        painter->fillRect(rowRect, row.child ? canvasColor() : rulerSurfaceColor());
+        if (hasFocus() && index == selectedRow_) {
+            painter->fillRect(rowRect, selectedRowColor());
+        }
+
+        painter->setPen(gridMajorColor());
         painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(), rowRect.bottom());
 
         if (row.group) {
@@ -862,7 +681,7 @@ private:
         nameFont.setFamily(QStringLiteral("Consolas"));
         nameFont.setBold(row.group);
         painter->setFont(nameFont);
-        painter->setPen(QColor(QStringLiteral("#111827")));
+        painter->setPen(textStrongColor());
         const int nameLeft = row.child ? 38 : 25;
         const QRect nameRect(nameLeft, rowRect.top(), leftWidth - nameLeft - 24, rowRect.height());
         painter->drawText(nameRect,
@@ -896,7 +715,7 @@ private:
             path.lineTo(center.x() - 2, center.y() + 4);
         }
 
-        QPen pen(QColor(QStringLiteral("#334155")));
+        QPen pen(textMutedColor());
         pen.setWidthF(1.2);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
@@ -908,16 +727,21 @@ private:
     static QColor statusColor(const QString& status)
     {
         const QString normalized = status.trimmed().toLower();
-        if (normalized.contains(QStringLiteral("mismatch")) || normalized.contains(QStringLiteral("event"))) {
-            return QColor(QStringLiteral("#ff4d4f"));
+        if (normalized.contains(QStringLiteral("mismatch")) ||
+            normalized.contains(QStringLiteral("error")) ||
+            normalized.contains(QStringLiteral("fault"))) {
+            return mismatchStrokeColor();
         }
-        if (normalized.contains(QStringLiteral("missing")) || normalized.contains(QStringLiteral("invalid"))) {
-            return QColor(QStringLiteral("#fa8c16"));
+        if (normalized.contains(QStringLiteral("event")) ||
+            normalized.contains(QStringLiteral("missing")) ||
+            normalized.contains(QStringLiteral("invalid")) ||
+            normalized.contains(QStringLiteral("stale"))) {
+            return protocolStrokeColor();
         }
         if (normalized == QStringLiteral("complete") || normalized == QStringLiteral("ok")) {
-            return QColor(QStringLiteral("#22c55e"));
+            return okColor();
         }
-        return QColor(QStringLiteral("#94a3b8"));
+        return unavailableColor();
     }
 
     static bool unavailableStatus(const QString& status)
@@ -945,6 +769,8 @@ private:
                 drawTransactions(painter, rect.adjusted(0, 4, 0, -4), row);
             } else if (unavailableStatus(row.status)) {
                 drawUnavailable(painter, rect, row.reason);
+            } else {
+                drawProtocolActivity(painter, rect.adjusted(0, 5, 0, -5), row);
             }
             return;
         }
@@ -957,7 +783,7 @@ private:
         if (isBusField(row.name)) {
             drawBusField(painter, rect, row);
         } else {
-            drawDigitalField(painter, rect, row.groupIndex + row.childIndex);
+            drawDigitalField(painter, rect, row.groupIndex + row.childIndex, row.name);
         }
     }
 
@@ -967,21 +793,19 @@ private:
         constexpr int minorPerMajor = 5;
         for (int index = 0; index <= majorTicks * minorPerMajor; ++index) {
             const int x = rect.left() + rect.width() * index / (majorTicks * minorPerMajor);
-            painter->setPen((index % minorPerMajor) == 0
-                                ? QColor(QStringLiteral("#e1e7ef"))
-                                : QColor(QStringLiteral("#f3f6fa")));
+            painter->setPen((index % minorPerMajor) == 0 ? gridMajorColor() : gridMinorColor());
             painter->drawLine(x, rect.top(), x, rect.bottom());
         }
     }
 
     static void drawUnavailable(QPainter* const painter, const QRect& rect, const QString& reason)
     {
-        QPen pen(QColor(QStringLiteral("#b8c2cf")));
+        QPen pen(unavailableColor());
         pen.setStyle(Qt::DashLine);
         painter->setPen(pen);
         painter->drawLine(rect.left() + 18, rect.center().y(), rect.right() - 18, rect.center().y());
         if (!reason.trimmed().isEmpty()) {
-            painter->setPen(QColor(QStringLiteral("#8a96a6")));
+            painter->setPen(textMutedColor());
             painter->drawText(rect.adjusted(24, 0, -10, 0),
                               Qt::AlignVCenter | Qt::AlignLeft,
                               painter->fontMetrics().elidedText(reason.trimmed(), Qt::ElideRight, rect.width() - 34));
@@ -1016,10 +840,10 @@ private:
             if (blockRect.width() <= 20) {
                 continue;
             }
-            painter->setPen(QColor(QStringLiteral("#60a5fa")));
-            painter->setBrush(QColor(QStringLiteral("#eff6ff")));
+            painter->setPen(busStrokeColor());
+            painter->setBrush(busFillColor());
             painter->drawRoundedRect(blockRect, 2, 2);
-            painter->setPen(QColor(QStringLiteral("#1d4ed8")));
+            painter->setPen(QColor(QStringLiteral("#0958d9")));
             painter->drawText(blockRect.adjusted(6, 0, -6, 0),
                               Qt::AlignVCenter | Qt::AlignLeft,
                               painter->fontMetrics().elidedText(sampleFieldValue(row.name, index),
@@ -1028,12 +852,13 @@ private:
         }
     }
 
-    static void drawDigitalField(QPainter* const painter, const QRect& rect, const int seed)
+    static void drawDigitalField(QPainter* const painter, const QRect& rect, const int seed, const QString& name)
     {
         QPainterPath path;
         const int high = rect.top() + 8;
         const int low = rect.bottom() - 8;
-        const int step = qMax(28, rect.width() / 12);
+        const int densitySeed = static_cast<int>(qHash(name) % 7U);
+        const int step = qMax(16, rect.width() / (14 + densitySeed + (seed % 5)));
         int x = rect.left() + 20;
         int y = (seed % 2 == 0) ? high : low;
         path.moveTo(x, y);
@@ -1044,11 +869,49 @@ private:
             path.lineTo(nextX, y);
             x = nextX;
         }
-        QPen pen(QColor(QStringLiteral("#0f766e")));
+        QPen pen(signalWaveColor());
         pen.setWidthF(1.2);
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
         painter->drawPath(path);
+    }
+
+    void drawProtocolActivity(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
+    {
+        const bool mismatch = row.groupId == QStringLiteral("mismatch");
+        const QString normalizedStatus = row.status.trimmed().toLower();
+        const bool mismatchEvent =
+            mismatch &&
+            (normalizedStatus.contains(QStringLiteral("mismatch")) ||
+             normalizedStatus.contains(QStringLiteral("event")) ||
+             normalizedStatus.contains(QStringLiteral("error")) ||
+             normalizedStatus.contains(QStringLiteral("fault")));
+        const QColor fill = mismatchEvent ? mismatchFillColor() : (mismatch ? okFillColor() : protocolFillColor());
+        const QColor stroke = mismatchEvent ? mismatchStrokeColor() : (mismatch ? okColor() : protocolStrokeColor());
+        const QColor text = mismatchEvent ? QColor(QStringLiteral("#a8071a")) :
+            (mismatch ? QColor(QStringLiteral("#166534")) : QColor(QStringLiteral("#ad4e00")));
+        const int blockCount = mismatch ? 2 : qMax(2, qMin(4, rect.width() / 220));
+        const int blockWidth = qMax(78, qMin(150, rect.width() / 9));
+
+        for (int index = 0; index < blockCount; ++index) {
+            const int usableWidth = qMax(1, rect.width() - blockWidth - 42);
+            const int x = rect.left() + 22 + ((index * 137 + row.groupIndex * 31) % usableWidth);
+            const QRect blockRect(x, rect.top(), qMin(blockWidth, rect.right() - x - 4), rect.height());
+            if (blockRect.width() <= 18) {
+                continue;
+            }
+
+            painter->setPen(stroke);
+            painter->setBrush(fill);
+            painter->drawRoundedRect(blockRect, 2, 2);
+            painter->setPen(text);
+            const QString label = mismatch
+                ? (mismatchEvent ? QStringLiteral("mismatch") : QStringLiteral("no mismatch"))
+                : QStringLiteral("%1 event").arg(displayNameForId(row.groupId));
+            painter->drawText(blockRect.adjusted(6, 0, -6, 0),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              painter->fontMetrics().elidedText(label, Qt::ElideRight, blockRect.width() - 12));
+        }
     }
 
     void drawTransactions(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
@@ -1075,8 +938,8 @@ private:
             }
             const bool mismatch = row.groupId == QStringLiteral("mismatch") ||
                 row.transactions.at(index).contains(QStringLiteral("mismatch"), Qt::CaseInsensitive);
-            painter->setPen(mismatch ? QColor(QStringLiteral("#ff4d4f")) : QColor(QStringLiteral("#fa8c16")));
-            painter->setBrush(mismatch ? QColor(QStringLiteral("#fff1f0")) : QColor(QStringLiteral("#fff7e6")));
+            painter->setPen(mismatch ? mismatchStrokeColor() : protocolStrokeColor());
+            painter->setBrush(mismatch ? mismatchFillColor() : protocolFillColor());
             painter->drawRoundedRect(blockRect, 2, 2);
             painter->setPen(mismatch ? QColor(QStringLiteral("#a8071a")) : QColor(QStringLiteral("#ad4e00")));
             painter->drawText(blockRect.adjusted(6, 0, -6, 0),
@@ -1731,15 +1594,43 @@ void MainWindowShell::showWaveformDetached()
     detachedWaveformDialog_ = new QDialog(this);
     detachedWaveformDialog_->setAttribute(Qt::WA_DeleteOnClose, true);
     detachedWaveformDialog_->setWindowTitle(QStringLiteral("波形分析仪"));
+    detachedWaveformDialog_->setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    detachedWaveformDialog_->setSizeGripEnabled(true);
+    detachedWaveformDialog_->setMinimumSize(760, 460);
     detachedWaveformDialog_->resize(1280, 760);
     detachedWaveformDialog_->setObjectName(QStringLiteral("waveform_detached_dialog"));
 
     QVBoxLayout* const layout = new QVBoxLayout(detachedWaveformDialog_);
     layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(0);
+    layout->setSpacing(6);
+
+    QWidget* const toolbar = new QWidget(detachedWaveformDialog_);
+    toolbar->setObjectName(QStringLiteral("waveform_detached_toolbar"));
+    QHBoxLayout* const toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(0, 0, 0, 0);
+    toolbarLayout->setSpacing(6);
+    toolbarLayout->addStretch(1);
+    QPushButton* const fullscreenButton = new QPushButton(QStringLiteral("放大到全屏"), toolbar);
+    fullscreenButton->setObjectName(QStringLiteral("waveform_fullscreen_button"));
+    toolbarLayout->addWidget(fullscreenButton);
+    layout->addWidget(toolbar);
+
     detachedWaveformDisplayWidget_ = new WaveformDisplayWidget(detachedWaveformDialog_);
     layout->addWidget(detachedWaveformDisplayWidget_, 1);
     applyWaveformTraceToDisplay(detachedWaveformDisplayWidget_);
+
+    connect(fullscreenButton, &QPushButton::clicked, detachedWaveformDialog_, [this, fullscreenButton]() {
+        if (detachedWaveformDialog_ == nullptr) {
+            return;
+        }
+        if (detachedWaveformDialog_->isFullScreen()) {
+            detachedWaveformDialog_->showNormal();
+            fullscreenButton->setText(QStringLiteral("放大到全屏"));
+        } else {
+            detachedWaveformDialog_->showFullScreen();
+            fullscreenButton->setText(QStringLiteral("退出全屏"));
+        }
+    });
 
     connect(detachedWaveformDialog_, &QDialog::finished, this, [this]() {
         detachedWaveformDialog_ = nullptr;
