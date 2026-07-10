@@ -17,6 +17,8 @@
 #ifndef LOCKSTEP_HOST_SRC_APPS_WORKBENCH_CONTROLLER_H_
 #define LOCKSTEP_HOST_SRC_APPS_WORKBENCH_CONTROLLER_H_
 
+#include <memory>
+
 #include <QObject>
 #include <QString>
 
@@ -91,6 +93,10 @@ private:
         const QJsonObject& object,
         QString* relativePath,
         QString* errorMessage);
+    bool configureDebugServiceAccess(
+        const lockstep::resources::BoardProfile& profile,
+        const QString& resourceRootPath);
+    lockstep::target_control::DebugAccess* debugAccess() const;
     QJsonObject resourceSnapshotJson() const;
     lockstep::workspace::WorkspaceMode workspaceMode() const;
     lockstep::workflow::FlowMode flowMode() const;
@@ -106,7 +112,8 @@ private:
     lockstep::error_handling::ErrorRegistry errorRegistry_;
     lockstep::protocol_analyzer::ProtocolAnalyzer protocolAnalyzer_;
     lockstep::waveform_viewer::WaveformTraceViewer waveformViewer_;
-    lockstep::target_control::InMemoryDebugAccess debugAccess_;
+    std::unique_ptr<lockstep::target_control::DebugAccess> debugAccess_;
+    lockstep::target_control::DebugServiceConfig debugConfig_;
 
     QString workspaceRootPath_;
     QString selectedTaskId_;

@@ -1,0 +1,35 @@
+{
+  "schema": "lockstep-debug-target-v1",
+  "target_id": "noelv_riscv",
+  "display_name": "NOEL-V RISC-V target",
+  "architecture": "riscv",
+  "tap": {
+    "chip_name": "noelv",
+    "tap_name": "cpu",
+    "ir_length": 6
+  },
+  "ir": {
+    "idcode": "0x01",
+    "dtmcs": "0x10",
+    "dmi": "0x11"
+  },
+  "dmi": {
+    "address_bits": 7,
+    "retry_count": 64,
+    "dm_poll_count": 200
+  },
+  "timeouts": {
+    "reset_ms": 10000,
+    "command_ms": 10000
+  },
+  "reset": {
+    "strategy": "reset halt",
+    "requires_external_reset": false
+  },
+  "memory": {
+    "default_ram_base": "0x0",
+    "default_run_address": "0x0",
+    "system_bus_access_bytes": 4
+  },
+  "xlen": 64
+}

@@ -1,0 +1,10 @@
+{
+    "created_at": "2026-07-09T05:05:21.098Z",
+    "error_message": "连接失败，预检未执行。",
+    "raw_return": "",
+    "read_supported": false,
+    "reset_supported": false,
+    "run_supported": false,
+    "state": "blocked",
+    "write_supported": false
+}

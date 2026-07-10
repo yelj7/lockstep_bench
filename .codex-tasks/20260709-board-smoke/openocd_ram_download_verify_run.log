@@ -1,0 +1,43 @@
+﻿Open On-Chip Debugger 0.12.0
+Licensed under GNU GPL v2
+For bug reports, read
+	http://openocd.org/doc/doxygen/bugs.html
+adapter speed: 100 kHz
+System.Management.Automation.RemoteException
+Info : CMSIS-DAP: SWD supported
+Info : CMSIS-DAP: JTAG supported
+Info : CMSIS-DAP: Atomic commands supported
+Info : CMSIS-DAP: Test domain timer supported
+Info : CMSIS-DAP: FW Version = 0256
+Info : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908
+Info : CMSIS-DAP: Interface Initialised (JTAG)
+Info : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1
+Info : CMSIS-DAP: Interface ready
+Info : clock speed 100 kHz
+Info : cmsis-dap JTAG TLR_RESET
+Info : cmsis-dap JTAG TLR_RESET
+Info : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)
+Info : datacount=4 progbufsize=8
+Info : Examined RISC-V core; found 1 harts
+Info :  hart 0: XLEN=64, misa=0x80000000009411af
+Info : starting gdb server for noelv.cpu on 3333
+Info : Listening on port 3333 for gdb connections
+Error: Unknown DCSR cause field: 0x0
+Error:   dcsr=0x0000000040000003
+Info : cmsis-dap JTAG TLR_RESET
+Info : cmsis-dap JTAG TLR_RESET
+Info : cmsis-dap JTAG TLR_RESET
+Info : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)
+5816 bytes written at address 0x00020000
+644 bytes written at address 0x00030000
+downloaded 6460 bytes in 1.884912s (3.347 KiB/s)
+System.Management.Automation.RemoteException
+Error: No working memory available. Specify -work-area-phys to target.
+Warn : not enough working area available(requested 1112)
+verified 6460 bytes in 1.860965s (3.390 KiB/s)
+System.Management.Automation.RemoteException
+pc (/64): 0x0000000000000000
+System.Management.Automation.RemoteException
+Error: Unknown DCSR cause field: 0x0
+Error:   dcsr=0x000000004000b003
+shutdown command invoked

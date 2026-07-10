@@ -18,6 +18,7 @@
 #define LOCKSTEP_HOST_SRC_TARGET_CONTROL_TARGET_CONTROL_H_
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -186,6 +187,15 @@ struct ProgramGate final {
     QString reason;
 };
 
+struct DebugServiceConfig final {
+    QString debugServicePath;
+    QString interfaceConfigPath;
+    QString targetConfigPath;
+    QString temporaryDirectoryPath;
+    int adapterSpeedKhz = 100;
+    int timeoutMs = 30000;
+};
+
 QString toString(ImageType type);
 QString toString(VerifyState state);
 QString toString(RunState state);
@@ -225,6 +235,31 @@ private:
     bool connected_ = false;
     bool running_ = false;
     DebugProfile profile_;
+};
+
+class DebugServiceAccess final : public DebugAccess {
+public:
+    explicit DebugServiceAccess(const DebugServiceConfig& config);
+
+    DebugResult connectTarget(const DebugProfile& profile) override;
+    DebugResult disconnectTarget() override;
+    DebugResult status() override;
+    DebugResult read(quint64 address, quint64 length) override;
+    DebugResult write(quint64 address, const QByteArray& data) override;
+    DebugResult reset(const QString& strategy) override;
+    DebugResult run(quint64 entryAddress) override;
+    DebugResult halt() override;
+
+private:
+    DebugResult runDebugService(
+        const QString& idPrefix,
+        const QJsonObject& request,
+        bool requireConnection) const;
+    QString makeTemporaryPath(const QString& prefix, const QString& suffix) const;
+
+    DebugServiceConfig config_;
+    DebugProfile profile_;
+    bool connected_ = false;
 };
 
 class TargetConnectionService final {

@@ -1,0 +1,24 @@
+{
+  "schema": "lockstep-debug-interface-v1",
+  "interface_id": "cmsis_dap",
+  "display_name": "CMSIS-DAP interface",
+  "transport": "jtag",
+  "adapter_speed_khz": 14,
+  "usb": {
+    "vendor_id": "0x0D28",
+    "product_id": "0x0204"
+  },
+  "probe": {
+    "selection": "auto",
+    "serial_number": ""
+  },
+  "capabilities": {
+    "connect": true,
+    "status": true,
+    "read": true,
+    "write": true,
+    "reset": true,
+    "run": true,
+    "halt": true
+  }
+}

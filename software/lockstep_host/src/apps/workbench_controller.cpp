@@ -37,6 +37,8 @@
 #include <QSaveFile>
 #include <QVBoxLayout>
 
+#include <memory>
+
 #include "ui_theme.h"
 
 namespace lockstep::apps {
@@ -220,6 +222,38 @@ QString precheckStateText(const target_control::PrecheckState state)
 QString addressText(const quint64 value)
 {
     return QStringLiteral("0x%1").arg(value, 0, 16);
+}
+
+QString executablePathForBaseName(const QString& directoryPath, const QString& baseName)
+{
+    const QDir directory(directoryPath);
+    const QString windowsPath = directory.filePath(baseName + QStringLiteral(".exe"));
+    if (QFileInfo(windowsPath).isExecutable()) {
+        return QFileInfo(windowsPath).absoluteFilePath();
+    }
+
+    const QString plainPath = directory.filePath(baseName);
+    if (QFileInfo(plainPath).isExecutable()) {
+        return QFileInfo(plainPath).absoluteFilePath();
+    }
+    return QString();
+}
+
+QString resolveDebugServicePath(
+    const resources::BoardProfile& profile,
+    const QString& resourceRootPath)
+{
+    const QString appDirPath = QCoreApplication::applicationDirPath();
+    const QString siblingPath = executablePathForBaseName(appDirPath, QStringLiteral("lockstep_debug_service"));
+    if (!siblingPath.isEmpty()) {
+        return siblingPath;
+    }
+
+    const QString resourcePath = QDir(resourceRootPath).filePath(profile.targetDebugToolPath);
+    if (QFileInfo(resourcePath).isExecutable()) {
+        return QFileInfo(resourcePath).absoluteFilePath();
+    }
+    return QString();
 }
 
 QJsonArray segmentsToJson(const QList<target_control::ImageSegment>& segments)
@@ -487,7 +521,8 @@ WorkbenchController::WorkbenchController(
       errorRegistry_(),
       protocolAnalyzer_(),
       waveformViewer_(),
-      debugAccess_(kDebugMemorySizeBytes),
+      debugAccess_(),
+      debugConfig_(),
       workspaceRootPath_(),
       selectedTaskId_(),
       workspaceReady_(false),
@@ -511,8 +546,8 @@ WorkbenchController::WorkbenchController(
       runRecord_(),
       haltRecord_()
 {
-    debugProfile_.profileId = QStringLiteral("ui_in_memory_profile");
-    debugProfile_.profileName = QStringLiteral("UI内存调试后端");
+    debugProfile_.profileId = QStringLiteral("debug_service_unconfigured");
+    debugProfile_.profileName = QStringLiteral("自研片上调试服务未配置");
     debugProfile_.ramBaseAddress = 0x80000000ULL;
     debugProfile_.defaultRunAddress = debugProfile_.ramBaseAddress;
     debugProfile_.maxWritableAddress = debugProfile_.ramBaseAddress + kDebugMemorySizeBytes;
@@ -547,16 +582,16 @@ bool WorkbenchController::initialize(const QString& workspaceRootPath)
     loadResourcePackIfAvailable();
     updateProjectView();
     updateTopStatus();
-    if (window_ != nullptr) {
+    if (window_ != nullptr && !resourcePackReady_) {
         window_->setConnectionProfileDetails(
             debugProfile_.profileName,
-            QStringLiteral("127.0.0.1"),
-            6666,
-            3333,
-            14,
+            QString(),
+            0,
+            0,
+            0,
             addressText(debugProfile_.ramBaseAddress),
             debugProfile_.resetStrategy,
-            QStringLiteral("调试器: 未连接"));
+            QStringLiteral("调试器: 未配置"));
         window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
     }
     return true;
@@ -936,7 +971,7 @@ void WorkbenchController::loadResourcePackIfAvailable()
             debugProfile_.defaultRunAddress = profile.defaultRunAddress;
             debugProfile_.maxWritableAddress = profile.ramBaseAddress + kDebugMemorySizeBytes;
             debugProfile_.resetStrategy = profile.resetStrategy;
-            resourcePackReady_ = true;
+            resourcePackReady_ = configureDebugServiceAccess(profile, result.resourceRootPath);
             if (window_ != nullptr) {
                 window_->setConnectionProfileDetails(
                     debugProfile_.profileName,
@@ -946,7 +981,9 @@ void WorkbenchController::loadResourcePackIfAvailable()
                     profile.jtagKhz,
                     addressText(profile.ramBaseAddress),
                     profile.resetStrategy,
-                    QStringLiteral("调试器: 已加载 profile"));
+                    resourcePackReady_
+                        ? QStringLiteral("调试器: 已加载自研服务")
+                        : QStringLiteral("调试器: 自研服务不可用"));
             }
             logInfo(QStringLiteral("Resources"), QStringLiteral("已加载 %1 profile: %2").arg(modeText, profile.profileId));
             return;
@@ -957,7 +994,8 @@ void WorkbenchController::loadResourcePackIfAvailable()
     }
 
     resourcePackReady_ = false;
-    logWarning(QStringLiteral("Resources"), QStringLiteral("未找到 resources/manifest.json，UI 使用内存调试后端占位，不写入真实外部路径。"));
+    debugAccess_.reset();
+    logWarning(QStringLiteral("Resources"), QStringLiteral("未找到 resources/manifest.json，目标连接、烧写、回读和运行将被阻断。"));
 }
 
 void WorkbenchController::startDebugService()
@@ -965,15 +1003,20 @@ void WorkbenchController::startDebugService()
     if (!ensureWorkspace()) {
         return;
     }
+    target_control::DebugAccess* const access = debugAccess();
+    if (access == nullptr) {
+        logError(QStringLiteral("Target"), QStringLiteral("自研片上调试服务未配置或不可执行，不能连接目标。"));
+        return;
+    }
 
-    connectionRecord_ = connectionService_.connectTarget(debugAccess_, debugProfile_);
+    connectionRecord_ = connectionService_.connectTarget(*access, debugProfile_);
     hasConnection_ = (connectionRecord_.state == target_control::ConnectionState::Connected);
     if (!hasConnection_) {
         logError(QStringLiteral("Target"), QStringLiteral("目标连接失败: %1").arg(connectionRecord_.errorMessage));
         return;
     }
 
-    precheckRecord_ = connectionService_.runPrecheck(debugAccess_, debugProfile_);
+    precheckRecord_ = connectionService_.runPrecheck(*access, debugProfile_);
     hasPrecheck_ = (precheckRecord_.state == target_control::PrecheckState::Passed);
     const QString statusText = QStringLiteral("调试器: %1 / 预检: %2")
         .arg(connectionStateText(connectionRecord_.state), precheckStateText(precheckRecord_.state));
@@ -995,7 +1038,12 @@ void WorkbenchController::startDebugService()
 
 void WorkbenchController::stopDebugService()
 {
-    connectionRecord_ = connectionService_.disconnectTarget(debugAccess_);
+    target_control::DebugAccess* const access = debugAccess();
+    if (access != nullptr) {
+        connectionRecord_ = connectionService_.disconnectTarget(*access);
+    } else {
+        connectionRecord_ = target_control::ConnectionRecord();
+    }
     hasConnection_ = false;
     hasPrecheck_ = false;
     if (window_ != nullptr) {
@@ -1029,6 +1077,11 @@ void WorkbenchController::programImage()
     }
     if (!hasConnection_ || !hasPrecheck_) {
         logError(QStringLiteral("Program"), QStringLiteral("目标尚未连接或预检未通过，不能烧写。"));
+        return;
+    }
+    target_control::DebugAccess* const access = debugAccess();
+    if (access == nullptr) {
+        logError(QStringLiteral("Program"), QStringLiteral("自研片上调试服务未配置，不能烧写。"));
         return;
     }
     if (window_ == nullptr || window_->programImagePath().isEmpty()) {
@@ -1097,7 +1150,7 @@ void WorkbenchController::programImage()
         0);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    writeRecord_ = programController_.programTarget(debugAccess_, currentTask_.summary.taskId, imageInfo_);
+    writeRecord_ = programController_.programTarget(*access, currentTask_.summary.taskId, imageInfo_);
     hasWriteRecord_ = writeRecord_.success;
 
     progress = target_control::makeOperationProgress(
@@ -1150,6 +1203,11 @@ void WorkbenchController::verifyReadback()
         logError(QStringLiteral("Readback"), QStringLiteral("尚未完成有效烧写，不能回读校验。"));
         return;
     }
+    target_control::DebugAccess* const access = debugAccess();
+    if (access == nullptr) {
+        logError(QStringLiteral("Readback"), QStringLiteral("自研片上调试服务未配置，不能回读校验。"));
+        return;
+    }
 
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::CheckReadbackAccess);
@@ -1177,7 +1235,7 @@ void WorkbenchController::verifyReadback()
         progress.percent);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    verifyRecord_ = programController_.verifyReadback(debugAccess_, currentTask_.summary.taskId, imageInfo_);
+    verifyRecord_ = programController_.verifyReadback(*access, currentTask_.summary.taskId, imageInfo_);
     hasVerifyRecord_ = true;
 
     progress = target_control::makeOperationProgress(
@@ -1226,6 +1284,11 @@ void WorkbenchController::runProgram()
         logError(QStringLiteral("Run"), QStringLiteral("回读校验未通过，禁止运行。"));
         return;
     }
+    target_control::DebugAccess* const access = debugAccess();
+    if (access == nullptr) {
+        logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能运行程序。"));
+        return;
+    }
 
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CheckRunGate);
@@ -1235,7 +1298,7 @@ void WorkbenchController::runProgram()
     setRunSummaryFromCurrentState(QStringLiteral("运行命令已发送 - ") + progress.message, progress.percent, 0);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    runRecord_ = programController_.runTarget(debugAccess_, currentTask_.summary.taskId, imageInfo_, verifyRecord_);
+    runRecord_ = programController_.runTarget(*access, currentTask_.summary.taskId, imageInfo_, verifyRecord_);
     hasRunRecord_ = true;
 
     progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CaptureRunStatus);
@@ -1278,6 +1341,11 @@ void WorkbenchController::stopProgram()
         logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接，不能发送中止命令。"));
         return;
     }
+    target_control::DebugAccess* const access = debugAccess();
+    if (access == nullptr) {
+        logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能发送中止命令。"));
+        return;
+    }
 
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CheckHaltAccess);
@@ -1287,7 +1355,7 @@ void WorkbenchController::stopProgram()
     setRunSummaryFromCurrentState(QStringLiteral("终止命令已发送 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    haltRecord_ = programController_.haltTarget(debugAccess_, currentTask_.summary.taskId);
+    haltRecord_ = programController_.haltTarget(*access, currentTask_.summary.taskId);
     hasHaltRecord_ = true;
 
     progress = target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CaptureHaltStatus);
@@ -1831,6 +1899,38 @@ bool WorkbenchController::writeEvidenceJson(
     artifact.createdAt = currentTimeText();
     workspace_.attachArtifact(workspaceMode(), currentTask_.summary.taskId, artifact, nullptr);
     return true;
+}
+
+bool WorkbenchController::configureDebugServiceAccess(
+    const resources::BoardProfile& profile,
+    const QString& resourceRootPath)
+{
+    const QString servicePath = resolveDebugServicePath(profile, resourceRootPath);
+    if (servicePath.isEmpty()) {
+        debugConfig_ = target_control::DebugServiceConfig();
+        debugAccess_.reset();
+        logWarning(
+            QStringLiteral("Resources"),
+            QStringLiteral("未找到可执行的自研片上调试服务，目标连接将被阻断。"));
+        return false;
+    }
+
+    debugConfig_.debugServicePath = servicePath;
+    debugConfig_.interfaceConfigPath = QDir(resourceRootPath).filePath(profile.interfaceConfigPath);
+    debugConfig_.targetConfigPath = QDir(resourceRootPath).filePath(profile.targetConfigPath);
+    debugConfig_.temporaryDirectoryPath = QDir(workspaceRootPath_).filePath(QStringLiteral(".debug_service_tmp"));
+    debugConfig_.adapterSpeedKhz = profile.jtagKhz;
+    debugConfig_.timeoutMs = 60000;
+    debugAccess_ = std::make_unique<target_control::DebugServiceAccess>(debugConfig_);
+    logInfo(
+        QStringLiteral("Resources"),
+        QStringLiteral("自研片上调试服务已配置: %1").arg(QFileInfo(servicePath).fileName()));
+    return true;
+}
+
+target_control::DebugAccess* WorkbenchController::debugAccess() const
+{
+    return debugAccess_.get();
 }
 
 QJsonObject WorkbenchController::resourceSnapshotJson() const

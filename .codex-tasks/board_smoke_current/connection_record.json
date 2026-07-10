@@ -1,0 +1,7 @@
+{
+    "created_at": "2026-07-09T05:05:21.098Z",
+    "error_message": "自研片上调试服务真实板卡传输层尚未实现，操作未执行。",
+    "profile_id": "noelv_zcu102_cmsis_dap",
+    "raw_return": "{\n    \"config\": {\n        \"adapter_speed_khz\": 100,\n        \"interface_config_present\": true,\n        \"target_config_present\": true\n    },\n    \"data_hex\": \"\",\n    \"error_code\": \"TRANSPORT_NOT_IMPLEMENTED\",\n    \"error_message\": \"自研片上调试服务真实板卡传输层尚未实现，操作未执行。\",\n    \"generated_at\": \"2026-07-09T05:05:21.084Z\",\n    \"operation\": \"connect\",\n    \"profile\": {\n        \"default_run_address\": \"0x0\",\n        \"max_writable_address\": \"0x4000000\",\n        \"profile_id\": \"noelv_zcu102_cmsis_dap\",\n        \"profile_name\": \"NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working\",\n        \"ram_base_address\": \"0x0\",\n        \"reset_strategy\": \"reset halt\"\n    },\n    \"request_id\": \"connect_20260709050521050\",\n    \"schema\": \"lockstep-debug-service-response-v1\",\n    \"snapshot\": {\n        \"address\": \"0x0\",\n        \"entry_address\": \"0x0\",\n        \"length\": \"0\",\n        \"operation\": \"connect\",\n        \"target_state\": \"unknown\",\n        \"transport\": \"self_developed_pending\"\n    },\n    \"success\": false\n}\n",
+    "state": "failed"
+}

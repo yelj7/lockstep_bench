@@ -1,0 +1,66 @@
+﻿Microsoft PnP Utility
+
+Instance ID:                USB\VID_10C4&PID_EA71\75829DA737289AB511E8F3C171A5F3D
+Device Description:         USB Composite Device
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          (��׼ USB ��������)
+Status:                     Started
+Driver Name:                usb.inf
+
+Instance ID:                PCI\VEN_8086&DEV_43ED&SUBSYS_0A4D1028&REV_11\3&11583659&0&A0
+Device Description:         Intel(R) USB 3.20 ����չ���������� - 1.20 (Microsoft)
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          ͨ�� USB xHCI ����������
+Status:                     Started
+Driver Name:                usbxhci.inf
+
+Instance ID:                USB\VID_0D28&PID_0204&MI_00\7&1e01f1e4&0&0000
+Device Description:         USB �������洢�豸
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          ���� USB �洢�豸
+Status:                     Started
+Driver Name:                usbstor.inf
+
+Instance ID:                USB\VID_320F&PID_5055\5&34db6a85&0&6
+Device Description:         USB Composite Device
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          (��׼ USB ��������)
+Status:                     Started
+Driver Name:                usb.inf
+
+Instance ID:                USB\VID_05E3&PID_0610\5&34db6a85&0&7
+Device Description:         ͨ�� USB ������
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          (��׼ USB ������)
+Status:                     Started
+Driver Name:                usbhub3.inf
+
+Instance ID:                USB\VID_0D28&PID_0204\07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908
+Device Description:         USB Composite Device
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          (��׼ USB ��������)
+Status:                     Started
+Driver Name:                usb.inf
+
+Instance ID:                USB\ROOT_HUB30\4&1d0a5a99&0&0
+Device Description:         USB ��������(USB 3.0)
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          (��׼ USB ������)
+Status:                     Started
+Driver Name:                usbhub3.inf
+
+Instance ID:                USB\VID_0403&PID_6014\210308AAFDCA
+Device Description:         USB Serial Converter
+Class Name:                 USB
+Class GUID:                 {36fc9e60-c465-11cf-8056-444553540000}
+Manufacturer Name:          FTDI
+Status:                     Started
+Driver Name:                oem70.inf
+

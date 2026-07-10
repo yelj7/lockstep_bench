@@ -23,32 +23,32 @@
   ],
   "debug_adapters": [
     {
-      "id": "debug.openocd.placeholder",
-      "name": "OpenOCD Placeholder Adapter",
+      "id": "debug.self_service.executable",
+      "name": "Lockstep Self Debug Service",
       "version": "0.0.0.0",
       "mode": "test",
       "modes": ["research", "test"],
-      "relative_path": "debug_adapters/openocd/openocd",
+      "relative_path": "debug_adapters/self_debug_service/lockstep_debug_service",
       "sha256": "",
       "status": "placeholder"
     },
     {
-      "id": "debug.openocd.cmsis_dap_cfg",
-      "name": "CMSIS-DAP Interface Config Placeholder",
+      "id": "debug.self_service.cmsis_dap_cfg",
+      "name": "CMSIS-DAP Interface Config",
       "version": "0.0.0.0",
       "mode": "test",
       "modes": ["research", "test"],
-      "relative_path": "debug_adapters/openocd/cmsis-dap-explicit.cfg",
+      "relative_path": "debug_adapters/self_debug_service/interface_cmsis_dap.json",
       "sha256": "",
       "status": "placeholder"
     },
     {
-      "id": "debug.openocd.riscv_target_cfg",
-      "name": "RISC-V Target Config Placeholder",
+      "id": "debug.self_service.riscv_target_cfg",
+      "name": "NOEL-V RISC-V Target Config",
       "version": "0.0.0.0",
       "mode": "test",
       "modes": ["research", "test"],
-      "relative_path": "debug_adapters/openocd/target-riscv-direct.cfg",
+      "relative_path": "debug_adapters/self_debug_service/target_noelv_riscv.json",
       "sha256": "",
       "status": "placeholder"
     }

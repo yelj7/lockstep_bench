@@ -1,0 +1,158 @@
+﻿{
+    "schema":  "lockstep-noelv-zcu102-hardware-smoke-v1",
+    "generated_at":  "2026-07-09T10:50:19.9551381+08:00",
+    "bitstream":  "D:\\0_ongoing\\LockStep-Novelv-CPU\\designs\\noelv-xilinx-zcu102\\noelvmp.bit",
+    "elf":  "D:\\0_ongoing\\LockStep-Novelv-CPU\\designs\\noelv-xilinx-zcu102\\dhrystone.elf",
+    "vivado":  "D:\\Xilinx\\Vivado\\2022.2\\bin\\vivado.bat",
+    "openocd":  "D:\\Program Files\\msys64\\ucrt64\\bin\\openocd.exe",
+    "output_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke",
+    "run_address":  "0x0",
+    "environment_inventory":  {
+                                  "usb_devices":  {
+                                                      "name":  "pnputil_usb_connected",
+                                                      "exit_code":  0,
+                                                      "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\pnp_usb_connected.txt"
+                                                  },
+                                  "port_devices":  {
+                                                       "name":  "pnputil_ports_connected",
+                                                       "exit_code":  0,
+                                                       "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\pnp_ports_connected.txt"
+                                                   },
+                                  "active_debug_processes":  [
+
+                                                             ],
+                                  "active_debug_process_log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\active_debug_processes.json",
+                                  "openocd_version":  {
+                                                          "name":  "openocd_version",
+                                                          "exit_code":  0,
+                                                          "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_version.txt"
+                                                      },
+                                  "openocd_adapter_list":  {
+                                                               "name":  "openocd_adapter_list",
+                                                               "exit_code":  1,
+                                                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_adapter_list.txt"
+                                                           }
+                              },
+    "vivado_program":  {
+                           "name":  "vivado_program_noelv",
+                           "exit_code":  0,
+                           "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\jtag_program_noelv.log"
+                       },
+    "openocd_probes":  [
+                           {
+                               "name":  "cmsis_dap",
+                               "exit_code":  0,
+                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_cmsis_dap_probe.log"
+                           },
+                           {
+                               "name":  "digilent_jtag_smt2",
+                               "exit_code":  1,
+                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_jtag_smt2_probe.log"
+                           },
+                           {
+                               "name":  "digilent_jtag_smt2_nc",
+                               "exit_code":  1,
+                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_jtag_smt2_nc_probe.log"
+                           },
+                           {
+                               "name":  "digilent_hs2",
+                               "exit_code":  1,
+                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_hs2_probe.log"
+                           },
+                           {
+                               "name":  "digilent_hs3",
+                               "exit_code":  1,
+                               "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_hs3_probe.log"
+                           }
+                       ],
+    "selected_openocd_probe":  {
+                                   "name":  "cmsis_dap",
+                                   "exit_code":  0,
+                                   "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_cmsis_dap_probe.log"
+                               },
+    "openocd_connection_diagnosis":  {
+                                         "root_cause":  "DIGILENT_FTDI_DRIVER_NOT_LIBUSB_COMPATIBLE",
+                                         "cmsis_dap_present":  true,
+                                         "digilent_ftdi_present":  true,
+                                         "ft601_present":  false,
+                                         "bitstream_suspected":  false,
+                                         "bitstream_note":  "Vivado PL programming can pass while OpenOCD still cannot reach the external NOEL-V RISC-V Debug TAP.",
+                                         "probe_failures":  [
+                                                                {
+                                                                    "name":  "cmsis_dap",
+                                                                    "exit_code":  0,
+                                                                    "reason":  "TAP_FOUND",
+                                                                    "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_cmsis_dap_probe.log"
+                                                                },
+                                                                {
+                                                                    "name":  "digilent_jtag_smt2",
+                                                                    "exit_code":  1,
+                                                                    "reason":  "LIBUSB_DRIVER_NOT_SUPPORTED",
+                                                                    "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_jtag_smt2_probe.log"
+                                                                },
+                                                                {
+                                                                    "name":  "digilent_jtag_smt2_nc",
+                                                                    "exit_code":  1,
+                                                                    "reason":  "LIBUSB_DRIVER_NOT_SUPPORTED",
+                                                                    "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_jtag_smt2_nc_probe.log"
+                                                                },
+                                                                {
+                                                                    "name":  "digilent_hs2",
+                                                                    "exit_code":  1,
+                                                                    "reason":  "LIBUSB_DRIVER_NOT_SUPPORTED",
+                                                                    "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_hs2_probe.log"
+                                                                },
+                                                                {
+                                                                    "name":  "digilent_hs3",
+                                                                    "exit_code":  1,
+                                                                    "reason":  "LIBUSB_DRIVER_NOT_SUPPORTED",
+                                                                    "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_digilent_hs3_probe.log"
+                                                                }
+                                                            ],
+                                         "next_actions":  [
+                                                              "The onboard Digilent FTDI is visible to Windows, but this OpenOCD build uses libusb FTDI access and the current FTDI driver rejects libusb_open.",
+                                                              "Use the known-good CMSIS-DAP PMOD1 path first; changing the Digilent FTDI driver to WinUSB/libusbK may break Vivado access and must be a deliberate bench action."
+                                                          ]
+                                     },
+    "ram_flow":  {
+                     "name":  "noelv_ram_download_verify_run",
+                     "exit_code":  0,
+                     "log_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\20260709-board-smoke\\openocd_ram_download_verify_run.log",
+                     "skipped":  false,
+                     "status":  "PASS",
+                     "selected_probe":  "cmsis_dap",
+                     "elf":  "D:\\0_ongoing\\LockStep-Novelv-CPU\\designs\\noelv-xilinx-zcu102\\dhrystone.elf",
+                     "run_address":  "0x0"
+                 },
+    "serial_readonly":  [
+                            {
+                                "port":  "COM5",
+                                "opened":  false,
+                                "bytes_read":  0,
+                                "text_sample":  "",
+                                "error":  "Exception calling \"Open\" with \"0\" argument(s): \"The port \u0027COM5\u0027 does not exist.\""
+                            },
+                            {
+                                "port":  "COM6",
+                                "opened":  false,
+                                "bytes_read":  0,
+                                "text_sample":  "",
+                                "error":  "Exception calling \"Open\" with \"0\" argument(s): \"The port \u0027COM6\u0027 does not exist.\""
+                            },
+                            {
+                                "port":  "COM7",
+                                "opened":  false,
+                                "bytes_read":  0,
+                                "text_sample":  "",
+                                "error":  "Exception calling \"Open\" with \"0\" argument(s): \"The port \u0027COM7\u0027 does not exist.\""
+                            },
+                            {
+                                "port":  "COM8",
+                                "opened":  false,
+                                "bytes_read":  0,
+                                "text_sample":  "",
+                                "error":  "Exception calling \"Open\" with \"0\" argument(s): \"The port \u0027COM8\u0027 does not exist.\""
+                            }
+                        ],
+    "overall_status":  "RAM_FLOW_PASS"
+}

@@ -1,0 +1,102 @@
+{
+    "adapter_speed_khz": 100,
+    "connection": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "error_message": "",
+        "profile_id": "noelv_zcu102_cmsis_dap",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\n   TapName             Enabled  IdCode     Expected   IrLen IrCap IrMask\r\n-- ------------------- -------- ---------- ---------- ----- ----- ------\r\n 0 noelv.cpu              Y     0x00000649 0x00000000     6 0x01  0x03\r\n\r\nshutdown command invoked\r\n",
+        "state": "connected"
+    },
+    "disconnect": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "error_message": "",
+        "profile_id": "",
+        "raw_return": "disconnected",
+        "state": "not_connected"
+    },
+    "generated_at": "2026-07-09T03:02:29.793Z",
+    "halt": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "entry_address": "0x0",
+        "error_message": "",
+        "operation": "halt",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nbackground polling: on\r\nTAP: noelv.cpu (enabled)\r\n\r\nshutdown command invoked\r\n",
+        "snapshot": "target_halted",
+        "state": "halted",
+        "task_id": "current_board_smoke"
+    },
+    "image": {
+        "entry_address": "0x20000",
+        "error_message": "",
+        "file_name": "dhrystone.elf",
+        "segments": [
+            {
+                "address": "0x20000",
+                "length": 5816
+            },
+            {
+                "address": "0x30000",
+                "length": 644
+            }
+        ],
+        "sha256": "5e8ed40f7ea9e5125263acc1e37f2955e3a3d0b7195df95a67986c8664d97c49",
+        "size_bytes": 37128,
+        "type": "elf"
+    },
+    "image_path": "D:/0_ongoing/LockStep-Novelv-CPU/designs/noelv-xilinx-zcu102/dhrystone.elf",
+    "interface_config_path": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/build-codex-final-clang/src/apps/resources/debug_adapters/openocd/cmsis-dap-explicit.cfg",
+    "openocd_path": "D:/Program Files/msys64/ucrt64/bin/openocd.exe",
+    "overall_status": "PASS",
+    "precheck": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "error_message": "",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\nbackground polling: on\r\nTAP: noelv.cpu (enabled)\r\n\r\nshutdown command invoked\r\n;Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\n4 bytes written at address 0x00000000\r\ndownloaded 4 bytes in 0.147010s (0.027 KiB/s)\r\n\r\nshutdown command invoked\r\n;Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\ndumped 4 bytes in 0.110892s (0.035 KiB/s)\r\n\r\nshutdown command invoked\r\n",
+        "read_supported": true,
+        "reset_supported": true,
+        "run_supported": true,
+        "state": "passed",
+        "write_supported": true
+    },
+    "profile_id": "noelv_zcu102_cmsis_dap",
+    "profile_name": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+    "readback": {
+        "actual_length": "6460",
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "diff_count": "0",
+        "error_message": "",
+        "expected_length": "6460",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\ndumped 5816 bytes in 1.632867s (3.478 KiB/s)\r\n\r\nshutdown command invoked\r\n;Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\ndumped 644 bytes in 0.401839s (1.565 KiB/s)\r\n\r\nshutdown command invoked\r\n",
+        "state": "passed",
+        "task_id": "current_board_smoke"
+    },
+    "resource_root": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/build-codex-final-clang/src/apps/resources",
+    "run": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "entry_address": "0x20000",
+        "error_message": "",
+        "operation": "run",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\npc (/64): 0x0000000000020000\r\n\r\nshutdown command invoked\r\n",
+        "snapshot": "target_running",
+        "state": "running",
+        "task_id": "current_board_smoke"
+    },
+    "schema": "lockstep-current-board-smoke-v1",
+    "target_config_path": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/build-codex-final-clang/src/apps/resources/debug_adapters/openocd/target-riscv-direct.cfg",
+    "write": {
+        "created_at": "2026-07-09T03:02:29.777Z",
+        "error_message": "",
+        "raw_return": "Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\n5816 bytes written at address 0x00020000\r\ndownloaded 5816 bytes in 1.475003s (3.851 KiB/s)\r\n\r\nshutdown command invoked\r\n;Open On-Chip Debugger 0.12.0\r\nLicensed under GNU GPL v2\r\nFor bug reports, read\r\n\thttp://openocd.org/doc/doxygen/bugs.html\r\nadapter speed: 100 kHz\r\n\r\nInfo : CMSIS-DAP: SWD supported\r\nInfo : CMSIS-DAP: JTAG supported\r\nInfo : CMSIS-DAP: Atomic commands supported\r\nInfo : CMSIS-DAP: Test domain timer supported\r\nInfo : CMSIS-DAP: FW Version = 0256\r\nInfo : CMSIS-DAP: Serial# = 07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908\r\nInfo : CMSIS-DAP: Interface Initialised (JTAG)\r\nInfo : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1\r\nInfo : CMSIS-DAP: Interface ready\r\nInfo : clock speed 100 kHz\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : cmsis-dap JTAG TLR_RESET\r\nInfo : JTAG tap: noelv.cpu tap/device found: 0x00000649 (mfg: 0x324 (Gaisler Research AB), part: 0x0000, ver: 0x0)\r\nInfo : datacount=4 progbufsize=8\r\nInfo : Examined RISC-V core; found 1 harts\r\nInfo :  hart 0: XLEN=64, misa=0x80000000009411af\r\nInfo : starting gdb server for noelv.cpu on 3333\r\nInfo : Listening on port 3333 for gdb connections\r\nError: Unknown DCSR cause field: 0x0\r\nError:   dcsr=0x000000004000b003\r\n644 bytes written at address 0x00030000\r\ndownloaded 644 bytes in 0.422153s (1.490 KiB/s)\r\n\r\nshutdown command invoked\r\n",
+        "segments": [
+            {
+                "address": "0x20000",
+                "length": 5816
+            },
+            {
+                "address": "0x30000",
+                "length": 644
+            }
+        ],
+        "success": true,
+        "task_id": "current_board_smoke"
+    }
+}

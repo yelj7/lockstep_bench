@@ -1,0 +1,106 @@
+﻿{
+    "generated_at":  "2026-07-10T02:06:48.2878963Z",
+    "output_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646",
+    "results":  [
+                    {
+                        "Speed":  14,
+                        "Run":  1,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_14_run_1\\connect_response.json"
+                    },
+                    {
+                        "Speed":  14,
+                        "Run":  2,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_14_run_2\\connect_response.json"
+                    },
+                    {
+                        "Speed":  50,
+                        "Run":  1,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_50_run_1\\connect_response.json"
+                    },
+                    {
+                        "Speed":  50,
+                        "Run":  2,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_50_run_2\\connect_response.json"
+                    },
+                    {
+                        "Speed":  100,
+                        "Run":  1,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_100_run_1\\connect_response.json"
+                    },
+                    {
+                        "Speed":  100,
+                        "Run":  2,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_100_run_2\\connect_response.json"
+                    },
+                    {
+                        "Speed":  500,
+                        "Run":  1,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_500_run_1\\connect_response.json"
+                    },
+                    {
+                        "Speed":  500,
+                        "Run":  2,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_500_run_2\\connect_response.json"
+                    },
+                    {
+                        "Speed":  1000,
+                        "Run":  1,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_1000_run_1\\connect_response.json"
+                    },
+                    {
+                        "Speed":  1000,
+                        "Run":  2,
+                        "Success":  false,
+                        "ErrorCode":  "CONNECT_FAILED",
+                        "ErrorMessage":  "JTAG IDCODE invalid: 0xffffffff",
+                        "Idcode":  "",
+                        "LastExchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                        "Response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_speed_matrix_20260710_100646\\khz_1000_run_2\\connect_response.json"
+                    }
+                ]
+}

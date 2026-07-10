@@ -1,0 +1,17 @@
+﻿{
+    "schema":  "lockstep-debug-service-request-v1",
+    "request_id":  "jtag_repeat_7",
+    "operation":  "connect",
+    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\jtag_repeat_connect_20260709_155710\\run_07\\connect_response.json",
+    "profile":  {
+                    "profile_id":  "noelv_zcu102_cmsis_dap",
+                    "profile_name":  "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+                    "ram_base_address":  "0x0",
+                    "default_run_address":  "0x0",
+                    "max_writable_address":  "0x4000000",
+                    "reset_strategy":  "reset halt"
+                },
+    "interface_config_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\software\\lockstep_host\\resources\\debug_adapters\\self_debug_service\\interface_cmsis_dap.json",
+    "target_config_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\software\\lockstep_host\\resources\\debug_adapters\\self_debug_service\\target_noelv_riscv.json",
+    "adapter_speed_khz":  100
+}

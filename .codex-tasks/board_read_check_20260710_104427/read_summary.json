@@ -1,0 +1,15 @@
+﻿{
+    "task_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_read_check_20260710_104427",
+    "success":  false,
+    "error_code":  null,
+    "error_message":  null,
+    "data_hex":  null,
+    "jtag_idcode":  null,
+    "dtmcs":  null,
+    "dmi_address_bits":  null,
+    "dmstatus":  null,
+    "sbcs":  null,
+    "last_dmi_error":  null,
+    "target_state":  null,
+    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_read_check_20260710_104427\\read_response.json"
+}

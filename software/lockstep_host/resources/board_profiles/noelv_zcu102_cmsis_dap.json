@@ -2,13 +2,13 @@
   "defaultRunAddress": "0x0",
   "gdbPort": 3333,
   "host": "127.0.0.1",
-  "interfaceConfigPath": "debug_adapters/openocd/cmsis-dap-explicit.cfg",
+  "interfaceConfigPath": "debug_adapters/self_debug_service/interface_cmsis_dap.json",
   "jtagKhz": 14,
   "profileName": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
   "ramBaseAddress": "0x0",
   "resetStrategy": "reset halt",
   "runAfterDownload": true,
-  "targetConfigPath": "debug_adapters/openocd/target-riscv-direct.cfg",
-  "targetDebugToolPath": "debug_adapters/openocd/openocd",
+  "targetConfigPath": "debug_adapters/self_debug_service/target_noelv_riscv.json",
+  "targetDebugToolPath": "debug_adapters/self_debug_service/lockstep_debug_service",
   "tclPort": 6666
 }

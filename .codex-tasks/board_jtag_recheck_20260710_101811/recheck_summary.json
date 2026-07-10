@@ -1,0 +1,42 @@
+﻿{
+    "generated_at":  "2026-07-10T10:18:11",
+    "output_root":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_jtag_recheck_20260710_101811",
+    "results":  [
+                    {
+                        "speed_khz":  14,
+                        "exit_code":  0,
+                        "success":  false,
+                        "error_code":  "NO_RESPONSE",
+                        "error_message":  "",
+                        "jtag_idcode":  "",
+                        "jtag_idcode_error":  ""
+                    },
+                    {
+                        "speed_khz":  50,
+                        "exit_code":  0,
+                        "success":  false,
+                        "error_code":  "NO_RESPONSE",
+                        "error_message":  "",
+                        "jtag_idcode":  "",
+                        "jtag_idcode_error":  ""
+                    },
+                    {
+                        "speed_khz":  100,
+                        "exit_code":  0,
+                        "success":  false,
+                        "error_code":  "NO_RESPONSE",
+                        "error_message":  "",
+                        "jtag_idcode":  "",
+                        "jtag_idcode_error":  ""
+                    },
+                    {
+                        "speed_khz":  500,
+                        "exit_code":  0,
+                        "success":  false,
+                        "error_code":  "NO_RESPONSE",
+                        "error_message":  "",
+                        "jtag_idcode":  "",
+                        "jtag_idcode_error":  ""
+                    }
+                ]
+}

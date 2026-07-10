@@ -1,0 +1,85 @@
+﻿
+****** Vivado v2022.2 (64-bit)
+  **** SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+  **** IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+
+CRITICAL WARNING: [Common 17-741] No write access right to the local Tcl store at 'C'. XilinxTclStore is reverted to the installation area. If you want to use local Tcl Store, please change the access right and relaunch Vivado.
+source {D:\0_ongoing\lockstep\lockstep_bench\.codex-tasks\20260709-board-smoke\zcu102_jtag_program_bitstream_once.tcl}
+# if {![info exists ::env(ZCU102_BITSTREAM_FILE)]} {
+#   error "ZCU102_BITSTREAM_FILE is required."
+# }
+# set bit_file [file normalize $::env(ZCU102_BITSTREAM_FILE)]
+# if {![file exists $bit_file]} {
+#   error "Bitstream file does not exist: $bit_file"
+# }
+# set status_file ""
+# if {[info exists ::env(ZCU102_PROGRAM_STATUS_FILE)]} {
+#   set status_file [file normalize $::env(ZCU102_PROGRAM_STATUS_FILE)]
+# }
+# open_hw_manager
+open_hw_manager: Time (s): cpu = 00:00:05 ; elapsed = 00:00:08 . Memory (MB): peak = 402.984 ; gain = 82.695
+# connect_hw_server -allow_non_jtag
+INFO: [Labtools 27-2285] Connecting to hw_server url TCP:localhost:3121
+INFO: [Labtools 27-2222] Launching hw_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+****** Xilinx hw_server v2022.2
+  **** Build date : Oct 14 2022 at 05:18:10
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+
+
+
+
+INFO: [Labtools 27-3415] Connecting to cs_server url TCP:localhost:0
+INFO: [Labtools 27-3417] Launching cs_server...
+INFO: [Labtools 27-2221] Launch Output:
+
+
+******** Xilinx cs_server v2022.2.0
+  ****** Build date   : Oct 05 2022-07:25:37
+    **** Build number : 2022.2.1664925937
+      ** Copyright 2017-2026 Xilinx, Inc. All Rights Reserved.
+
+
+
+connect_hw_server: Time (s): cpu = 00:00:00 ; elapsed = 00:00:05 . Memory (MB): peak = 427.805 ; gain = 24.820
+# set targets [get_hw_targets *]
+# if {[llength $targets] == 0} {
+#   error "No Vivado hardware targets found for bitstream programming."
+# }
+# open_hw_target [lindex $targets 0]
+INFO: [Labtoolstcl 44-466] Opening hw_target localhost:3121/xilinx_tcf/Digilent/210308AAFDCA
+# set devices [get_hw_devices *xczu9*]
+# if {[llength $devices] == 0} {
+#   error "No xczu9 hardware device found for bitstream programming."
+# }
+# set device [lindex $devices 0]
+# current_hw_device $device
+# refresh_hw_device $device
+INFO: [Labtools 27-1435] Device xczu9 (JTAG device index = 0) is not programmed (DONE status = 0).
+refresh_hw_device: Time (s): cpu = 00:00:05 ; elapsed = 00:00:07 . Memory (MB): peak = 2623.242 ; gain = 2193.102
+# set_property PROGRAM.FILE $bit_file $device
+# program_hw_devices $device
+INFO: [Labtools 27-3164] End of startup status: HIGH
+program_hw_devices: Time (s): cpu = 00:00:15 ; elapsed = 00:00:15 . Memory (MB): peak = 2623.762 ; gain = 0.520
+# refresh_hw_device $device
+INFO: [Labtools 27-1434] Device xczu9 (JTAG device index = 0) is programmed with a design that has no supported debug core(s) in it.
+# set is_programmed "UNAVAILABLE"
+# if {[lsearch -exact [list_property $device] "IS_PROGRAMMED"] >= 0} {
+#   set is_programmed [get_property IS_PROGRAMMED $device]
+# }
+# set status_line "JTAG_BITSTREAM_PROGRAMMED device=$device bitstream=$bit_file is_programmed=$is_programmed"
+# puts $status_line
+JTAG_BITSTREAM_PROGRAMMED device=xczu9_0 bitstream=D:/0_ongoing/LockStep-Novelv-CPU/designs/noelv-xilinx-zcu102/noelvmp.bit is_programmed=UNAVAILABLE
+# if {$status_file ne ""} {
+#   set out_dir [file dirname $status_file]
+#   file mkdir $out_dir
+#   set fh [open $status_file w]
+#   puts $fh $status_line
+#   close $fh
+# }
+# close_hw_target
+INFO: [Labtoolstcl 44-464] Closing hw_target localhost:3121/xilinx_tcf/Digilent/210308AAFDCA
+# close_hw_manager
+INFO: [Common 17-206] Exiting Vivado at Thu Jul  9 10:51:07 2026...

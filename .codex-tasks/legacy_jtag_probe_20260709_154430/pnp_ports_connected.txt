@@ -1,0 +1,66 @@
+﻿Microsoft PnP Utility
+
+Instance ID:                BTHENUM\{00001101-0000-1000-8000-00805f9b34fb}_LOCALMFG&001d\7&ff2f3db&0&0CAEBDC2D0FA_C00000000
+Device Description:         ���������ϵı�׼���� (COM3)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Microsoft
+Status:                     Started
+Driver Name:                bthspp.inf
+
+Instance ID:                USB\VID_10C4&PID_EA71&MI_02\7&137dd7cf&0&0002
+Device Description:         Silicon Labs Quad CP2108 USB to UART Bridge: Interface 2 (COM14)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Silicon Labs
+Status:                     Started
+Driver Name:                oem71.inf
+
+Instance ID:                USB\VID_10C4&PID_EA71&MI_03\7&137dd7cf&0&0003
+Device Description:         Silicon Labs Quad CP2108 USB to UART Bridge: Interface 3 (COM15)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Silicon Labs
+Status:                     Started
+Driver Name:                oem71.inf
+
+Instance ID:                ACPI\PNP0501\2
+Device Description:         ͨ�Ŷ˿� (COM1)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          (��׼�˿�����)
+Status:                     Started
+Driver Name:                msports.inf
+
+Instance ID:                BTHENUM\{00001101-0000-1000-8000-00805f9b34fb}_LOCALMFG&0000\7&ff2f3db&0&000000000000_00000000
+Device Description:         ���������ϵı�׼���� (COM4)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Microsoft
+Status:                     Started
+Driver Name:                bthspp.inf
+
+Instance ID:                USB\VID_10C4&PID_EA71&MI_00\7&137dd7cf&0&0000
+Device Description:         Silicon Labs Quad CP2108 USB to UART Bridge: Interface 0 (COM13)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Silicon Labs
+Status:                     Started
+Driver Name:                oem71.inf
+
+Instance ID:                USB\VID_0D28&PID_0204&MI_01\7&1e01f1e4&0&0001
+Device Description:         USB �����豸 (COM11)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Microsoft
+Status:                     Started
+Driver Name:                usbser.inf
+
+Instance ID:                USB\VID_10C4&PID_EA71&MI_01\7&137dd7cf&0&0001
+Device Description:         Silicon Labs Quad CP2108 USB to UART Bridge: Interface 1 (COM12)
+Class Name:                 Ports
+Class GUID:                 {4d36e978-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          Silicon Labs
+Status:                     Started
+Driver Name:                oem71.inf
+

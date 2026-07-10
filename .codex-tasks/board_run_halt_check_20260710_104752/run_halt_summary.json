@@ -1,0 +1,34 @@
+﻿{
+    "generated_at":  "2026-07-10T10:47:55",
+    "output_root":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_run_halt_check_20260710_104752",
+    "run_success":  true,
+    "halt_after_run_success":  true,
+    "results":  [
+                    {
+                        "step":  "run_entry_0",
+                        "success":  true,
+                        "error_code":  "OK",
+                        "error_message":  "",
+                        "jtag_idcode":  "0x00000649",
+                        "dtmcs":  "0x00000071",
+                        "dmi_address_bits":  7,
+                        "dmstatus":  "0x000303a2",
+                        "last_dmi_error":  "",
+                        "target_state":  "running",
+                        "response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_run_halt_check_20260710_104752\\run_entry_0\\run_entry_0_response.json"
+                    },
+                    {
+                        "step":  "halt_after_run",
+                        "success":  true,
+                        "error_code":  "OK",
+                        "error_message":  "",
+                        "jtag_idcode":  "0x00000649",
+                        "dtmcs":  "0x00000071",
+                        "dmi_address_bits":  7,
+                        "dmstatus":  "0x000303a2",
+                        "last_dmi_error":  "",
+                        "target_state":  "halted",
+                        "response":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_run_halt_check_20260710_104752\\halt_after_run\\halt_after_run_response.json"
+                    }
+                ]
+}

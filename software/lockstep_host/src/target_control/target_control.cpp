@@ -18,8 +18,13 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QProcess>
+#include <QSaveFile>
+#include <QStandardPaths>
 
 #include <limits>
 
@@ -88,6 +93,100 @@ bool readWholeFile(const QString& path, QByteArray* const data, QString* const e
 
     *data = file.readAll();
     return true;
+}
+
+bool writeWholeFile(const QString& path, const QByteArray& data, QString* const errorMessage)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("无法写入临时文件: %1").arg(path);
+        }
+        return false;
+    }
+
+    if (file.write(data) != data.size()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("临时文件写入不完整: %1").arg(path);
+        }
+        return false;
+    }
+
+    if (!file.commit()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("临时文件提交失败: %1").arg(path);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+QString hexAddress(const quint64 value)
+{
+    return QStringLiteral("0x%1").arg(value, 0, 16);
+}
+
+QString temporaryRoot(const QString& configuredPath)
+{
+    if (!configuredPath.trimmed().isEmpty()) {
+        QDir dir(configuredPath);
+        if (dir.mkpath(QStringLiteral("."))) {
+            return dir.absolutePath();
+        }
+    }
+
+    const QString fallback = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+        .filePath(QStringLiteral("lockstep_host_debug_service"));
+    QDir().mkpath(fallback);
+    return fallback;
+}
+
+bool isDebugServiceSuccess(const int exitCode, const QProcess::ExitStatus exitStatus)
+{
+    return exitStatus == QProcess::NormalExit && exitCode == 0;
+}
+
+QString jsonOperation(const QString& operation)
+{
+    return operation.trimmed().toLower();
+}
+
+QJsonObject profileToJson(const DebugProfile& profile)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("profile_id"), profile.profileId);
+    object.insert(QStringLiteral("profile_name"), profile.profileName);
+    object.insert(QStringLiteral("ram_base_address"), hexAddress(profile.ramBaseAddress));
+    object.insert(QStringLiteral("default_run_address"), hexAddress(profile.defaultRunAddress));
+    object.insert(QStringLiteral("max_writable_address"), hexAddress(profile.maxWritableAddress));
+    object.insert(QStringLiteral("reset_strategy"), profile.resetStrategy);
+    return object;
+}
+
+bool parseServiceResponse(const QByteArray& payload, QJsonObject* const response)
+{
+    if (response == nullptr || payload.trimmed().isEmpty()) {
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return false;
+    }
+
+    *response = document.object();
+    return true;
+}
+
+QByteArray hexToBytes(const QString& text)
+{
+    const QByteArray hex = text.trimmed().toLatin1();
+    if ((hex.size() % 2) != 0) {
+        return QByteArray();
+    }
+    return QByteArray::fromHex(hex);
 }
 
 int hexValue(const QChar value)
@@ -951,6 +1050,189 @@ DebugResult InMemoryDebugAccess::halt()
     }
     running_ = false;
     return makeSuccess(QStringLiteral("halt"), QStringLiteral("halted"));
+}
+
+DebugServiceAccess::DebugServiceAccess(const DebugServiceConfig& config)
+    : config_(config)
+{
+    if (config_.timeoutMs <= 0) {
+        config_.timeoutMs = 30000;
+    }
+    if (config_.adapterSpeedKhz <= 0) {
+        config_.adapterSpeedKhz = 100;
+    }
+}
+
+QString DebugServiceAccess::makeTemporaryPath(const QString& prefix, const QString& suffix) const
+{
+    const QString root = temporaryRoot(config_.temporaryDirectoryPath);
+    return QDir(root).filePath(QStringLiteral("%1_%2.%3").arg(prefix, requestId(QStringLiteral("tmp")), suffix));
+}
+
+DebugResult DebugServiceAccess::runDebugService(
+    const QString& idPrefix,
+    const QJsonObject& request,
+    const bool requireConnection) const
+{
+    if (requireConnection && !connected_) {
+        return makeFailure(idPrefix, QStringLiteral("target not connected"));
+    }
+    if (!QFileInfo::exists(config_.debugServicePath)) {
+        return makeFailure(idPrefix, QStringLiteral("调试服务不存在: %1").arg(config_.debugServicePath));
+    }
+
+    const QString requestPath = makeTemporaryPath(idPrefix, QStringLiteral("request.json"));
+    const QString responsePath = makeTemporaryPath(idPrefix, QStringLiteral("response.json"));
+    QJsonObject payload = request;
+    payload.insert(QStringLiteral("schema"), QStringLiteral("lockstep-debug-service-request-v1"));
+    payload.insert(QStringLiteral("request_id"), requestId(idPrefix));
+    payload.insert(QStringLiteral("profile"), profileToJson(profile_));
+    payload.insert(QStringLiteral("interface_config_path"), config_.interfaceConfigPath);
+    payload.insert(QStringLiteral("target_config_path"), config_.targetConfigPath);
+    payload.insert(QStringLiteral("adapter_speed_khz"), config_.adapterSpeedKhz);
+    payload.insert(QStringLiteral("response_path"), responsePath);
+
+    QString error;
+    if (!writeWholeFile(requestPath, QJsonDocument(payload).toJson(QJsonDocument::Indented), &error)) {
+        return makeFailure(idPrefix, error);
+    }
+
+    QProcess process;
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(config_.debugServicePath, {QStringLiteral("--request"), requestPath});
+    if (!process.waitForStarted(5000)) {
+        QFile::remove(requestPath);
+        return makeFailure(idPrefix, QStringLiteral("调试服务启动失败: %1").arg(process.errorString()));
+    }
+
+    const bool finished = process.waitForFinished(config_.timeoutMs);
+    if (!finished) {
+        process.kill();
+        process.waitForFinished(3000);
+    }
+
+    DebugResult result;
+    result.requestId = payload.value(QStringLiteral("request_id")).toString();
+    result.rawReturn = QString::fromLocal8Bit(process.readAllStandardOutput());
+    if (!finished) {
+        QFile::remove(requestPath);
+        QFile::remove(responsePath);
+        result.errorMessage = QStringLiteral("调试服务执行超时");
+        result.rawReturn.append(QStringLiteral("\nservice timeout after %1 ms").arg(config_.timeoutMs));
+        return result;
+    }
+
+    const int exitCode = process.exitCode();
+    const QProcess::ExitStatus exitStatus = process.exitStatus();
+    result.success = isDebugServiceSuccess(exitCode, exitStatus);
+    if (!result.success) {
+        result.errorMessage = QStringLiteral("调试服务执行失败: exit=%1").arg(exitCode);
+    }
+
+    QByteArray responseBytes;
+    if (QFileInfo::exists(responsePath) && readWholeFile(responsePath, &responseBytes, nullptr)) {
+        QJsonObject response;
+        if (parseServiceResponse(responseBytes, &response)) {
+            result.success = result.success && response.value(QStringLiteral("success")).toBool(false);
+            result.rawReturn = QString::fromUtf8(responseBytes);
+            result.errorMessage = response.value(QStringLiteral("error_message")).toString(result.errorMessage);
+            const QString dataHex = response.value(QStringLiteral("data_hex")).toString();
+            if (!dataHex.isEmpty()) {
+                result.data = hexToBytes(dataHex);
+            }
+        }
+    }
+
+    QFile::remove(requestPath);
+    QFile::remove(responsePath);
+    return result;
+}
+
+DebugResult DebugServiceAccess::connectTarget(const DebugProfile& profile)
+{
+    profile_ = profile;
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("connect")));
+    const DebugResult result = runDebugService(QStringLiteral("connect"), request, false);
+    connected_ = result.success;
+    return result;
+}
+
+DebugResult DebugServiceAccess::disconnectTarget()
+{
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("disconnect")));
+    const DebugResult result = connected_
+        ? runDebugService(QStringLiteral("disconnect"), request, true)
+        : makeSuccess(QStringLiteral("disconnect"), QStringLiteral("disconnected"));
+    connected_ = false;
+    return result;
+}
+
+DebugResult DebugServiceAccess::status()
+{
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("status")));
+    return runDebugService(QStringLiteral("status"), request, true);
+}
+
+DebugResult DebugServiceAccess::read(const quint64 address, const quint64 length)
+{
+    if (!isRangeAllowed(profile_, address, length)) {
+        return makeFailure(QStringLiteral("read"), QStringLiteral("read range invalid"));
+    }
+
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("read")));
+    request.insert(QStringLiteral("address"), hexAddress(address));
+    request.insert(QStringLiteral("length"), QString::number(length));
+    return runDebugService(QStringLiteral("read"), request, true);
+}
+
+DebugResult DebugServiceAccess::write(const quint64 address, const QByteArray& data)
+{
+    const quint64 length = static_cast<quint64>(data.size());
+    if (!isRangeAllowed(profile_, address, length)) {
+        return makeFailure(QStringLiteral("write"), QStringLiteral("write range invalid"));
+    }
+
+    const QString dataPath = makeTemporaryPath(QStringLiteral("write"), QStringLiteral("bin"));
+    QString error;
+    if (!writeWholeFile(dataPath, data, &error)) {
+        return makeFailure(QStringLiteral("write"), error);
+    }
+
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("write")));
+    request.insert(QStringLiteral("address"), hexAddress(address));
+    request.insert(QStringLiteral("length"), QString::number(length));
+    request.insert(QStringLiteral("data_path"), dataPath);
+    DebugResult result = runDebugService(QStringLiteral("write"), request, true);
+    QFile::remove(dataPath);
+    return result;
+}
+
+DebugResult DebugServiceAccess::reset(const QString& strategy)
+{
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("reset")));
+    request.insert(QStringLiteral("strategy"), strategy.trimmed());
+    return runDebugService(QStringLiteral("reset"), request, true);
+}
+
+DebugResult DebugServiceAccess::run(const quint64 entryAddress)
+{
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("run")));
+    request.insert(QStringLiteral("entry_address"), hexAddress(entryAddress));
+    return runDebugService(QStringLiteral("run"), request, true);
+}
+
+DebugResult DebugServiceAccess::halt()
+{
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("halt")));
+    return runDebugService(QStringLiteral("halt"), request, true);
 }
 
 ConnectionRecord TargetConnectionService::connectTarget(

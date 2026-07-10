@@ -1,0 +1,31 @@
+{
+    "config": {
+        "adapter_speed_khz": 14,
+        "interface_config_present": true,
+        "target_config_present": true
+    },
+    "data_hex": "",
+    "error_code": "TRANSPORT_NOT_IMPLEMENTED",
+    "error_message": "自研片上调试服务真实板卡传输层尚未实现，操作未执行。",
+    "generated_at": "2026-07-09T03:52:54.436Z",
+    "operation": "connect",
+    "profile": {
+        "default_run_address": "0x0",
+        "max_writable_address": "0x400",
+        "profile_id": "noelv_zcu102_cmsis_dap",
+        "profile_name": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+        "ram_base_address": "0x0",
+        "reset_strategy": "reset halt"
+    },
+    "request_id": "codex_connect_check",
+    "schema": "lockstep-debug-service-response-v1",
+    "snapshot": {
+        "address": "0x0",
+        "entry_address": "0x0",
+        "length": "0",
+        "operation": "connect",
+        "target_state": "unknown",
+        "transport": "self_developed_pending"
+    },
+    "success": false
+}

@@ -1,0 +1,191 @@
+﻿{
+    "iterations":  20,
+    "success_count":  20,
+    "failure_count":  0,
+    "idcodes":  [
+                    "0x00000649"
+                ],
+    "output_root":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\jtag_repeat_connect_20260709_155710",
+    "results":  [
+                    {
+                        "Run":  1,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  2,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  3,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  4,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  5,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  6,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  7,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  8,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  9,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  10,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  11,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  12,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  13,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  14,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  15,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  16,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  17,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  18,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  19,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    },
+                    {
+                        "Run":  20,
+                        "ExitCode":  0,
+                        "Success":  true,
+                        "ErrorCode":  "OK",
+                        "ErrorMessage":  "",
+                        "Idcode":  "0x00000649",
+                        "IdcodeValid":  true
+                    }
+                ]
+}

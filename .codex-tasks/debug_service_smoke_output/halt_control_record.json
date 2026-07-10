@@ -1,0 +1,10 @@
+{
+    "created_at": "2026-07-09T03:52:59.802Z",
+    "entry_address": "0x0",
+    "error_message": "程序未进入运行态，中止未执行。",
+    "operation": "halt",
+    "raw_return": "",
+    "snapshot": "",
+    "state": "not_allowed",
+    "task_id": "debug_service_smoke"
+}

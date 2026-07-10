@@ -1,0 +1,14 @@
+﻿{
+    "task_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_halt_check_20260710_104404",
+    "success":  true,
+    "error_code":  "OK",
+    "error_message":  "",
+    "jtag_idcode":  "0x00000649",
+    "dtmcs":  "0x00000071",
+    "dmi_address_bits":  7,
+    "dmstatus":  "0x000003a2",
+    "last_dmi_error":  "",
+    "sbcs":  "0x00000000",
+    "target_state":  "halted",
+    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_halt_check_20260710_104404\\halt_response.json"
+}

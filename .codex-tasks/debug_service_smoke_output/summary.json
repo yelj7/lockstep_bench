@@ -1,0 +1,90 @@
+{
+    "adapter_speed_khz": 100,
+    "connection": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "error_message": "自研片上调试服务真实板卡传输层尚未实现，操作未执行。",
+        "profile_id": "noelv_zcu102_cmsis_dap",
+        "raw_return": "{\n    \"config\": {\n        \"adapter_speed_khz\": 100,\n        \"interface_config_present\": true,\n        \"target_config_present\": true\n    },\n    \"data_hex\": \"\",\n    \"error_code\": \"TRANSPORT_NOT_IMPLEMENTED\",\n    \"error_message\": \"自研片上调试服务真实板卡传输层尚未实现，操作未执行。\",\n    \"generated_at\": \"2026-07-09T03:52:59.792Z\",\n    \"operation\": \"connect\",\n    \"profile\": {\n        \"default_run_address\": \"0x0\",\n        \"max_writable_address\": \"0x4000000\",\n        \"profile_id\": \"noelv_zcu102_cmsis_dap\",\n        \"profile_name\": \"NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working\",\n        \"ram_base_address\": \"0x0\",\n        \"reset_strategy\": \"reset halt\"\n    },\n    \"request_id\": \"connect_20260709035259772\",\n    \"schema\": \"lockstep-debug-service-response-v1\",\n    \"snapshot\": {\n        \"address\": \"0x0\",\n        \"entry_address\": \"0x0\",\n        \"length\": \"0\",\n        \"operation\": \"connect\",\n        \"target_state\": \"unknown\",\n        \"transport\": \"self_developed_pending\"\n    },\n    \"success\": false\n}\n",
+        "state": "failed"
+    },
+    "debug_service_path": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/build-codex-final-clang/src/apps/lockstep_debug_service.exe",
+    "disconnect": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "error_message": "",
+        "profile_id": "",
+        "raw_return": "disconnected",
+        "state": "not_connected"
+    },
+    "generated_at": "2026-07-09T03:52:59.824Z",
+    "halt": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "entry_address": "0x0",
+        "error_message": "程序未进入运行态，中止未执行。",
+        "operation": "halt",
+        "raw_return": "",
+        "snapshot": "",
+        "state": "not_allowed",
+        "task_id": "debug_service_smoke"
+    },
+    "image": {
+        "entry_address": "0x0",
+        "error_message": "",
+        "file_name": "tiny_debug_service_smoke.hex",
+        "segments": [
+            {
+                "address": "0x0",
+                "length": 4
+            }
+        ],
+        "sha256": "e01b381491bcc4f1714fa44786f72da1a4948d7af1e3be28507fc42843adbc76",
+        "size_bytes": 32,
+        "type": "intel_hex"
+    },
+    "image_path": "D:/0_ongoing/lockstep/lockstep_bench/.codex-tasks/tiny_debug_service_smoke.hex",
+    "interface_config_path": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/resources/debug_adapters/self_debug_service/interface_cmsis_dap.json",
+    "overall_status": "FAILED",
+    "precheck": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "error_message": "连接失败，预检未执行。",
+        "raw_return": "",
+        "read_supported": false,
+        "reset_supported": false,
+        "run_supported": false,
+        "state": "blocked",
+        "write_supported": false
+    },
+    "profile_id": "noelv_zcu102_cmsis_dap",
+    "profile_name": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
+    "readback": {
+        "actual_length": "0",
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "diff_count": "0",
+        "error_message": "烧写未成功，回读校验未执行。",
+        "expected_length": "0",
+        "raw_return": "",
+        "state": "failed",
+        "task_id": "debug_service_smoke"
+    },
+    "resource_root": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/resources",
+    "run": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "entry_address": "0x0",
+        "error_message": "回读校验未通过，运行未执行。",
+        "operation": "run",
+        "raw_return": "",
+        "snapshot": "",
+        "state": "not_allowed",
+        "task_id": "debug_service_smoke"
+    },
+    "schema": "lockstep-debug-service-smoke-v1",
+    "target_config_path": "D:/0_ongoing/lockstep/lockstep_bench/software/lockstep_host/resources/debug_adapters/self_debug_service/target_noelv_riscv.json",
+    "write": {
+        "created_at": "2026-07-09T03:52:59.802Z",
+        "error_message": "预检未通过或镜像无效，烧写未执行。",
+        "raw_return": "",
+        "segments": [
+        ],
+        "success": false,
+        "task_id": "debug_service_smoke"
+    }
+}

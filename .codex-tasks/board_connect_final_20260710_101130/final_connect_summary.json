@@ -1,0 +1,12 @@
+﻿{
+    "generated_at":  "2026-07-10T02:11:30.3117013Z",
+    "output_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_final_20260710_101130",
+    "success":  false,
+    "error_code":  "CONNECT_FAILED",
+    "error_message":  "JTAG IDCODE invalid: 0xffffffff",
+    "jtag_idcode":  "",
+    "jtag_idcode_error":  "JTAG IDCODE invalid: 0xffffffff",
+    "hid_selected":  "vid=0x0d28 pid=0x0204 usage_page=0xff00 usage=0x0001 serial=07000001cecbabcd36e0bc48ffffffffa5a5a5a597969908 manufacturer=ARM product=QYF-CMSIS-DAP",
+    "last_exchange":  "tx=1600 rx=1600ffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_final_20260710_101130\\connect_response.json"
+}
