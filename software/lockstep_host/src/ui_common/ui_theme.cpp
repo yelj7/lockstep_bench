@@ -18,11 +18,23 @@
 
 #include <QWidget>
 
+#include <QtGlobal>
+
 namespace lockstep::ui {
 
-QString UiTheme::workbenchStyleSheet()
+namespace {
+
+int scaled(const int value, const double scale)
 {
-    return QStringLiteral(R"(
+    return qMax(1, qRound(static_cast<double>(value) * scale));
+}
+
+}  // namespace
+
+QString UiTheme::workbenchStyleSheet(const double scale)
+{
+    const double boundedScale = qBound(1.0, scale, 1.35);
+    const QString baseStyle = QStringLiteral(R"(
         QWidget#workbench_shell {
             background-color: #eceff3;
             color: #1f2937;
@@ -492,12 +504,134 @@ QString UiTheme::workbenchStyleSheet()
             width: 0;
         }
     )");
+
+    return baseStyle +
+           QStringLiteral(R"(
+        QWidget {
+            font-size: %1px;
+        }
+        QLabel#workbench_title {
+            font-size: %2px;
+        }
+        QLabel#page_title {
+            font-size: %3px;
+            padding-bottom: %4px;
+        }
+        QLabel#sidebar_caption {
+            font-size: %5px;
+            padding: 0 %6px %6px %6px;
+        }
+        QLabel[statusPill="true"] {
+            border-radius: %7px;
+            padding: %8px %9px;
+        }
+        QLabel[metricValue="true"] {
+            font-size: %10px;
+        }
+        QPushButton[navButton="true"] {
+            border-radius: %11px;
+            padding: %12px %13px;
+        }
+        QGroupBox[panelBox="true"] {
+            border-radius: %14px;
+            margin-top: %15px;
+            padding: %16px;
+        }
+        QGroupBox[panelBox="true"]::title {
+            left: %13px;
+            padding: 0 %11px;
+        }
+        QLineEdit,
+        QComboBox,
+        QSpinBox,
+        QCheckBox,
+        QRadioButton,
+        QPlainTextEdit {
+            border-radius: %17px;
+            padding: %11px;
+        }
+        QComboBox {
+            padding: %11px %18px %11px %13px;
+        }
+        QPlainTextEdit {
+            font-size: %19px;
+        }
+        QComboBox::drop-down {
+            width: %20px;
+        }
+        QSpinBox::up-button,
+        QSpinBox::down-button {
+            width: %21px;
+        }
+        QPushButton {
+            border-radius: %17px;
+            padding: %22px %13px;
+        }
+        QPushButton[summaryTab="true"] {
+            border-radius: %17px;
+            padding: %22px %13px;
+        }
+        QPushButton#tool_icon_button {
+            padding: %8px;
+            min-width: %23px;
+        }
+        QPushButton#log_clear_button {
+            padding: %24px %6px;
+        }
+        QProgressBar {
+            border-radius: %8px;
+        }
+        QProgressBar::chunk {
+            border-radius: %25px;
+        }
+        QTabWidget#diagnostics_output_tabs QTabBar::tab {
+            border-top-left-radius: %25px;
+            border-top-right-radius: %25px;
+            min-width: %26px;
+            padding: %17px %13px %11px %13px;
+        }
+        QHeaderView::section {
+            padding: %11px;
+        }
+        QScrollBar:vertical {
+            width: %13px;
+        }
+        QScrollBar:horizontal {
+            height: %13px;
+        }
+    )")
+               .arg(scaled(13, boundedScale))
+               .arg(scaled(13, boundedScale))
+               .arg(scaled(21, boundedScale))
+               .arg(scaled(2, boundedScale))
+               .arg(scaled(11, boundedScale))
+               .arg(scaled(8, boundedScale))
+               .arg(scaled(4, boundedScale))
+               .arg(scaled(4, boundedScale))
+               .arg(scaled(9, boundedScale))
+               .arg(scaled(19, boundedScale))
+               .arg(scaled(6, boundedScale))
+               .arg(scaled(9, boundedScale))
+               .arg(scaled(10, boundedScale))
+               .arg(scaled(8, boundedScale))
+               .arg(scaled(18, boundedScale))
+               .arg(scaled(14, boundedScale))
+               .arg(scaled(5, boundedScale))
+               .arg(scaled(30, boundedScale))
+               .arg(scaled(12, boundedScale))
+               .arg(scaled(24, boundedScale))
+               .arg(scaled(22, boundedScale))
+               .arg(scaled(7, boundedScale))
+               .arg(scaled(28, boundedScale))
+               .arg(scaled(2, boundedScale))
+               .arg(scaled(3, boundedScale))
+               .arg(scaled(84, boundedScale));
 }
 
-void UiTheme::applyWorkbenchStyle(QWidget* const widget)
+void UiTheme::applyWorkbenchStyle(QWidget* const widget, const double scale)
 {
     if (widget != nullptr) {
-        widget->setStyleSheet(workbenchStyleSheet());
+        widget->setStyleSheet(workbenchStyleSheet(scale));
     }
 }
 

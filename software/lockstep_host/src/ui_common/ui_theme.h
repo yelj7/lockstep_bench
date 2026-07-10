@@ -28,8 +28,8 @@ public:
     UiTheme() = delete;
     ~UiTheme() = delete;
 
-    [[nodiscard]] static QString workbenchStyleSheet();
-    static void applyWorkbenchStyle(QWidget* widget);
+    [[nodiscard]] static QString workbenchStyleSheet(double scale = 1.0);
+    static void applyWorkbenchStyle(QWidget* widget, double scale = 1.0);
 };
 
 }  // namespace lockstep::ui

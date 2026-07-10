@@ -48,6 +48,7 @@
 #include <QTextCursor>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -67,6 +68,7 @@ constexpr int kDetachedLogHeight = 420;
 constexpr int kProgramPageLeftInitialWidth = 450;
 constexpr int kProgramPageRightInitialWidth = 540;
 constexpr int kProgramActionButtonHeight = 34;
+constexpr double kResponsiveScaleMax = 1.32;
 constexpr int kTaskIdRole = Qt::UserRole + 1;
 constexpr int kTaskDescriptionRole = Qt::UserRole + 2;
 constexpr int kTaskBasicInfoRole = Qt::UserRole + 3;
@@ -88,6 +90,20 @@ const QStringList& samplingMismatchDescriptions()
         QStringLiteral("AHB master 输出不匹配")
     };
     return descriptions;
+}
+
+int scaledMetric(const int value, const double scale)
+{
+    return qMax(1, qRound(static_cast<double>(value) * qBound(1.0, scale, kResponsiveScaleMax)));
+}
+
+double scaleForWindowSize(const QSize& size)
+{
+    const double widthScale = static_cast<double>(qMax(size.width(), kMinimumWidth)) /
+                              static_cast<double>(kMinimumWidth);
+    const double heightScale = static_cast<double>(qMax(size.height(), kMinimumHeight)) /
+                               static_cast<double>(kMinimumHeight);
+    return qBound(1.0, qMin(widthScale, heightScale), kResponsiveScaleMax);
 }
 
 class WorkbenchComboBox final : public QComboBox {
@@ -1163,10 +1179,13 @@ MainWindowShell::MainWindowShell(QWidget* const parent)
     : QMainWindow(parent),
       topStatusBar_(nullptr),
       pageStack_(nullptr),
+      uiScale_(1.0),
       navButtons_(),
       pageIds_(),
       logTabs_(nullptr),
       logDetachButton_(nullptr),
+      diagnosticsPanel_(nullptr),
+      logClearButton_(nullptr),
       logEdit_(nullptr),
       serialOutputEdit_(nullptr),
       detachedLogDialog_(nullptr),
@@ -1189,6 +1208,84 @@ MainWindowShell::MainWindowShell(QWidget* const parent)
     setWindowTitle(QStringLiteral("锁步研发测试系统上位机"));
     setWorkbenchState(makeDefaultWorkbenchState(UiMode::Test));
     setActivePage(QStringLiteral("project"));
+    applyResponsiveScale();
+}
+
+void MainWindowShell::resizeEvent(QResizeEvent* const event)
+{
+    QMainWindow::resizeEvent(event);
+    applyResponsiveScale();
+}
+
+void MainWindowShell::applyResponsiveScale()
+{
+    const double nextScale = scaleForWindowSize(size());
+    const bool styleNeedsRefresh = (qAbs(nextScale - uiScale_) >= 0.02);
+    uiScale_ = nextScale;
+
+    if ((centralWidget() != nullptr) && styleNeedsRefresh) {
+        UiTheme::applyWorkbenchStyle(centralWidget(), uiScale_);
+    }
+    if (topStatusBar_ != nullptr) {
+        topStatusBar_->applyScale(uiScale_);
+    }
+
+    QFrame* const sidebar = findChild<QFrame*>(QStringLiteral("sidebar"));
+    if (sidebar != nullptr) {
+        sidebar->setFixedWidth(scaledMetric(kSidebarWidth, uiScale_));
+    }
+
+    if (diagnosticsPanel_ != nullptr) {
+        const int diagnosticsHeight = qBound(
+            scaledMetric(kDiagnosticsMinHeight, uiScale_),
+            static_cast<int>(static_cast<double>(height()) * 0.22),
+            scaledMetric(300, uiScale_));
+        diagnosticsPanel_->setMinimumHeight(diagnosticsHeight);
+        diagnosticsPanel_->setMaximumHeight(diagnosticsHeight);
+    }
+
+    if (logClearButton_ != nullptr) {
+        logClearButton_->setFixedSize(scaledMetric(70, uiScale_), scaledMetric(24, uiScale_));
+    }
+    if (logDetachButton_ != nullptr) {
+        const int buttonSize = scaledMetric(26, uiScale_);
+        logDetachButton_->setFixedSize(buttonSize, buttonSize);
+        logDetachButton_->setIconSize(QSize(scaledMetric(18, uiScale_), scaledMetric(18, uiScale_)));
+    }
+    if (logEdit_ != nullptr) {
+        logEdit_->setMinimumHeight(scaledMetric(86, uiScale_));
+    }
+    if (serialOutputEdit_ != nullptr) {
+        serialOutputEdit_->setMinimumHeight(scaledMetric(86, uiScale_));
+    }
+
+    for (QProgressBar* const progress : findChildren<QProgressBar*>()) {
+        progress->setFixedHeight(scaledMetric(14, uiScale_));
+    }
+
+    QLineEdit* const programPathEdit = findChild<QLineEdit*>(QStringLiteral("program_image_path_edit"));
+    if (programPathEdit != nullptr) {
+        programPathEdit->setFixedHeight(scaledMetric(kProgramActionButtonHeight, uiScale_));
+    }
+
+    for (QPushButton* const button : findChildren<QPushButton*>()) {
+        const QVariant page = button->property("uiPage");
+        if (page.isValid() && (page.toInt() == static_cast<int>(NavigationPage::RamProgram))) {
+            button->setFixedHeight(scaledMetric(kProgramActionButtonHeight, uiScale_));
+        }
+    }
+
+    QPlainTextEdit* const taskDescriptionEdit =
+        findChild<QPlainTextEdit*>(QStringLiteral("task_description_edit"));
+    if (taskDescriptionEdit != nullptr) {
+        taskDescriptionEdit->setMinimumHeight(scaledMetric(48, uiScale_));
+        taskDescriptionEdit->setMaximumHeight(scaledMetric(66, uiScale_));
+    }
+    QPlainTextEdit* const taskBasicInfoEdit =
+        findChild<QPlainTextEdit*>(QStringLiteral("task_basic_info_edit"));
+    if (taskBasicInfoEdit != nullptr) {
+        taskBasicInfoEdit->setMinimumHeight(scaledMetric(86, uiScale_));
+    }
 }
 
 void MainWindowShell::setWorkbenchState(const UiWorkbenchState& state)
@@ -2487,6 +2584,7 @@ QWidget* MainWindowShell::createDiagnosticsPanel(QWidget* const parent)
     QWidget* const panel = new QWidget(parent);
     panel->setObjectName(QStringLiteral("diagnostics_panel"));
     panel->setAttribute(Qt::WA_StyledBackground, true);
+    diagnosticsPanel_ = panel;
     QVBoxLayout* const layout = new QVBoxLayout(panel);
     layout->setContentsMargins(10, 10, 10, 10);
     layout->setSpacing(4);
@@ -2526,6 +2624,7 @@ QWidget* MainWindowShell::createLogPanel()
     QPushButton* const clearButton = new QPushButton(QStringLiteral("清空窗口"), corner);
     clearButton->setObjectName(QStringLiteral("log_clear_button"));
     clearButton->setFixedSize(70, 24);
+    logClearButton_ = clearButton;
     logDetachButton_ = new QToolButton(corner);
     logDetachButton_->setObjectName(QStringLiteral("log_detach_button"));
     logDetachButton_->setToolTip(QStringLiteral("弹出独立窗口"));

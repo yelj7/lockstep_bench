@@ -30,6 +30,8 @@ class TopStatusBar final : public QWidget {
 public:
     explicit TopStatusBar(QWidget* parent = nullptr);
 
+    void applyScale(double scale);
+
 public slots:
     void setStatus(const GlobalStatus& status);
 

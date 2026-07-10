@@ -21,6 +21,7 @@
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTabWidget>
@@ -132,6 +133,9 @@ private slots:
     void showWaveformDetached();
     void updateProjectTaskSelectionState();
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     QWidget* createWorkbenchShell();
     QWidget* createTopBar(QWidget* parent);
@@ -164,16 +168,20 @@ private:
     void setProgramSummaryPage(bool runSummary);
     void applyWaveformTraceToDisplay(QWidget* widget) const;
     void appendFormattedLog(QPlainTextEdit* view, LogLevel level, const QString& source, const QString& message);
+    void applyResponsiveScale();
     QString currentLogText() const;
     QPlainTextEdit* currentLogView() const;
     static NavigationPage pageForId(const QString& pageId);
 
     TopStatusBar* topStatusBar_;
     QStackedWidget* pageStack_;
+    double uiScale_;
     QHash<QString, QPushButton*> navButtons_;
     QHash<QString, NavigationPage> pageIds_;
     QTabWidget* logTabs_;
     QToolButton* logDetachButton_;
+    QWidget* diagnosticsPanel_;
+    QPushButton* logClearButton_;
     QPlainTextEdit* logEdit_;
     QPlainTextEdit* serialOutputEdit_;
     QDialog* detachedLogDialog_;

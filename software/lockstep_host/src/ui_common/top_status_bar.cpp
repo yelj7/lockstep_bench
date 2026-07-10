@@ -19,11 +19,18 @@
 #include <QHBoxLayout>
 #include <QSizePolicy>
 
+#include <QtGlobal>
+
 namespace lockstep::ui {
 
 namespace {
 
 constexpr int kTopBarHeight = 40;
+
+int scaled(const int value, const double scale)
+{
+    return qMax(1, qRound(static_cast<double>(value) * qBound(1.0, scale, 1.35)));
+}
 
 }  // namespace
 
@@ -44,15 +51,27 @@ void TopStatusBar::setStatus(const GlobalStatus& status)
     programValue_->setText(status.programStatusText);
 }
 
+void TopStatusBar::applyScale(const double scale)
+{
+    setFixedHeight(scaled(kTopBarHeight, scale));
+
+    QHBoxLayout* const barLayout = qobject_cast<QHBoxLayout*>(layout());
+    if (barLayout != nullptr) {
+        barLayout->setContentsMargins(
+            scaled(16, scale),
+            scaled(5, scale),
+            scaled(16, scale),
+            scaled(5, scale));
+        barLayout->setSpacing(scaled(8, scale));
+    }
+}
+
 void TopStatusBar::buildLayout()
 {
     setObjectName(QStringLiteral("top_bar"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setFixedHeight(kTopBarHeight);
 
     QHBoxLayout* const layout = new QHBoxLayout(this);
-    layout->setContentsMargins(16, 5, 16, 5);
-    layout->setSpacing(8);
 
     QLabel* const title = new QLabel(QStringLiteral("Lockstep Workbench  |  锁步验证工作台"), this);
     title->setObjectName(QStringLiteral("workbench_title"));
@@ -66,6 +85,7 @@ void TopStatusBar::buildLayout()
     layout->addWidget(taskValue_);
     layout->addWidget(targetValue_);
     layout->addWidget(programValue_);
+    applyScale(1.0);
 }
 
 QLabel* TopStatusBar::createValueLabel(const QString& objectName)
