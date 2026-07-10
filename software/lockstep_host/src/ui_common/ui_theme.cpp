@@ -195,6 +195,10 @@ QString UiTheme::workbenchStyleSheet()
         QLabel#serial_status_label {
             color: #64748b;
         }
+        QWidget#serial_send_row {
+            background-color: transparent;
+            border: 0;
+        }
         QLineEdit,
         QComboBox,
         QSpinBox,

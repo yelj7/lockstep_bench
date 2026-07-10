@@ -78,11 +78,6 @@ int main(int argc, char* argv[])
             lockstep::ui::LogLevel::Info,
             QStringLiteral("UI"),
             QStringLiteral("UI 预览窗口已启动"));
-        window.appendLog(
-            lockstep::ui::LogChannel::Serial,
-            lockstep::ui::LogLevel::Info,
-            QStringLiteral("SERIAL"),
-            QStringLiteral("串口监控占位：等待板卡连接"));
 
         application.setQuitOnLastWindowClosed(true);
         window.show();

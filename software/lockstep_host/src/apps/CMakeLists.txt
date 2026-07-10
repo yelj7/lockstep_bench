@@ -29,6 +29,7 @@ target_link_libraries(lockstep_ui_preview
         lockstep_workspace
         Qt${QT_VERSION_MAJOR}::Core
         Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::SerialPort
         Qt${QT_VERSION_MAJOR}::Widgets
 )
 
@@ -57,6 +58,7 @@ target_link_libraries(lockstep_debug_service
     PRIVATE
         hidapi::hidapi
         Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Network
 )
 
 if(WIN32)

@@ -20,7 +20,10 @@
 #include <memory>
 
 #include <QObject>
+#include <QSerialPort>
 #include <QString>
+#include <QStringList>
+#include <QVariantMap>
 
 #include "error_registry.h"
 #include "main_window_shell.h"
@@ -60,11 +63,23 @@ private:
     void loadResourcePackIfAvailable();
     void startDebugService();
     void stopDebugService();
+    void refreshSerialPorts();
+    void toggleSerialMonitor();
+    void clearSerialOutput();
+    void sendSerialData(const QString& text);
+    void saveSamplingConfig(const QVariantMap& parameters, bool requestHardwareSend);
     void browseProgramImage();
     void programImage();
     void verifyReadback();
+    void beginHardwareOperation(lockstep::target_control::ProgramOperation operation, const QString& name);
+    void endHardwareOperation();
+    void updateWriteOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
+    void updateReadbackOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
     void runProgram();
     void stopProgram();
+    void appendProgramSerialOutput(const QString& text);
+    void updateRunButtonText();
+    void refreshRunSummary(const QString& title, int runProgressPercent, int stopProgressPercent);
     void generateReport();
     void showVerifySummary();
     void showRunSummary();
@@ -96,6 +111,7 @@ private:
     bool configureDebugServiceAccess(
         const lockstep::resources::BoardProfile& profile,
         const QString& resourceRootPath);
+    void updateConnectionDiagnostics(const QString& serviceState);
     lockstep::target_control::DebugAccess* debugAccess() const;
     QJsonObject resourceSnapshotJson() const;
     lockstep::workspace::WorkspaceMode workspaceMode() const;
@@ -127,6 +143,8 @@ private:
     bool hasVerifyRecord_;
     bool hasRunRecord_;
     bool hasHaltRecord_;
+    bool hardwareOperationBusy_;
+    bool targetConnectionBusy_;
 
     lockstep::workspace::TaskContext currentTask_;
     lockstep::workflow::FlowState flowState_;
@@ -138,6 +156,19 @@ private:
     lockstep::target_control::ReadbackVerifyRecord verifyRecord_;
     lockstep::target_control::RunControlRecord runRecord_;
     lockstep::target_control::RunControlRecord haltRecord_;
+    std::unique_ptr<QSerialPort> serialPort_;
+    QStringList serialPorts_;
+    QString runSerialOutput_;
+    QString latestRunInstruction_;
+    bool runOutputConfirmed_;
+    bool serialOpen_;
+    bool runSerialCaptureActive_;
+    lockstep::target_control::ProgramOperation hardwareOperation_;
+    QString hardwareOperationName_;
+    int currentWriteProgress_;
+    int currentReadbackProgress_;
+    int currentRunProgress_;
+    int currentStopProgress_;
 };
 
 }  // namespace lockstep::apps

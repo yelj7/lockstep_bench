@@ -1,4 +1,4 @@
-/*****************************************************************************
+﻿/*****************************************************************************
 *  @file      target_control.cpp
 *  @brief     目标连接烧写回读运行控制模块实现
 *  Details.   实现目标连接烧写回读运行控制模块的业务逻辑、状态转换和文件访问流程。
@@ -16,20 +16,28 @@
 
 #include "target_control.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocalSocket>
 #include <QProcess>
 #include <QSaveFile>
 #include <QStandardPaths>
 
+#include <algorithm>
 #include <limits>
 
 namespace lockstep::target_control {
 namespace {
+
+constexpr char kDebugServiceLocalServerName[] = "lockstep_debug_service_local_v1";
 
 QString requestId(const QString& prefix)
 {
@@ -142,11 +150,6 @@ QString temporaryRoot(const QString& configuredPath)
     return fallback;
 }
 
-bool isDebugServiceSuccess(const int exitCode, const QProcess::ExitStatus exitStatus)
-{
-    return exitStatus == QProcess::NormalExit && exitCode == 0;
-}
-
 QString jsonOperation(const QString& operation)
 {
     return operation.trimmed().toLower();
@@ -177,6 +180,43 @@ bool parseServiceResponse(const QByteArray& payload, QJsonObject* const response
     }
 
     *response = document.object();
+    return true;
+}
+
+bool parseProgressObject(
+    const QByteArray& payload,
+    quint64* const completedBytes,
+    quint64* const totalBytes,
+    QString* const message)
+{
+    if (payload.trimmed().isEmpty()) {
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return false;
+    }
+
+    const QJsonObject object = document.object();
+    bool completedOk = false;
+    bool totalOk = false;
+    const quint64 completed = object.value(QStringLiteral("completed_bytes")).toString().toULongLong(&completedOk);
+    const quint64 total = object.value(QStringLiteral("total_bytes")).toString().toULongLong(&totalOk);
+    if (!completedOk || !totalOk) {
+        return false;
+    }
+
+    if (completedBytes != nullptr) {
+        *completedBytes = completed;
+    }
+    if (totalBytes != nullptr) {
+        *totalBytes = total;
+    }
+    if (message != nullptr) {
+        *message = object.value(QStringLiteral("message")).toString();
+    }
     return true;
 }
 
@@ -649,6 +689,47 @@ quint64 totalLength(const QList<ImageSegment>& segments)
     return length;
 }
 
+QList<ImageSegment> mergedContinuousSegments(const QList<ImageSegment>& segments)
+{
+    QList<ImageSegment> sorted = segments;
+    std::sort(
+        sorted.begin(),
+        sorted.end(),
+        [](const ImageSegment& left, const ImageSegment& right) {
+            return left.address < right.address;
+        });
+
+    QList<ImageSegment> merged;
+    for (const ImageSegment& segment : sorted) {
+        if (segment.data.isEmpty()) {
+            continue;
+        }
+
+        if (!merged.isEmpty()) {
+            ImageSegment& tail = merged.last();
+            const quint64 tailLength = static_cast<quint64>(tail.data.size());
+            if (!addWillOverflow(tail.address, tailLength) &&
+                (tail.address + tailLength) == segment.address) {
+                tail.data.append(segment.data);
+                continue;
+            }
+        }
+        merged.append(segment);
+    }
+    return merged;
+}
+
+void notifyOperationProgress(
+    const OperationProgressCallback& callback,
+    const quint64 completedBytes,
+    const quint64 totalBytes,
+    const QString& message)
+{
+    if (callback) {
+        callback(completedBytes, totalBytes, message);
+    }
+}
+
 int stagePercent(const OperationStage stage)
 {
     int percent = 0;
@@ -661,19 +742,23 @@ int stagePercent(const OperationStage stage)
         break;
     case OperationStage::DetectImage:
     case OperationStage::PrepareReadRanges:
-        percent = 30;
+        percent = 20;
         break;
     case OperationStage::ParseWritePlan:
-        percent = 45;
+        percent = 20;
         break;
     case OperationStage::WriteSegments:
     case OperationStage::ReadSegments:
+        percent = 20;
+        break;
     case OperationStage::DispatchRun:
     case OperationStage::DispatchHalt:
         percent = 65;
         break;
     case OperationStage::ConfirmWriteResult:
     case OperationStage::CompareData:
+        percent = 95;
+        break;
     case OperationStage::CaptureRunStatus:
     case OperationStage::CaptureHaltStatus:
         percent = 85;
@@ -746,16 +831,16 @@ QString stageMessage(const OperationStage stage)
         message = QStringLiteral("保存运行控制记录");
         break;
     case OperationStage::CheckHaltAccess:
-        message = QStringLiteral("确认中止控制通道可用");
+        message = QStringLiteral("确认终止控制通道可用");
         break;
     case OperationStage::DispatchHalt:
-        message = QStringLiteral("发送程序中止命令");
+        message = QStringLiteral("发送程序终止命令");
         break;
     case OperationStage::CaptureHaltStatus:
-        message = QStringLiteral("获取中止返回或状态快照");
+        message = QStringLiteral("获取终止返回或状态快照");
         break;
     case OperationStage::PersistHaltRecord:
-        message = QStringLiteral("保存中止控制记录");
+        message = QStringLiteral("保存终止控制记录");
         break;
     case OperationStage::Completed:
         message = QStringLiteral("操作完成");
@@ -1063,16 +1148,91 @@ DebugServiceAccess::DebugServiceAccess(const DebugServiceConfig& config)
     }
 }
 
+DebugServiceAccess::~DebugServiceAccess()
+{
+}
+
+void DebugServiceAccess::setProgressCallback(const OperationProgressCallback& callback)
+{
+    progressCallback_ = callback;
+}
+
+void DebugServiceAccess::assumeConnected(const DebugProfile& profile)
+{
+    profile_ = profile;
+    connected_ = true;
+}
+
+void DebugServiceAccess::assumeDisconnected()
+{
+    connected_ = false;
+}
+
 QString DebugServiceAccess::makeTemporaryPath(const QString& prefix, const QString& suffix) const
 {
     const QString root = temporaryRoot(config_.temporaryDirectoryPath);
     return QDir(root).filePath(QStringLiteral("%1_%2.%3").arg(prefix, requestId(QStringLiteral("tmp")), suffix));
 }
 
+bool DebugServiceAccess::ensurePersistentService(QString* const errorMessage)
+{
+    QLocalSocket probe;
+    probe.connectToServer(QString::fromLatin1(kDebugServiceLocalServerName));
+    if (probe.waitForConnected(300)) {
+        probe.write("__ping__\n");
+        if (probe.waitForBytesWritten(1000) &&
+            probe.waitForReadyRead(1000) &&
+            QString::fromUtf8(probe.readLine()).trimmed() == QStringLiteral("PONG")) {
+            probe.disconnectFromServer();
+            return true;
+        }
+        probe.disconnectFromServer();
+    }
+
+    if (!QFileInfo::exists(config_.debugServicePath)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("调试服务不存在: %1").arg(config_.debugServicePath);
+        }
+        return false;
+    }
+
+    if (!QProcess::startDetached(config_.debugServicePath, {QStringLiteral("--local-server")})) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("调试服务启动失败");
+        }
+        return false;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000) {
+        QLocalSocket socket;
+        socket.connectToServer(QString::fromLatin1(kDebugServiceLocalServerName));
+        if (socket.waitForConnected(250)) {
+            socket.write("__ping__\n");
+            if (socket.waitForBytesWritten(1000) &&
+                socket.waitForReadyRead(1000) &&
+                QString::fromUtf8(socket.readLine()).trimmed() == QStringLiteral("PONG")) {
+                socket.disconnectFromServer();
+                return true;
+            }
+            socket.disconnectFromServer();
+        }
+        if (QCoreApplication::instance() != nullptr) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+    }
+
+    if (errorMessage != nullptr) {
+        *errorMessage = QStringLiteral("调试服务常驻握手失败");
+    }
+    return false;
+}
+
 DebugResult DebugServiceAccess::runDebugService(
     const QString& idPrefix,
     const QJsonObject& request,
-    const bool requireConnection) const
+    const bool requireConnection)
 {
     if (requireConnection && !connected_) {
         return makeFailure(idPrefix, QStringLiteral("target not connected"));
@@ -1097,23 +1257,62 @@ DebugResult DebugServiceAccess::runDebugService(
         return makeFailure(idPrefix, error);
     }
 
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(config_.debugServicePath, {QStringLiteral("--request"), requestPath});
-    if (!process.waitForStarted(5000)) {
+    QString serviceError;
+    if (!ensurePersistentService(&serviceError)) {
         QFile::remove(requestPath);
-        return makeFailure(idPrefix, QStringLiteral("调试服务启动失败: %1").arg(process.errorString()));
+        return makeFailure(idPrefix, serviceError);
+    }
+    QLocalSocket socket;
+    socket.connectToServer(QString::fromLatin1(kDebugServiceLocalServerName));
+    if (!socket.waitForConnected(5000)) {
+        QFile::remove(requestPath);
+        return makeFailure(idPrefix, QStringLiteral("调试服务连接失败: %1").arg(socket.errorString()));
+    }
+    socket.write((requestPath + QChar::fromLatin1('\n')).toUtf8());
+    if (!socket.waitForBytesWritten(5000)) {
+        QFile::remove(requestPath);
+        return makeFailure(idPrefix, QStringLiteral("调试服务请求发送失败"));
     }
 
-    const bool finished = process.waitForFinished(config_.timeoutMs);
-    if (!finished) {
-        process.kill();
-        process.waitForFinished(3000);
+    QElapsedTimer timer;
+    timer.start();
+    bool finished = false;
+    QString serviceLine;
+    quint64 lastProgressBytes = std::numeric_limits<quint64>::max();
+    const QString progressPath = payload.value(QStringLiteral("progress_path")).toString();
+    while (timer.elapsed() < config_.timeoutMs) {
+        if (socket.canReadLine() || socket.waitForReadyRead(100)) {
+            serviceLine = QString::fromUtf8(socket.readLine()).trimmed();
+            if (serviceLine.startsWith(QStringLiteral("DONE ")) ||
+                serviceLine.startsWith(QStringLiteral("ERROR "))) {
+                finished = true;
+                break;
+            }
+        }
+        if (socket.state() == QLocalSocket::UnconnectedState) {
+            break;
+        }
+        if (!progressPath.isEmpty() && progressCallback_ && QFileInfo::exists(progressPath)) {
+            QByteArray progressBytes;
+            if (readWholeFile(progressPath, &progressBytes, nullptr)) {
+                quint64 completedBytes = 0U;
+                quint64 totalBytes = 0U;
+                QString progressMessage;
+                if (parseProgressObject(progressBytes, &completedBytes, &totalBytes, &progressMessage) &&
+                    completedBytes != lastProgressBytes) {
+                    progressCallback_(completedBytes, totalBytes, progressMessage);
+                    lastProgressBytes = completedBytes;
+                }
+            }
+        }
+        if (QCoreApplication::instance() != nullptr) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
     }
 
     DebugResult result;
     result.requestId = payload.value(QStringLiteral("request_id")).toString();
-    result.rawReturn = QString::fromLocal8Bit(process.readAllStandardOutput());
+    result.rawReturn = serviceLine;
     if (!finished) {
         QFile::remove(requestPath);
         QFile::remove(responsePath);
@@ -1122,12 +1321,14 @@ DebugResult DebugServiceAccess::runDebugService(
         return result;
     }
 
-    const int exitCode = process.exitCode();
-    const QProcess::ExitStatus exitStatus = process.exitStatus();
-    result.success = isDebugServiceSuccess(exitCode, exitStatus);
-    if (!result.success) {
-        result.errorMessage = QStringLiteral("调试服务执行失败: exit=%1").arg(exitCode);
+    if (serviceLine.startsWith(QStringLiteral("ERROR "))) {
+        QFile::remove(requestPath);
+        QFile::remove(responsePath);
+        result.success = false;
+        result.errorMessage = serviceLine.mid(6);
+        return result;
     }
+    result.success = true;
 
     QByteArray responseBytes;
     if (QFileInfo::exists(responsePath) && readWholeFile(responsePath, &responseBytes, nullptr)) {
@@ -1186,7 +1387,13 @@ DebugResult DebugServiceAccess::read(const quint64 address, const quint64 length
     request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("read")));
     request.insert(QStringLiteral("address"), hexAddress(address));
     request.insert(QStringLiteral("length"), QString::number(length));
-    return runDebugService(QStringLiteral("read"), request, true);
+    const QString progressPath = makeTemporaryPath(QStringLiteral("read_progress"), QStringLiteral("json"));
+    if (progressCallback_) {
+        request.insert(QStringLiteral("progress_path"), progressPath);
+    }
+    DebugResult result = runDebugService(QStringLiteral("read"), request, true);
+    QFile::remove(progressPath);
+    return result;
 }
 
 DebugResult DebugServiceAccess::write(const quint64 address, const QByteArray& data)
@@ -1207,8 +1414,92 @@ DebugResult DebugServiceAccess::write(const quint64 address, const QByteArray& d
     request.insert(QStringLiteral("address"), hexAddress(address));
     request.insert(QStringLiteral("length"), QString::number(length));
     request.insert(QStringLiteral("data_path"), dataPath);
+    const QString progressPath = makeTemporaryPath(QStringLiteral("write_progress"), QStringLiteral("json"));
+    if (progressCallback_) {
+        request.insert(QStringLiteral("progress_path"), progressPath);
+    }
     DebugResult result = runDebugService(QStringLiteral("write"), request, true);
     QFile::remove(dataPath);
+    QFile::remove(progressPath);
+    return result;
+}
+
+DebugResult DebugServiceAccess::readSegments(const QList<ImageSegment>& segments)
+{
+    if (segments.isEmpty()) {
+        return makeFailure(QStringLiteral("read"), QStringLiteral("read segments empty"));
+    }
+
+    QJsonArray segmentArray;
+    for (const ImageSegment& segment : segments) {
+        const quint64 length = static_cast<quint64>(segment.data.size());
+        if (!isRangeAllowed(profile_, segment.address, length)) {
+            return makeFailure(QStringLiteral("read"), QStringLiteral("read range invalid"));
+        }
+        QJsonObject object;
+        object.insert(QStringLiteral("address"), hexAddress(segment.address));
+        object.insert(QStringLiteral("length"), QString::number(length));
+        segmentArray.append(object);
+    }
+
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("read")));
+    request.insert(QStringLiteral("segments"), segmentArray);
+    const QString progressPath = makeTemporaryPath(QStringLiteral("read_progress"), QStringLiteral("json"));
+    if (progressCallback_) {
+        request.insert(QStringLiteral("progress_path"), progressPath);
+    }
+    DebugResult result = runDebugService(QStringLiteral("read"), request, true);
+    QFile::remove(progressPath);
+    return result;
+}
+
+DebugResult DebugServiceAccess::writeSegments(const QList<ImageSegment>& segments)
+{
+    if (segments.isEmpty()) {
+        return makeFailure(QStringLiteral("write"), QStringLiteral("write segments empty"));
+    }
+
+    QJsonArray segmentArray;
+    QStringList temporaryPaths;
+    for (const ImageSegment& segment : segments) {
+        const quint64 length = static_cast<quint64>(segment.data.size());
+        if (!isRangeAllowed(profile_, segment.address, length)) {
+            for (const QString& path : temporaryPaths) {
+                QFile::remove(path);
+            }
+            return makeFailure(QStringLiteral("write"), QStringLiteral("write range invalid"));
+        }
+
+        const QString dataPath = makeTemporaryPath(QStringLiteral("write_segment"), QStringLiteral("bin"));
+        QString error;
+        if (!writeWholeFile(dataPath, segment.data, &error)) {
+            for (const QString& path : temporaryPaths) {
+                QFile::remove(path);
+            }
+            return makeFailure(QStringLiteral("write"), error);
+        }
+        temporaryPaths.append(dataPath);
+
+        QJsonObject object;
+        object.insert(QStringLiteral("address"), hexAddress(segment.address));
+        object.insert(QStringLiteral("length"), QString::number(length));
+        object.insert(QStringLiteral("data_path"), dataPath);
+        segmentArray.append(object);
+    }
+
+    QJsonObject request;
+    request.insert(QStringLiteral("operation"), jsonOperation(QStringLiteral("write")));
+    request.insert(QStringLiteral("segments"), segmentArray);
+    const QString progressPath = makeTemporaryPath(QStringLiteral("write_progress"), QStringLiteral("json"));
+    if (progressCallback_) {
+        request.insert(QStringLiteral("progress_path"), progressPath);
+    }
+    DebugResult result = runDebugService(QStringLiteral("write"), request, true);
+    for (const QString& path : temporaryPaths) {
+        QFile::remove(path);
+    }
+    QFile::remove(progressPath);
     return result;
 }
 
@@ -1359,7 +1650,8 @@ ProgramImageInfo ProgramController::detectImage(
 WriteRecord ProgramController::programTarget(
     DebugAccess& access,
     const QString& taskId,
-    const ProgramImageInfo& image) const
+    const ProgramImageInfo& image,
+    const OperationProgressCallback& progressCallback) const
 {
     WriteRecord record;
     record.taskId = taskId;
@@ -1368,19 +1660,55 @@ WriteRecord ProgramController::programTarget(
         return record;
     }
 
+    const QList<ImageSegment> writePlan = mergedContinuousSegments(image.segments);
+    const quint64 totalBytes = totalLength(writePlan);
+    quint64 completedBytes = 0U;
+    notifyOperationProgress(progressCallback, completedBytes, totalBytes, QStringLiteral("write_ready"));
+    DebugServiceAccess* const batchWriteAccess = dynamic_cast<DebugServiceAccess*>(&access);
+    if (batchWriteAccess != nullptr) {
+        batchWriteAccess->setProgressCallback(progressCallback);
+        const DebugResult result = batchWriteAccess->writeSegments(writePlan);
+        batchWriteAccess->setProgressCallback(OperationProgressCallback());
+        record.rawReturn = result.rawReturn;
+        if (!result.success) {
+            record.errorMessage = result.errorMessage;
+            return record;
+        }
+        record.success = true;
+        record.segments = writePlan;
+        notifyOperationProgress(progressCallback, totalBytes, totalBytes, QStringLiteral("write_segment_done"));
+        return record;
+    }
+
     QStringList returns;
-    for (const ImageSegment& segment : image.segments) {
+    for (const ImageSegment& segment : writePlan) {
+        DebugServiceAccess* const serviceAccess = dynamic_cast<DebugServiceAccess*>(&access);
+        if (serviceAccess != nullptr) {
+            const quint64 segmentBase = completedBytes;
+            serviceAccess->setProgressCallback(
+                [progressCallback, segmentBase, totalBytes](
+                    const quint64 segmentCompletedBytes,
+                    const quint64,
+                    const QString& message) {
+                    notifyOperationProgress(progressCallback, segmentBase + segmentCompletedBytes, totalBytes, message);
+                });
+        }
         const DebugResult result = access.write(segment.address, segment.data);
+        if (serviceAccess != nullptr) {
+            serviceAccess->setProgressCallback(OperationProgressCallback());
+        }
         returns.append(result.rawReturn);
         if (!result.success) {
             record.errorMessage = result.errorMessage;
             record.rawReturn = returns.join(QChar::fromLatin1(';'));
             return record;
         }
+        completedBytes += static_cast<quint64>(segment.data.size());
+        notifyOperationProgress(progressCallback, completedBytes, totalBytes, QStringLiteral("write_segment_done"));
     }
 
     record.success = true;
-    record.segments = image.segments;
+    record.segments = writePlan;
     record.rawReturn = returns.join(QChar::fromLatin1(';'));
     return record;
 }
@@ -1388,7 +1716,8 @@ WriteRecord ProgramController::programTarget(
 ReadbackVerifyRecord ProgramController::verifyReadback(
     DebugAccess& access,
     const QString& taskId,
-    const ProgramImageInfo& image) const
+    const ProgramImageInfo& image,
+    const OperationProgressCallback& progressCallback) const
 {
     ReadbackVerifyRecord record;
     record.taskId = taskId;
@@ -1398,13 +1727,68 @@ ReadbackVerifyRecord ProgramController::verifyReadback(
         return record;
     }
 
+    const QList<ImageSegment> readPlan = mergedContinuousSegments(image.segments);
+    const quint64 totalBytes = totalLength(readPlan);
+    quint64 completedBytes = 0U;
+    notifyOperationProgress(progressCallback, completedBytes, totalBytes, QStringLiteral("readback_ready"));
+    DebugServiceAccess* const batchReadAccess = dynamic_cast<DebugServiceAccess*>(&access);
+    if (batchReadAccess != nullptr) {
+        batchReadAccess->setProgressCallback(progressCallback);
+        const DebugResult result = batchReadAccess->readSegments(readPlan);
+        batchReadAccess->setProgressCallback(OperationProgressCallback());
+        record.rawReturn = result.rawReturn;
+        record.expectedLength = totalBytes;
+        record.actualLength = static_cast<quint64>(result.data.size());
+        if (!result.success) {
+            record.state = VerifyState::Failed;
+            record.errorMessage = result.errorMessage;
+            return record;
+        }
+        QByteArray expected;
+        expected.reserve(static_cast<int>(qMin(totalBytes, static_cast<quint64>(std::numeric_limits<int>::max()))));
+        for (const ImageSegment& segment : readPlan) {
+            expected.append(segment.data);
+        }
+        const int compareLength = qMin(expected.size(), result.data.size());
+        for (int i = 0; i < compareLength; ++i) {
+            if (expected.at(i) != result.data.at(i)) {
+                ++record.diffCount;
+            }
+        }
+        if (expected.size() != result.data.size()) {
+            const int delta = qAbs(expected.size() - result.data.size());
+            record.diffCount += static_cast<quint64>(delta);
+        }
+        record.state = (record.diffCount == 0U && record.actualLength == totalBytes)
+            ? VerifyState::Passed
+            : VerifyState::Mismatch;
+        notifyOperationProgress(progressCallback, totalBytes, totalBytes, QStringLiteral("readback_segment_done"));
+        return record;
+    }
+
     QStringList returns;
-    for (const ImageSegment& segment : image.segments) {
+    for (const ImageSegment& segment : readPlan) {
         const quint64 expectedSize = static_cast<quint64>(segment.data.size());
+        DebugServiceAccess* const serviceAccess = dynamic_cast<DebugServiceAccess*>(&access);
+        if (serviceAccess != nullptr) {
+            const quint64 segmentBase = completedBytes;
+            serviceAccess->setProgressCallback(
+                [progressCallback, segmentBase, totalBytes](
+                    const quint64 segmentCompletedBytes,
+                    const quint64,
+                    const QString& message) {
+                    notifyOperationProgress(progressCallback, segmentBase + segmentCompletedBytes, totalBytes, message);
+                });
+        }
         const DebugResult result = access.read(segment.address, expectedSize);
+        if (serviceAccess != nullptr) {
+            serviceAccess->setProgressCallback(OperationProgressCallback());
+        }
         returns.append(result.rawReturn);
         record.expectedLength += expectedSize;
         record.actualLength += static_cast<quint64>(result.data.size());
+        completedBytes += static_cast<quint64>(result.data.size());
+        notifyOperationProgress(progressCallback, completedBytes, totalBytes, QStringLiteral("readback_segment_done"));
         if (!result.success) {
             record.state = VerifyState::Failed;
             record.errorMessage = result.errorMessage;
@@ -1424,7 +1808,7 @@ ReadbackVerifyRecord ProgramController::verifyReadback(
     }
 
     record.rawReturn = returns.join(QChar::fromLatin1(';'));
-    record.state = (record.diffCount == 0U && record.actualLength == totalLength(image.segments))
+    record.state = (record.diffCount == 0U && record.actualLength == totalLength(readPlan))
         ? VerifyState::Passed
         : VerifyState::Mismatch;
     return record;

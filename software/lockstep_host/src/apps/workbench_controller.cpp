@@ -1,4 +1,4 @@
-/*****************************************************************************
+﻿/*****************************************************************************
 *  @file      workbench_controller.cpp
 *  @brief     UI与底层模块适配控制器实现
 *  Details.   实现UI动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配流程。
@@ -21,6 +21,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
@@ -35,6 +36,9 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSerialPort>
+#include <QSerialPortInfo>
+#include <QThread>
 #include <QVBoxLayout>
 
 #include <memory>
@@ -50,6 +54,60 @@ constexpr char kReadbackVerifyRecordName[] = "readback_verify_record.json";
 constexpr char kRunControlRecordName[] = "run_control_record.json";
 constexpr char kHaltControlRecordName[] = "halt_control_record.json";
 constexpr char kProgramOperationProgressName[] = "program_operation_progress.json";
+constexpr int kSamplingSampleCount = 4096;
+constexpr int kSamplingPretrigger = 2047;
+constexpr int kSamplingPosttrigger = 2049;
+constexpr int kSamplingTriggerCount = 1;
+constexpr int kSamplingPostAfterTrigger = 2048;
+constexpr int kSamplingSampleWordBits = 512;
+constexpr int kSamplingMismatchMask = 0x1F;
+
+struct WriteWorkerResult final {
+    target_control::WriteRecord record;
+    QString connectionError;
+    qint64 elapsedMs = 0;
+};
+
+struct ReadbackWorkerResult final {
+    target_control::ReadbackVerifyRecord record;
+    QString connectionError;
+    qint64 elapsedMs = 0;
+};
+
+struct RunWorkerResult final {
+    target_control::RunControlRecord record;
+    QString connectionError;
+    qint64 elapsedMs = 0;
+};
+
+bool isBlockedByHardwareOperation(const ui::UiAction action)
+{
+    bool blocked = true;
+    switch (action) {
+    case ui::UiAction::RefreshSerialPorts:
+    case ui::UiAction::ToggleSerialMonitor:
+    case ui::UiAction::ClearSerialOutput:
+    case ui::UiAction::SendSerialData:
+    case ui::UiAction::ShowVerifySummary:
+    case ui::UiAction::ShowRunSummary:
+        blocked = false;
+        break;
+    default:
+        blocked = true;
+        break;
+    }
+    return blocked;
+}
+
+int dataProgressPercent(const quint64 completedBytes, const quint64 totalBytes)
+{
+    if (totalBytes == 0U) {
+        return 20;
+    }
+    const quint64 boundedCompleted = qMin(completedBytes, totalBytes);
+    const quint64 scaled = (boundedCompleted * 70U) / totalBytes;
+    return static_cast<int>(20U + scaled);
+}
 
 QString currentTimeText()
 {
@@ -198,6 +256,123 @@ QString connectionStateText(const target_control::ConnectionState state)
     return text;
 }
 
+QString shortRawText(const QString& rawText)
+{
+    constexpr qsizetype kMaxRawTextLength = 3500;
+    if (rawText.size() <= kMaxRawTextLength) {
+        return rawText;
+    }
+    return rawText.left(kMaxRawTextLength) + QStringLiteral("\n... 原始返回过长，已截断显示。");
+}
+
+QString debugReturnSummary(const QString& rawText)
+{
+    const QString trimmed = rawText.trimmed();
+    if (trimmed.isEmpty()) {
+        return QStringLiteral("无返回");
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(trimmed.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return shortRawText(trimmed);
+    }
+
+    const QJsonObject object = document.object();
+    QStringList lines;
+    lines.append(QStringLiteral("success=%1")
+        .arg(object.value(QStringLiteral("success")).toBool(false) ? QStringLiteral("true") : QStringLiteral("false")));
+    const QString operation = object.value(QStringLiteral("operation")).toString();
+    if (!operation.isEmpty()) {
+        lines.append(QStringLiteral("operation=%1").arg(operation));
+    }
+    const QString errorCode = object.value(QStringLiteral("error_code")).toString();
+    if (!errorCode.isEmpty()) {
+        lines.append(QStringLiteral("error_code=%1").arg(errorCode));
+    }
+    const QString errorMessage = object.value(QStringLiteral("error_message")).toString();
+    if (!errorMessage.isEmpty()) {
+        lines.append(QStringLiteral("error=%1").arg(errorMessage));
+    }
+
+    const QJsonObject snapshot = object.value(QStringLiteral("snapshot")).toObject();
+    const QString targetState = snapshot.value(QStringLiteral("target_state")).toString();
+    if (!targetState.isEmpty()) {
+        lines.append(QStringLiteral("target_state=%1").arg(targetState));
+    }
+    const QString dmStatus = snapshot.value(QStringLiteral("dmstatus")).toString();
+    if (!dmStatus.isEmpty()) {
+        lines.append(QStringLiteral("dmstatus=%1").arg(dmStatus));
+    }
+    const QString exchangeCount = snapshot.value(QStringLiteral("exchange_count")).toString();
+    if (!exchangeCount.isEmpty()) {
+        lines.append(QStringLiteral("exchange_count=%1").arg(exchangeCount));
+    }
+    return lines.join(QStringLiteral(", "));
+}
+
+QString serialDisplayName(const QSerialPortInfo& info)
+{
+    const QString portName = info.portName().trimmed();
+    const QString description = info.description().trimmed();
+    if (!description.isEmpty()) {
+        return QStringLiteral("%1 - %2").arg(portName, description);
+    }
+    const QString manufacturer = info.manufacturer().trimmed();
+    if (!manufacturer.isEmpty()) {
+        return QStringLiteral("%1 - %2").arg(portName, manufacturer);
+    }
+    return portName;
+}
+
+bool hasExpectedRunOutput(const QString& text)
+{
+    const QString normalized = text.toLower();
+    if (normalized.contains(QStringLiteral("program_run_done"))) {
+        return true;
+    }
+    if (normalized.contains(QStringLiteral("lockstep_run_done"))) {
+        return true;
+    }
+    int matchedFields = 0;
+    if (normalized.contains(QStringLiteral("rx total execution time"))) {
+        ++matchedFields;
+    }
+    if (normalized.contains(QStringLiteral("microseconds for one run"))) {
+        ++matchedFields;
+    }
+    if (normalized.contains(QStringLiteral("dhrystones per second"))) {
+        ++matchedFields;
+    }
+    if (normalized.contains(QStringLiteral("dhrystones mips"))) {
+        ++matchedFields;
+    }
+    return normalized.contains(QStringLiteral("dhrystone")) && matchedFields >= 2;
+}
+
+QString runUiStateText(
+    const bool operationBusy,
+    const target_control::ProgramOperation operation,
+    const bool hasRunRecord,
+    const target_control::RunState runState,
+    const bool hasHaltRecord,
+    const target_control::RunState haltState)
+{
+    if (operationBusy && operation == target_control::ProgramOperation::Halt) {
+        return QStringLiteral("终止中");
+    }
+    if (hasHaltRecord && haltState == target_control::RunState::Halted) {
+        return QStringLiteral("已终止");
+    }
+    if (operationBusy && operation == target_control::ProgramOperation::Run) {
+        return QStringLiteral("运行中");
+    }
+    if (hasRunRecord && runState == target_control::RunState::Running) {
+        return QStringLiteral("运行中");
+    }
+    return QStringLiteral("未运行");
+}
+
 QString precheckStateText(const target_control::PrecheckState state)
 {
     QString text;
@@ -222,6 +397,27 @@ QString precheckStateText(const target_control::PrecheckState state)
 QString addressText(const quint64 value)
 {
     return QStringLiteral("0x%1").arg(value, 0, 16);
+}
+
+bool parseAddressText(const QString& text, quint64* const value)
+{
+    if (value == nullptr) {
+        return false;
+    }
+
+    const QString normalized = text.trimmed();
+    if (normalized.isEmpty()) {
+        return false;
+    }
+
+    bool ok = false;
+    const quint64 parsed = normalized.toULongLong(&ok, 0);
+    if (!ok) {
+        return false;
+    }
+
+    *value = parsed;
+    return true;
 }
 
 QString executablePathForBaseName(const QString& directoryPath, const QString& baseName)
@@ -535,6 +731,8 @@ WorkbenchController::WorkbenchController(
       hasVerifyRecord_(false),
       hasRunRecord_(false),
       hasHaltRecord_(false),
+      hardwareOperationBusy_(false),
+      targetConnectionBusy_(false),
       currentTask_(),
       flowState_(),
       debugProfile_(),
@@ -544,7 +742,20 @@ WorkbenchController::WorkbenchController(
       writeRecord_(),
       verifyRecord_(),
       runRecord_(),
-      haltRecord_()
+      haltRecord_(),
+      serialPort_(std::make_unique<QSerialPort>(this)),
+      serialPorts_(),
+      runSerialOutput_(),
+      latestRunInstruction_(),
+      runOutputConfirmed_(false),
+      serialOpen_(false),
+      runSerialCaptureActive_(false),
+      hardwareOperation_(target_control::ProgramOperation::Write),
+      hardwareOperationName_(),
+      currentWriteProgress_(0),
+      currentReadbackProgress_(0),
+      currentRunProgress_(0),
+      currentStopProgress_(0)
 {
     debugProfile_.profileId = QStringLiteral("debug_service_unconfigured");
     debugProfile_.profileName = QStringLiteral("自研片上调试服务未配置");
@@ -560,6 +771,27 @@ WorkbenchController::WorkbenchController(
         connect(window_, &ui::MainWindowShell::pageChanged, this, [this](const ui::NavigationPage page) {
             if (page == ui::NavigationPage::Waveform || page == ui::NavigationPage::Protocol) {
                 refreshWaveformViewWithAutoAnalysis();
+            }
+        });
+        connect(serialPort_.get(), &QSerialPort::readyRead, this, [this]() {
+            const QByteArray data = serialPort_->readAll();
+            if ((window_ != nullptr) && !data.isEmpty()) {
+                const QString text = QString::fromUtf8(data);
+                window_->appendLog(
+                    ui::LogChannel::Serial,
+                    ui::LogLevel::Info,
+                    QStringLiteral("Serial"),
+                    text);
+                appendProgramSerialOutput(text);
+            }
+        });
+        connect(serialPort_.get(), &QSerialPort::errorOccurred, this, [this](const QSerialPort::SerialPortError error) {
+            if (error != QSerialPort::NoError) {
+                const QString message = serialPort_->errorString();
+                if (window_ != nullptr) {
+                    window_->setSerialStatus(QStringLiteral("串口错误: %1").arg(message), serialPort_->isOpen());
+                }
+                logWarning(QStringLiteral("Serial"), message);
             }
         });
     }
@@ -599,6 +831,14 @@ bool WorkbenchController::initialize(const QString& workspaceRootPath)
 
 void WorkbenchController::handleAction(const ui::UiActionRequest& request)
 {
+    if (hardwareOperationBusy_ && isBlockedByHardwareOperation(request.action)) {
+        logWarning(
+            QStringLiteral("UI"),
+            QStringLiteral("%1 正在执行，已阻止动作: %2")
+                .arg(hardwareOperationName_, ui::toDisplayText(request.action)));
+        return;
+    }
+
     switch (request.action) {
     case ui::UiAction::NewTask:
         createTask();
@@ -635,6 +875,24 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
         break;
     case ui::UiAction::StopDebugService:
         stopDebugService();
+        break;
+    case ui::UiAction::RefreshSerialPorts:
+        refreshSerialPorts();
+        break;
+    case ui::UiAction::ToggleSerialMonitor:
+        toggleSerialMonitor();
+        break;
+    case ui::UiAction::ClearSerialOutput:
+        clearSerialOutput();
+        break;
+    case ui::UiAction::SendSerialData:
+        sendSerialData(request.parameters.value(QStringLiteral("serialText")).toString());
+        break;
+    case ui::UiAction::SaveSamplingConfig:
+        saveSamplingConfig(request.parameters, false);
+        break;
+    case ui::UiAction::SendSamplingConfig:
+        saveSamplingConfig(request.parameters, true);
         break;
     case ui::UiAction::BrowseProgramImage:
         browseProgramImage();
@@ -827,7 +1085,10 @@ void WorkbenchController::loadTaskToWorkbench(const QString& taskId)
 
     logInfo(QStringLiteral("Workspace"), QStringLiteral("验证任务已加载到工作台: %1").arg(currentTask_.summary.taskName));
     setRamSummaryFromCurrentState(QStringLiteral("任务证据已加载"));
-    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), hasRunRecord_ ? 100 : 0, hasHaltRecord_ ? 100 : 0);
+    currentRunProgress_ = 0;
+    currentStopProgress_ = 0;
+    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), currentRunProgress_, currentStopProgress_);
+    updateRunButtonText();
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
@@ -1003,54 +1264,413 @@ void WorkbenchController::startDebugService()
     if (!ensureWorkspace()) {
         return;
     }
-    target_control::DebugAccess* const access = debugAccess();
-    if (access == nullptr) {
+    if (targetConnectionBusy_) {
+        logWarning(QStringLiteral("Target"), QStringLiteral("目标连接正在进行，请等待完成。"));
+        return;
+    }
+    if (!resourcePackReady_) {
+        updateConnectionDiagnostics(QStringLiteral("未连接"));
         logError(QStringLiteral("Target"), QStringLiteral("自研片上调试服务未配置或不可执行，不能连接目标。"));
         return;
     }
 
-    connectionRecord_ = connectionService_.connectTarget(*access, debugProfile_);
-    hasConnection_ = (connectionRecord_.state == target_control::ConnectionState::Connected);
-    if (!hasConnection_) {
-        logError(QStringLiteral("Target"), QStringLiteral("目标连接失败: %1").arg(connectionRecord_.errorMessage));
-        return;
-    }
-
-    precheckRecord_ = connectionService_.runPrecheck(*access, debugProfile_);
-    hasPrecheck_ = (precheckRecord_.state == target_control::PrecheckState::Passed);
-    const QString statusText = QStringLiteral("调试器: %1 / 预检: %2")
-        .arg(connectionStateText(connectionRecord_.state), precheckStateText(precheckRecord_.state));
+    targetConnectionBusy_ = true;
+    updateConnectionDiagnostics(QStringLiteral("连接中"));
     if (window_ != nullptr) {
-        window_->setConnectionSummary(debugProfile_.profileName, statusText);
+        window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 正在连接目标并执行预检"));
     }
+    logInfo(QStringLiteral("Target"), QStringLiteral("开始连接目标并执行预检。"));
 
-    if (hasTask_) {
-        flowState_ = workflow_.recordStageResult(
-            flowState_,
-            workflow::Stage::Connection,
-            hasPrecheck_ ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-            statusText,
-            QJsonObject());
-    }
-    logInfo(QStringLiteral("Target"), statusText);
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    QThread* const thread = QThread::create([this, debugConfig, profile]() {
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        target_control::TargetConnectionService service;
+        const target_control::ConnectionRecord connection = service.connectTarget(workerAccess, profile);
+        target_control::PrecheckRecord precheck;
+        if (connection.state == target_control::ConnectionState::Connected) {
+            precheck = service.runPrecheck(workerAccess, profile);
+        }
+
+        QMetaObject::invokeMethod(
+            this,
+            [this, profile, connection, precheck]() {
+                targetConnectionBusy_ = false;
+                connectionRecord_ = connection;
+                precheckRecord_ = precheck;
+                hasConnection_ = (connectionRecord_.state == target_control::ConnectionState::Connected);
+                hasPrecheck_ = hasConnection_ && (precheckRecord_.state == target_control::PrecheckState::Passed);
+
+                if (hasConnection_) {
+                    if (target_control::DebugServiceAccess* const serviceAccess =
+                            dynamic_cast<target_control::DebugServiceAccess*>(debugAccess_.get())) {
+                        serviceAccess->assumeConnected(profile);
+                    }
+                } else {
+                    precheckRecord_ = target_control::PrecheckRecord();
+                }
+
+                const QString statusText = QStringLiteral("调试器: %1 / 预检: %2")
+                    .arg(connectionStateText(connectionRecord_.state), precheckStateText(precheckRecord_.state));
+                if (window_ != nullptr) {
+                    window_->setConnectionSummary(debugProfile_.profileName, statusText);
+                }
+                updateConnectionDiagnostics(hasConnection_ ? QStringLiteral("已连接") : QStringLiteral("未连接"));
+
+                if (hasTask_) {
+                    flowState_ = workflow_.recordStageResult(
+                        flowState_,
+                        workflow::Stage::Connection,
+                        hasPrecheck_ ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
+                        statusText,
+                        QJsonObject());
+                }
+
+                if (hasConnection_) {
+                    logInfo(QStringLiteral("Target"), statusText);
+                } else {
+                    logError(QStringLiteral("Target"), QStringLiteral("目标连接失败: %1").arg(connectionRecord_.errorMessage));
+                }
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
     updateTopStatus();
 }
 
 void WorkbenchController::stopDebugService()
 {
-    target_control::DebugAccess* const access = debugAccess();
-    if (access != nullptr) {
-        connectionRecord_ = connectionService_.disconnectTarget(*access);
-    } else {
+    if (targetConnectionBusy_) {
+        logWarning(QStringLiteral("Target"), QStringLiteral("目标连接仍在进行，等待连接请求返回后再停止。"));
+        return;
+    }
+    if (!resourcePackReady_) {
         connectionRecord_ = target_control::ConnectionRecord();
+        hasConnection_ = false;
+        hasPrecheck_ = false;
+        precheckRecord_ = target_control::PrecheckRecord();
+        updateConnectionDiagnostics(QStringLiteral("已断开"));
+        if (window_ != nullptr) {
+            window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
+        }
+        logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
+        updateTopStatus();
+        return;
     }
-    hasConnection_ = false;
-    hasPrecheck_ = false;
+
+    targetConnectionBusy_ = true;
+    updateConnectionDiagnostics(QStringLiteral("断开中"));
     if (window_ != nullptr) {
-        window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
+        window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 正在断开"));
     }
-    logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
+    logInfo(QStringLiteral("Target"), QStringLiteral("开始断开片上调试服务。"));
+
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    QThread* const thread = QThread::create([this, debugConfig, profile]() {
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        workerAccess.assumeConnected(profile);
+        target_control::TargetConnectionService service;
+        const target_control::ConnectionRecord disconnectRecord = service.disconnectTarget(workerAccess);
+
+        QMetaObject::invokeMethod(
+            this,
+            [this, disconnectRecord]() {
+                targetConnectionBusy_ = false;
+                connectionRecord_ = disconnectRecord;
+                hasConnection_ = false;
+                hasPrecheck_ = false;
+                precheckRecord_ = target_control::PrecheckRecord();
+                if (target_control::DebugServiceAccess* const serviceAccess =
+                        dynamic_cast<target_control::DebugServiceAccess*>(debugAccess_.get())) {
+                    serviceAccess->assumeDisconnected();
+                }
+
+                updateConnectionDiagnostics(connectionRecord_.state == target_control::ConnectionState::Failed
+                    ? QStringLiteral("未连接")
+                    : QStringLiteral("已断开"));
+                if (window_ != nullptr) {
+                    window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
+                }
+                if (connectionRecord_.state == target_control::ConnectionState::Failed) {
+                    logError(QStringLiteral("Target"), QStringLiteral("调试服务断开失败: %1").arg(connectionRecord_.errorMessage));
+                } else {
+                    logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
+                }
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
     updateTopStatus();
+}
+
+void WorkbenchController::refreshSerialPorts()
+{
+    serialPorts_.clear();
+    QStringList displayNames;
+    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo& info : ports) {
+        const QString portName = info.portName().trimmed();
+        if (!portName.isEmpty()) {
+            serialPorts_.append(portName);
+            displayNames.append(serialDisplayName(info));
+        }
+    }
+
+    const QString statusText = serialPorts_.isEmpty()
+        ? QStringLiteral("未发现可用串口。")
+        : QStringLiteral("发现 %1 个串口。").arg(serialPorts_.size());
+    if (window_ != nullptr) {
+        window_->setSerialPorts(displayNames, serialPorts_, statusText);
+    }
+    logInfo(QStringLiteral("Serial"), statusText);
+}
+
+void WorkbenchController::toggleSerialMonitor()
+{
+    if (serialPort_ == nullptr || window_ == nullptr) {
+        return;
+    }
+
+    if (serialPort_->isOpen()) {
+        const QString portName = serialPort_->portName();
+        serialPort_->close();
+        serialOpen_ = false;
+        window_->setSerialStatus(QStringLiteral("串口已关闭: %1").arg(portName), false);
+        logInfo(QStringLiteral("Serial"), QStringLiteral("串口已关闭: %1").arg(portName));
+        return;
+    }
+
+    QString portName = window_->selectedSerialPortName();
+    if (portName.isEmpty() || !serialPorts_.contains(portName, Qt::CaseInsensitive)) {
+        window_->setSerialStatus(QStringLiteral("请先刷新串口列表。"), false);
+        logWarning(QStringLiteral("Serial"), QStringLiteral("串口列表未刷新或没有可打开串口。"));
+        return;
+    }
+
+    serialPort_->setPortName(portName);
+    serialPort_->setBaudRate(window_->selectedSerialBaudRate());
+    serialPort_->setDataBits(QSerialPort::Data8);
+    serialPort_->setParity(QSerialPort::NoParity);
+    serialPort_->setStopBits(QSerialPort::OneStop);
+    serialPort_->setFlowControl(QSerialPort::NoFlowControl);
+
+    if (!serialPort_->open(QIODevice::ReadWrite)) {
+        const QString message = serialPort_->errorString();
+        serialOpen_ = false;
+        window_->setSerialStatus(QStringLiteral("串口打开失败: %1").arg(message), false);
+        logError(QStringLiteral("Serial"), QStringLiteral("串口打开失败: %1").arg(message));
+        return;
+    }
+
+    serialOpen_ = true;
+    const QString message = QStringLiteral("串口已打开: %1 @ %2")
+        .arg(portName)
+        .arg(serialPort_->baudRate());
+    window_->setSerialStatus(message, true);
+    logInfo(QStringLiteral("Serial"), message);
+}
+
+void WorkbenchController::clearSerialOutput()
+{
+    if (window_ != nullptr) {
+        window_->setSerialPlaceholderText(QString());
+    }
+    logInfo(QStringLiteral("Serial"), QStringLiteral("串口输出窗口已清空。"));
+}
+
+void WorkbenchController::sendSerialData(const QString& text)
+{
+    const QString trimmedText = text;
+    if (trimmedText.isEmpty()) {
+        logWarning(QStringLiteral("Serial"), QStringLiteral("串口发送内容为空。"));
+        return;
+    }
+    if (serialPort_ == nullptr || !serialPort_->isOpen()) {
+        logError(QStringLiteral("Serial"), QStringLiteral("串口未打开，无法发送。"));
+        return;
+    }
+
+    const QByteArray payload = trimmedText.toUtf8();
+    const qint64 written = serialPort_->write(payload);
+    if (written != payload.size()) {
+        logError(QStringLiteral("Serial"), QStringLiteral("串口发送失败: %1").arg(serialPort_->errorString()));
+        return;
+    }
+    if (!serialPort_->flush()) {
+        logWarning(QStringLiteral("Serial"), QStringLiteral("串口发送已排队，等待驱动刷新。"));
+    }
+    if (window_ != nullptr) {
+        window_->appendLog(
+            ui::LogChannel::Serial,
+            ui::LogLevel::Info,
+            QStringLiteral("TX"),
+            trimmedText);
+    }
+}
+
+void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, const bool requestHardwareSend)
+{
+    if (!ensureTask()) {
+        return;
+    }
+
+    const int sampleCount = parameters.value(QStringLiteral("sample_count")).toInt();
+    const int pretrigger = parameters.value(QStringLiteral("pretrigger")).toInt();
+    const int posttrigger = parameters.value(QStringLiteral("posttrigger")).toInt();
+    const int triggerCount = parameters.value(QStringLiteral("trigger_count")).toInt();
+    const int postAfterTrigger = parameters.value(QStringLiteral("post_after_trigger")).toInt();
+    const int sampleWordBits = parameters.value(QStringLiteral("sample_word_bits")).toInt();
+    if (sampleCount != kSamplingSampleCount ||
+        pretrigger != kSamplingPretrigger ||
+        posttrigger != kSamplingPosttrigger ||
+        triggerCount != kSamplingTriggerCount ||
+        postAfterTrigger != kSamplingPostAfterTrigger ||
+        sampleWordBits != kSamplingSampleWordBits) {
+        logError(
+            QStringLiteral("Sampling"),
+            QStringLiteral("采样窗口参数与当前硬件不匹配: sample_count=%1 pretrigger=%2 posttrigger=%3 trigger_count=%4 post_after_trigger=%5 sample_word_bits=%6")
+                .arg(sampleCount)
+                .arg(pretrigger)
+                .arg(posttrigger)
+                .arg(triggerCount)
+                .arg(postAfterTrigger)
+                .arg(sampleWordBits));
+        return;
+    }
+
+    quint64 triggerAddress = 0U;
+    const QString triggerAddressText = parameters.value(QStringLiteral("trigger_addr")).toString().trimmed();
+    if (!parseAddressText(triggerAddressText, &triggerAddress)) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("触发地址无效: %1").arg(triggerAddressText));
+        return;
+    }
+
+    const bool mismatchEnable = parameters.value(QStringLiteral("mismatch_enable")).toBool();
+    const int mismatchMask = parameters.value(QStringLiteral("mismatch_mask")).toInt() & kSamplingMismatchMask;
+    const int triggerMask = mismatchEnable ? mismatchMask : 0;
+
+    QJsonObject addressTrigger;
+    addressTrigger.insert(QStringLiteral("valid"), true);
+    addressTrigger.insert(QStringLiteral("ready"), true);
+    addressTrigger.insert(QStringLiteral("addr"), addressText(triggerAddress));
+
+    QJsonObject mismatchTrigger;
+    mismatchTrigger.insert(QStringLiteral("enable"), mismatchEnable);
+    mismatchTrigger.insert(QStringLiteral("mask"), QStringLiteral("0x%1").arg(mismatchMask, 0, 16));
+    mismatchTrigger.insert(QStringLiteral("source"), QStringLiteral("mismatch[4:0]"));
+    mismatchTrigger.insert(QStringLiteral("edge"), QStringLiteral("rise"));
+
+    QJsonObject hardwareProtocol;
+    hardwareProtocol.insert(QStringLiteral("trigger_mask"), QStringLiteral("0x%1").arg(triggerMask, 0, 16));
+    hardwareProtocol.insert(QStringLiteral("trigger_value"), addressText(triggerAddress));
+    hardwareProtocol.insert(QStringLiteral("trigger_edge_rise"), mismatchEnable ? 1 : 0);
+    hardwareProtocol.insert(QStringLiteral("trigger_edge_fall"), 0);
+
+    QJsonObject root;
+    root.insert(QStringLiteral("schema_version"), QStringLiteral("1.0"));
+    root.insert(QStringLiteral("sample_count"), sampleCount);
+    root.insert(QStringLiteral("pretrigger"), pretrigger);
+    root.insert(QStringLiteral("posttrigger"), posttrigger);
+    root.insert(QStringLiteral("trigger_count"), triggerCount);
+    root.insert(QStringLiteral("post_after_trigger"), postAfterTrigger);
+    root.insert(QStringLiteral("sample_word_bits"), sampleWordBits);
+    root.insert(QStringLiteral("trigger_logic"), QStringLiteral("valid_ready_addr_or_mismatch_rise"));
+    root.insert(QStringLiteral("addr_trigger"), addressTrigger);
+    root.insert(QStringLiteral("mismatch_trigger"), mismatchTrigger);
+    root.insert(QStringLiteral("hardware_protocol"), hardwareProtocol);
+    root.insert(QStringLiteral("created_at"), currentTimeText());
+
+    const QString configPath = currentTask_.paths.samplingConfigPath;
+    if (!QDir().mkpath(QFileInfo(configPath).absolutePath())) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("无法创建采样配置目录: %1").arg(QFileInfo(configPath).absolutePath()));
+        return;
+    }
+
+    QSaveFile file(configPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("无法写入采样配置: %1").arg(configPath));
+        return;
+    }
+    const QJsonDocument document(root);
+    const QByteArray payload = document.toJson(QJsonDocument::Indented);
+    if (file.write(payload) != payload.size()) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("采样配置写入不完整: %1").arg(configPath));
+        return;
+    }
+    if (!file.commit()) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("采样配置提交失败: %1").arg(configPath));
+        return;
+    }
+
+    workspace::TaskInputSet inputs = currentTask_.inputs;
+    inputs.resourceSnapshot = resourceSnapshotJson();
+    inputs.samplingConfig.id = QStringLiteral("input_%1").arg(currentTimeText());
+    inputs.samplingConfig.relativePath = QDir(currentTask_.paths.taskRootPath).relativeFilePath(configPath);
+    inputs.samplingConfig.originalFileName = QFileInfo(configPath).fileName();
+    inputs.samplingConfig.sha256 = fileSha256Text(configPath);
+    inputs.samplingConfig.sizeBytes = QFileInfo(configPath).size();
+    inputs.samplingConfig.importedAt = currentTimeText();
+
+    workspace::TaskContext updated;
+    QString error;
+    if (!workspace_.saveTaskInputs(workspaceMode(), currentTask_.summary.taskId, inputs, &updated, &error)) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("保存采样配置索引失败: %1").arg(error));
+        return;
+    }
+
+    currentTask_ = updated;
+    selectedTaskId_ = currentTask_.summary.taskId;
+    logInfo(
+        QStringLiteral("Sampling"),
+        QStringLiteral("采样配置已保存: addr=%1 mismatch_enable=%2 mismatch_mask=0x%3")
+            .arg(addressText(triggerAddress),
+                 mismatchEnable ? QStringLiteral("true") : QStringLiteral("false"),
+                 QString::number(mismatchMask, 16)));
+    if (requestHardwareSend) {
+        logWarning(QStringLiteral("Sampling"), QStringLiteral("采样硬件下发通道尚未接入，已保存配置但未写入硬件寄存器。"));
+    }
+    updateProjectView();
+    updateTaskDetail();
+    updateTopStatus();
+}
+
+void WorkbenchController::updateConnectionDiagnostics(const QString& serviceState)
+{
+    if (window_ == nullptr) {
+        return;
+    }
+
+    const QString normalizedServiceState = serviceState;
+    const QString precheckText = QStringLiteral("%1 / reset=%2 write=%3 read=%4 run=%5")
+        .arg(precheckStateText(precheckRecord_.state),
+             precheckRecord_.resetSupported ? QStringLiteral("OK") : QStringLiteral("NO"),
+             precheckRecord_.writeSupported ? QStringLiteral("OK") : QStringLiteral("NO"),
+             precheckRecord_.readSupported ? QStringLiteral("OK") : QStringLiteral("NO"),
+             precheckRecord_.runSupported ? QStringLiteral("OK") : QStringLiteral("NO"));
+    const QString errorText = connectionRecord_.errorMessage.isEmpty()
+        ? precheckRecord_.errorMessage
+        : connectionRecord_.errorMessage;
+    const QString rawText = shortRawText(QStringList{
+        QStringLiteral("[connection]"),
+        connectionRecord_.rawReturn,
+        QStringLiteral("[precheck]"),
+        precheckRecord_.rawReturn,
+    }.join(QLatin1Char('\n')));
+
+    window_->setConnectionDiagnostics(
+        normalizedServiceState,
+        QString(),
+        precheckText,
+        QString(),
+        QString(),
+        QString(),
+        errorText,
+        rawText);
 }
 
 void WorkbenchController::browseProgramImage()
@@ -1066,12 +1686,69 @@ void WorkbenchController::browseProgramImage()
         QStringLiteral("Program Images (*.elf *.bin *.srec *.s19 *.s28 *.s37 *.mot *.hex *.ihex *.ihx);;All Files (*.*)"));
     if (!path.isEmpty()) {
         window_->setProgramImagePath(path);
+        currentWriteProgress_ = 0;
+        currentReadbackProgress_ = 0;
+        window_->setRamSummary(QStringLiteral("已选择程序镜像，等待烧录。"), currentWriteProgress_, currentReadbackProgress_);
         logInfo(QStringLiteral("Program"), QStringLiteral("已选择程序镜像: %1").arg(path));
     }
 }
 
+void WorkbenchController::beginHardwareOperation(
+    const target_control::ProgramOperation operation,
+    const QString& name)
+{
+    hardwareOperationBusy_ = true;
+    hardwareOperation_ = operation;
+    hardwareOperationName_ = name;
+    if (operation == target_control::ProgramOperation::Write) {
+        currentWriteProgress_ = 0;
+        currentReadbackProgress_ = 0;
+    } else if (operation == target_control::ProgramOperation::Readback) {
+        currentReadbackProgress_ = 0;
+    } else if (operation == target_control::ProgramOperation::Run) {
+        currentRunProgress_ = 0;
+        runOutputConfirmed_ = false;
+    } else if (operation == target_control::ProgramOperation::Halt) {
+        currentStopProgress_ = 0;
+    }
+}
+
+void WorkbenchController::endHardwareOperation()
+{
+    hardwareOperationBusy_ = false;
+    hardwareOperationName_.clear();
+}
+
+void WorkbenchController::updateWriteOperationProgress(
+    const quint64 completedBytes,
+    const quint64 totalBytes,
+    const QString& message)
+{
+    const int mappedProgress = dataProgressPercent(completedBytes, totalBytes);
+    currentWriteProgress_ = qMax(currentWriteProgress_, mappedProgress);
+    setRamSummaryFromCurrentState(
+        QStringLiteral("烧录执行中: %1/%2 bytes, %3")
+            .arg(QString::number(completedBytes), QString::number(totalBytes), message));
+}
+
+void WorkbenchController::updateReadbackOperationProgress(
+    const quint64 completedBytes,
+    const quint64 totalBytes,
+    const QString& message)
+{
+    const int mappedProgress = dataProgressPercent(completedBytes, totalBytes);
+    currentReadbackProgress_ = qMax(currentReadbackProgress_, mappedProgress);
+    setRamSummaryFromCurrentState(
+        QStringLiteral("回读执行中: %1/%2 bytes, %3")
+            .arg(QString::number(completedBytes), QString::number(totalBytes), message));
+}
+
 void WorkbenchController::programImage()
 {
+    if (hardwareOperationBusy_) {
+        logWarning(QStringLiteral("Program"), QStringLiteral("%1 正在执行，请等待完成。").arg(hardwareOperationName_));
+        return;
+    }
     if (!ensureTask()) {
         return;
     }
@@ -1088,6 +1765,10 @@ void WorkbenchController::programImage()
         logError(QStringLiteral("Program"), QStringLiteral("尚未选择程序镜像。"));
         return;
     }
+
+    QElapsedTimer writeTimer;
+    writeTimer.start();
+    logInfo(QStringLiteral("Program"), QStringLiteral("烧录开始。"));
 
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Write, target_control::OperationStage::CheckDebugAccess);
@@ -1144,62 +1825,110 @@ void WorkbenchController::programImage()
     progress = target_control::makeOperationProgress(
         target_control::ProgramOperation::Write,
         target_control::OperationStage::WriteSegments);
-    window_->setRamSummary(
-        progressTitle(QStringLiteral("烧写执行中"), progress, QStringLiteral("烧写可用性已确认，正在等待片上调试器返回写入结果。")),
-        progress.percent,
-        0);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-
-    writeRecord_ = programController_.programTarget(*access, currentTask_.summary.taskId, imageInfo_);
-    hasWriteRecord_ = writeRecord_.success;
-
-    progress = target_control::makeOperationProgress(
-        target_control::ProgramOperation::Write,
-        writeRecord_.success ? target_control::OperationStage::ConfirmWriteResult : target_control::OperationStage::Failed);
+    quint64 writeBytes = 0U;
+    for (const target_control::ImageSegment& segment : imageInfo_.segments) {
+        writeBytes += static_cast<quint64>(segment.data.size());
+    }
     window_->setRamSummary(
         progressTitle(
-            writeRecord_.success ? QStringLiteral("烧写确认中") : QStringLiteral("烧写失败"),
+            QStringLiteral("烧写执行中"),
             progress,
-            writeRecord_.success ? QStringLiteral("片上调试器已返回写入成功记录。") : writeRecord_.errorMessage),
+            QStringLiteral("正在写入 %1 个镜像段，共 %2 字节；若底层调试服务无返回，将按超时失败处理。")
+                .arg(imageInfo_.segments.size())
+                .arg(writeBytes)),
         progress.percent,
         0);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    QString relativePath;
-    if (!writeEvidenceJson(QString::fromLatin1(kProgramWriteRecordName), writeRecordToJson(writeRecord_), &relativePath, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("烧写证据写入失败: %1").arg(error));
-    }
-    const target_control::OperationProgress persistedProgress =
-        target_control::makeOperationProgress(
-            target_control::ProgramOperation::Write,
-            writeRecord_.success ? target_control::OperationStage::PersistWriteRecord : target_control::OperationStage::Failed);
-    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("烧写进度证据写入失败: %1").arg(error));
-    }
+    hasVerifyRecord_ = false;
+    verifyRecord_ = target_control::ReadbackVerifyRecord();
+    beginHardwareOperation(target_control::ProgramOperation::Write, QStringLiteral("程序烧录"));
+    currentWriteProgress_ = qMax(currentWriteProgress_, progress.percent);
+    currentReadbackProgress_ = 0;
+    const target_control::ProgramImageInfo image = imageInfo_;
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    const QString taskId = currentTask_.summary.taskId;
+    QThread* const thread = QThread::create([this, debugConfig, profile, image, taskId]() {
+        WriteWorkerResult result;
+        QElapsedTimer timer;
+        timer.start();
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        const target_control::DebugResult connectResult = workerAccess.connectTarget(profile);
+        if (!connectResult.success) {
+            result.connectionError = connectResult.errorMessage;
+            result.record.taskId = taskId;
+            result.record.errorMessage = QStringLiteral("目标连接确认失败: %1").arg(connectResult.errorMessage);
+        } else {
+            target_control::ProgramController controller;
+            const target_control::OperationProgressCallback callback =
+                [this](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, completedBytes, totalBytes, message]() {
+                            updateWriteOperationProgress(completedBytes, totalBytes, message);
+                        },
+                        Qt::QueuedConnection);
+                };
+            result.record = controller.programTarget(workerAccess, taskId, image, callback);
+        }
+        result.elapsedMs = timer.elapsed();
+        QMetaObject::invokeMethod(
+            this,
+            [this, result]() {
+                writeRecord_ = result.record;
+                hasWriteRecord_ = writeRecord_.success ||
+                    !writeRecord_.rawReturn.isEmpty() ||
+                    !writeRecord_.errorMessage.isEmpty();
+                currentWriteProgress_ = writeRecord_.success ? 100 : 100;
 
-    flowState_ = workflow_.recordStageResult(
-        flowState_,
-        workflow::Stage::ProgramWrite,
-        writeRecord_.success ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-        writeRecord_.success ? QStringLiteral("烧写成功") : writeRecord_.errorMessage,
-        imageToJson(imageInfo_));
+                QString error;
+                QString relativePath;
+                if (!writeEvidenceJson(QString::fromLatin1(kProgramWriteRecordName), writeRecordToJson(writeRecord_), &relativePath, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鐑у啓璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                }
+                const target_control::OperationProgress persistedProgress =
+                    target_control::makeOperationProgress(
+                        target_control::ProgramOperation::Write,
+                        writeRecord_.success ? target_control::OperationStage::PersistWriteRecord : target_control::OperationStage::Failed);
+                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鐑у綍杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                }
 
-    if (writeRecord_.success) {
-        logInfo(QStringLiteral("Program"), QStringLiteral("烧写成功: %1").arg(writeRecord_.rawReturn));
-    } else {
-        logError(QStringLiteral("Program"), QStringLiteral("烧写失败: %1").arg(writeRecord_.errorMessage));
-    }
-    setRamSummaryFromCurrentState(QStringLiteral("烧写完成"));
-    updateTopStatus();
+                flowState_ = workflow_.recordStageResult(
+                    flowState_,
+                    workflow::Stage::ProgramWrite,
+                    writeRecord_.success ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
+                    writeRecord_.success ? QStringLiteral("鐑у啓鎴愬姛") : writeRecord_.errorMessage,
+                    imageToJson(imageInfo_));
+
+                if (writeRecord_.success) {
+                    logInfo(QStringLiteral("Program"), QStringLiteral("烧录成功。"));
+                } else {
+                    logError(QStringLiteral("Program"), QStringLiteral("烧录失败: %1").arg(writeRecord_.errorMessage));
+                }
+                logInfo(QStringLiteral("Program"), QStringLiteral("烧录开销: %1 ms").arg(result.elapsedMs));
+                endHardwareOperation();
+                setRamSummaryFromCurrentState(writeRecord_.success ? QStringLiteral("烧录完成") : QStringLiteral("烧录失败"));
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 void WorkbenchController::verifyReadback()
 {
+    if (hardwareOperationBusy_) {
+        logWarning(QStringLiteral("Readback"), QStringLiteral("%1 正在执行，请等待完成。").arg(hardwareOperationName_));
+        return;
+    }
     if (!hasConnection_ || !hasPrecheck_) {
         logError(QStringLiteral("Readback"), QStringLiteral("目标尚未连接或预检未通过，不能回读校验。"));
         return;
     }
-    if (!hasImage_ || !hasWriteRecord_) {
+    if (!hasImage_ || !hasWriteRecord_ || !writeRecord_.success) {
         logError(QStringLiteral("Readback"), QStringLiteral("尚未完成有效烧写，不能回读校验。"));
         return;
     }
@@ -1208,6 +1937,8 @@ void WorkbenchController::verifyReadback()
         logError(QStringLiteral("Readback"), QStringLiteral("自研片上调试服务未配置，不能回读校验。"));
         return;
     }
+
+    logInfo(QStringLiteral("Readback"), QStringLiteral("回读开始。"));
 
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::CheckReadbackAccess);
@@ -1235,47 +1966,84 @@ void WorkbenchController::verifyReadback()
         progress.percent);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    verifyRecord_ = programController_.verifyReadback(*access, currentTask_.summary.taskId, imageInfo_);
-    hasVerifyRecord_ = true;
+    beginHardwareOperation(target_control::ProgramOperation::Readback, QStringLiteral("回读校验"));
+    currentReadbackProgress_ = qMax(currentReadbackProgress_, progress.percent);
+    const target_control::ProgramImageInfo image = imageInfo_;
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    const QString taskId = currentTask_.summary.taskId;
+    QThread* const thread = QThread::create([this, debugConfig, profile, image, taskId]() {
+        ReadbackWorkerResult result;
+        QElapsedTimer timer;
+        timer.start();
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        const target_control::DebugResult connectResult = workerAccess.connectTarget(profile);
+        if (!connectResult.success) {
+            result.connectionError = connectResult.errorMessage;
+            result.record.taskId = taskId;
+            result.record.state = target_control::VerifyState::Failed;
+            result.record.errorMessage = QStringLiteral("目标连接确认失败: %1").arg(connectResult.errorMessage);
+        } else {
+            target_control::ProgramController controller;
+            const target_control::OperationProgressCallback callback =
+                [this](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, completedBytes, totalBytes, message]() {
+                            updateReadbackOperationProgress(completedBytes, totalBytes, message);
+                        },
+                        Qt::QueuedConnection);
+                };
+            result.record = controller.verifyReadback(workerAccess, taskId, image, callback);
+        }
+        result.elapsedMs = timer.elapsed();
+        QMetaObject::invokeMethod(
+            this,
+            [this, result]() {
+                verifyRecord_ = result.record;
+                hasVerifyRecord_ = true;
+                currentReadbackProgress_ = 100;
 
-    progress = target_control::makeOperationProgress(
-        target_control::ProgramOperation::Readback,
-        target_control::OperationStage::CompareData);
-    window_->setRamSummary(
-        progressTitle(QStringLiteral("回读比较中"), progress, QStringLiteral("正在确认回读数据长度和差异数量。")),
-        100,
-        progress.percent);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                QString error;
+                QString relativePath;
+                if (!writeEvidenceJson(QString::fromLatin1(kReadbackVerifyRecordName), verifyRecordToJson(verifyRecord_), &relativePath, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鍥炶璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                }
+                const target_control::OperationProgress persistedProgress =
+                    target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::PersistVerifyRecord);
+                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鍥炶杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                }
 
-    QString error;
-    QString relativePath;
-    if (!writeEvidenceJson(QString::fromLatin1(kReadbackVerifyRecordName), verifyRecordToJson(verifyRecord_), &relativePath, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("回读证据写入失败: %1").arg(error));
-    }
-    const target_control::OperationProgress persistedProgress =
-        target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::PersistVerifyRecord);
-    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("回读进度证据写入失败: %1").arg(error));
-    }
-
-    const bool passed = verifyRecord_.state == target_control::VerifyState::Passed;
-    flowState_ = workflow_.recordStageResult(
-        flowState_,
-        workflow::Stage::ReadbackVerify,
-        passed ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-        passed ? QStringLiteral("回读校验通过") : verifyRecord_.errorMessage,
-        verifyRecordToJson(verifyRecord_));
-    if (passed) {
-        logInfo(QStringLiteral("Readback"), QStringLiteral("回读校验通过。"));
-    } else {
-        logError(QStringLiteral("Readback"), QStringLiteral("回读校验失败: %1").arg(verifyRecord_.errorMessage));
-    }
-    setRamSummaryFromCurrentState(QStringLiteral("回读校验完成"));
-    updateTopStatus();
+                const bool passed = verifyRecord_.state == target_control::VerifyState::Passed;
+                flowState_ = workflow_.recordStageResult(
+                    flowState_,
+                    workflow::Stage::ReadbackVerify,
+                    passed ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
+                    passed ? QStringLiteral("鍥炶鏍￠獙閫氳繃") : verifyRecord_.errorMessage,
+                    verifyRecordToJson(verifyRecord_));
+                if (passed) {
+                    logInfo(QStringLiteral("Readback"), QStringLiteral("回读校验通过。"));
+                } else {
+                    logError(QStringLiteral("Readback"), QStringLiteral("回读校验失败: %1").arg(verifyRecord_.errorMessage));
+                }
+                logInfo(QStringLiteral("Readback"), QStringLiteral("回读开销: %1 ms").arg(result.elapsedMs));
+                endHardwareOperation();
+                setRamSummaryFromCurrentState(passed ? QStringLiteral("回读校验完成") : QStringLiteral("回读校验失败"));
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 void WorkbenchController::runProgram()
 {
+    if (hardwareOperationBusy_) {
+        logWarning(QStringLiteral("Run"), QStringLiteral("%1 正在执行，请等待完成。").arg(hardwareOperationName_));
+        return;
+    }
     if (!hasConnection_ || !hasPrecheck_) {
         logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接或预检未通过，不能运行程序。"));
         return;
@@ -1284,101 +2052,223 @@ void WorkbenchController::runProgram()
         logError(QStringLiteral("Run"), QStringLiteral("回读校验未通过，禁止运行。"));
         return;
     }
+    if (!serialOpen_) {
+        logError(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出；请先在串口监控中打开板卡 UART 串口。"));
+        return;
+    }
     target_control::DebugAccess* const access = debugAccess();
     if (access == nullptr) {
         logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能运行程序。"));
         return;
     }
 
+    beginHardwareOperation(target_control::ProgramOperation::Run, QStringLiteral("程序运行"));
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CheckRunGate);
-    setRunSummaryFromCurrentState(QStringLiteral("运行准备中 - ") + progress.message, progress.percent, 0);
+    const bool resetBeforeRun = hasHaltRecord_ && haltRecord_.state == target_control::RunState::Halted;
+    hasHaltRecord_ = false;
+    haltRecord_ = target_control::RunControlRecord();
+    runSerialOutput_.clear();
+    latestRunInstruction_ = resetBeforeRun ? QStringLiteral("复位并运行") : QStringLiteral("运行");
+    runOutputConfirmed_ = false;
+    runSerialCaptureActive_ = true;
+    currentStopProgress_ = 0;
+    updateRunButtonText();
+    currentRunProgress_ = progress.percent;
+    setRunSummaryFromCurrentState(QStringLiteral("运行准备中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::DispatchRun);
-    setRunSummaryFromCurrentState(QStringLiteral("运行命令已发送 - ") + progress.message, progress.percent, 0);
+    currentRunProgress_ = progress.percent;
+    setRunSummaryFromCurrentState(QStringLiteral("运行命令已发送 - ") + progress.message, currentRunProgress_, currentStopProgress_);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    runRecord_ = programController_.runTarget(*access, currentTask_.summary.taskId, imageInfo_, verifyRecord_);
-    hasRunRecord_ = true;
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    const target_control::ProgramImageInfo image = imageInfo_;
+    const target_control::ReadbackVerifyRecord verifyRecord = verifyRecord_;
+    const QString taskId = currentTask_.summary.taskId;
+    QThread* const thread = QThread::create([this, debugConfig, profile, image, verifyRecord, taskId, resetBeforeRun]() {
+        RunWorkerResult result;
+        QElapsedTimer timer;
+        timer.start();
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        const target_control::DebugResult connectResult = workerAccess.connectTarget(profile);
+        if (!connectResult.success) {
+            result.connectionError = connectResult.errorMessage;
+            result.record.operation = target_control::ProgramOperation::Run;
+            result.record.taskId = taskId;
+            result.record.entryAddress = image.entryAddress;
+            result.record.state = target_control::RunState::Failed;
+            result.record.errorMessage = QStringLiteral("目标连接确认失败: %1").arg(connectResult.errorMessage);
+        } else {
+            target_control::ProgramController controller;
+            if (resetBeforeRun) {
+                const target_control::DebugResult resetResult = workerAccess.reset(profile.resetStrategy);
+                if (!resetResult.success) {
+                    result.record.operation = target_control::ProgramOperation::Run;
+                    result.record.taskId = taskId;
+                    result.record.entryAddress = image.entryAddress;
+                    result.record.state = target_control::RunState::Failed;
+                    result.record.rawReturn = resetResult.rawReturn;
+                    result.record.errorMessage = QStringLiteral("目标复位失败: %1").arg(resetResult.errorMessage);
+                } else {
+                    result.record = controller.runTarget(workerAccess, taskId, image, verifyRecord);
+                }
+            } else {
+                result.record = controller.runTarget(workerAccess, taskId, image, verifyRecord);
+            }
+        }
+        result.elapsedMs = timer.elapsed();
 
-    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CaptureRunStatus);
-    setRunSummaryFromCurrentState(QStringLiteral("运行返回确认中 - ") + progress.message, progress.percent, 0);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result]() {
+                target_control::OperationProgress progress =
+                    target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CaptureRunStatus);
+                currentRunProgress_ = qMax(currentRunProgress_, progress.percent);
+                setRunSummaryFromCurrentState(QStringLiteral("运行返回确认中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
 
-    QString error;
-    QString relativePath;
-    if (!writeEvidenceJson(QString::fromLatin1(kRunControlRecordName), runRecordToJson(runRecord_), &relativePath, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("运行证据写入失败: %1").arg(error));
-    }
-    const target_control::OperationProgress persistedProgress =
-        target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::PersistRunRecord);
-    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("运行进度证据写入失败: %1").arg(error));
-    }
+                runRecord_ = result.record;
+                hasRunRecord_ = true;
 
-    const bool running = runRecord_.state == target_control::RunState::Running;
-    flowState_ = workflow_.recordStageResult(
-        flowState_,
-        workflow::Stage::RunControl,
-        running ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-        running ? QStringLiteral("程序已运行") : runRecord_.errorMessage,
-        runRecordToJson(runRecord_));
-    if (running) {
-        logInfo(QStringLiteral("Run"), QStringLiteral("程序运行成功: %1").arg(runRecord_.rawReturn));
-    } else {
-        logError(QStringLiteral("Run"), QStringLiteral("程序运行失败: %1").arg(runRecord_.errorMessage));
-    }
-    setRunSummaryFromCurrentState(QStringLiteral("运行控制完成"), 100, 0);
+                QString error;
+                QString relativePath;
+                if (!writeEvidenceJson(QString::fromLatin1(kRunControlRecordName), runRecordToJson(runRecord_), &relativePath, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("运行证据写入失败: %1").arg(error));
+                }
+                const bool running = runRecord_.state == target_control::RunState::Running;
+                const target_control::OperationProgress persistedProgress =
+                    target_control::makeOperationProgress(
+                        target_control::ProgramOperation::Run,
+                        running ? target_control::OperationStage::PersistRunRecord : target_control::OperationStage::Failed);
+                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("运行进度证据写入失败: %1").arg(error));
+                }
+
+                flowState_ = workflow_.recordStageResult(
+                    flowState_,
+                    workflow::Stage::RunControl,
+                    running ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
+                    running ? QStringLiteral("运行命令已返回，等待串口输出确认") : runRecord_.errorMessage,
+                    runRecordToJson(runRecord_));
+                if (running) {
+                    currentRunProgress_ = qMin(currentRunProgress_, 85);
+                    logInfo(QStringLiteral("Run"), QStringLiteral("运行命令返回成功: %1").arg(debugReturnSummary(runRecord_.rawReturn)));
+                    if (!serialOpen_) {
+                        logWarning(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出，不能确认程序是否正确运行。"));
+                    } else {
+                        logInfo(QStringLiteral("Run"), QStringLiteral("等待串口输出确认程序运行结果。"));
+                    }
+                } else {
+                    runSerialCaptureActive_ = false;
+                    logError(QStringLiteral("Run"), QStringLiteral("程序运行失败: %1").arg(runRecord_.errorMessage));
+                }
+                logInfo(QStringLiteral("Run"), QStringLiteral("运行控制开销: %1 ms").arg(result.elapsedMs));
+                endHardwareOperation();
+                setRunSummaryFromCurrentState(running ? QStringLiteral("运行控制完成") : QStringLiteral("运行控制失败"), currentRunProgress_, currentStopProgress_);
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
     updateTopStatus();
 }
 
 void WorkbenchController::stopProgram()
 {
+    if (hardwareOperationBusy_) {
+        logWarning(QStringLiteral("Run"), QStringLiteral("%1 正在执行，请等待完成。").arg(hardwareOperationName_));
+        return;
+    }
     if (!ensureTask()) {
         return;
     }
     if (!hasConnection_) {
-        logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接，不能发送中止命令。"));
+        logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接，不能发送终止命令。"));
         return;
     }
     target_control::DebugAccess* const access = debugAccess();
     if (access == nullptr) {
-        logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能发送中止命令。"));
+        logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能发送终止命令。"));
         return;
     }
 
+    beginHardwareOperation(target_control::ProgramOperation::Halt, QStringLiteral("程序终止"));
+    latestRunInstruction_ = QStringLiteral("终止");
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CheckHaltAccess);
-    setRunSummaryFromCurrentState(QStringLiteral("终止准备中 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
+    currentStopProgress_ = progress.percent;
+    setRunSummaryFromCurrentState(QStringLiteral("终止准备中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     progress = target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::DispatchHalt);
-    setRunSummaryFromCurrentState(QStringLiteral("终止命令已发送 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
+    currentStopProgress_ = progress.percent;
+    setRunSummaryFromCurrentState(QStringLiteral("终止命令已发送 - ") + progress.message, currentRunProgress_, currentStopProgress_);
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    haltRecord_ = programController_.haltTarget(*access, currentTask_.summary.taskId);
-    hasHaltRecord_ = true;
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    const QString taskId = currentTask_.summary.taskId;
+    QThread* const thread = QThread::create([this, debugConfig, profile, taskId]() {
+        RunWorkerResult result;
+        QElapsedTimer timer;
+        timer.start();
+        target_control::DebugServiceAccess workerAccess(debugConfig);
+        const target_control::DebugResult connectResult = workerAccess.connectTarget(profile);
+        if (!connectResult.success) {
+            result.connectionError = connectResult.errorMessage;
+            result.record.operation = target_control::ProgramOperation::Halt;
+            result.record.taskId = taskId;
+            result.record.state = target_control::RunState::Failed;
+            result.record.errorMessage = QStringLiteral("目标连接确认失败: %1").arg(connectResult.errorMessage);
+        } else {
+            target_control::ProgramController controller;
+            result.record = controller.haltTarget(workerAccess, taskId);
+        }
+        result.elapsedMs = timer.elapsed();
 
-    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CaptureHaltStatus);
-    setRunSummaryFromCurrentState(QStringLiteral("终止返回确认中 - ") + progress.message, hasRunRecord_ ? 100 : 0, progress.percent);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result]() {
+                target_control::OperationProgress progress =
+                    target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CaptureHaltStatus);
+                currentStopProgress_ = qMax(currentStopProgress_, progress.percent);
+                setRunSummaryFromCurrentState(QStringLiteral("终止返回确认中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
 
-    QString error;
-    QString relativePath;
-    if (!writeEvidenceJson(QString::fromLatin1(kHaltControlRecordName), runRecordToJson(haltRecord_), &relativePath, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("中止证据写入失败: %1").arg(error));
-    }
-    const target_control::OperationProgress persistedProgress =
-        target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::PersistHaltRecord);
-    if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-        logWarning(QStringLiteral("Evidence"), QStringLiteral("中止进度证据写入失败: %1").arg(error));
-    }
+                haltRecord_ = result.record;
+                hasHaltRecord_ = true;
 
-    if (haltRecord_.state == target_control::RunState::Halted) {
-        logInfo(QStringLiteral("Run"), QStringLiteral("程序已中止: %1").arg(haltRecord_.rawReturn));
-    } else {
-        logWarning(QStringLiteral("Run"), QStringLiteral("中止请求失败: %1").arg(haltRecord_.errorMessage));
-    }
-    setRunSummaryFromCurrentState(QStringLiteral("终止控制完成"), hasRunRecord_ ? 100 : 0, 100);
+                QString error;
+                QString relativePath;
+                if (!writeEvidenceJson(QString::fromLatin1(kHaltControlRecordName), runRecordToJson(haltRecord_), &relativePath, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("终止证据写入失败: %1").arg(error));
+                }
+                const bool halted = haltRecord_.state == target_control::RunState::Halted;
+                const target_control::OperationProgress persistedProgress =
+                    target_control::makeOperationProgress(
+                        target_control::ProgramOperation::Halt,
+                        halted ? target_control::OperationStage::PersistHaltRecord : target_control::OperationStage::Failed);
+                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
+                    logWarning(QStringLiteral("Evidence"), QStringLiteral("终止进度证据写入失败: %1").arg(error));
+                }
+
+                if (halted) {
+                    currentStopProgress_ = 100;
+                    runSerialCaptureActive_ = false;
+                    logInfo(QStringLiteral("Run"), QStringLiteral("程序已终止: %1").arg(debugReturnSummary(haltRecord_.rawReturn)));
+                    updateRunButtonText();
+                } else {
+                    logWarning(QStringLiteral("Run"), QStringLiteral("终止请求失败: %1").arg(haltRecord_.errorMessage));
+                }
+                logInfo(QStringLiteral("Run"), QStringLiteral("终止控制开销: %1 ms").arg(result.elapsedMs));
+                endHardwareOperation();
+                setRunSummaryFromCurrentState(halted ? QStringLiteral("终止控制完成") : QStringLiteral("终止控制失败"), currentRunProgress_, currentStopProgress_);
+                updateTopStatus();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
     updateTopStatus();
 }
 
@@ -1443,7 +2333,7 @@ void WorkbenchController::showVerifySummary()
 
 void WorkbenchController::showRunSummary()
 {
-    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), hasRunRecord_ ? 100 : 0, hasHaltRecord_ ? 100 : 0);
+    setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), currentRunProgress_, currentStopProgress_);
 }
 
 void WorkbenchController::refreshWaveformView()
@@ -1614,7 +2504,7 @@ void WorkbenchController::updateTopStatus()
         ? QStringLiteral("任务: %1").arg(currentTask_.summary.taskName)
         : QStringLiteral("任务: 未创建");
     status.targetStatusText = hasConnection_ ? QStringLiteral("目标: 已连接") : QStringLiteral("目标: 未连接");
-    if (hasRunRecord_ && runRecord_.state == target_control::RunState::Running) {
+    if (hasRunRecord_ && runRecord_.state == target_control::RunState::Running && runOutputConfirmed_) {
         status.programStatusText = QStringLiteral("程序: 运行中");
     } else if (hasVerifyRecord_ && verifyRecord_.state == target_control::VerifyState::Passed) {
         status.programStatusText = QStringLiteral("程序: 回读通过");
@@ -1634,35 +2524,33 @@ void WorkbenchController::setRamSummaryFromCurrentState(const QString& title)
         return;
     }
 
-    const QString text = QStringLiteral(
-        "%1\n镜像: %2 / %3 bytes / %4\n烧写: %5\n回读: %6, diff=%7\n烧写返回: %8\n回读返回: %9")
-        .arg(title,
-             imageInfo_.fileName.isEmpty() ? QStringLiteral("未选择") : imageInfo_.fileName,
-             QString::number(imageInfo_.sizeBytes),
-             target_control::toString(imageInfo_.type),
-             hasWriteRecord_ ? (writeRecord_.success ? QStringLiteral("passed") : writeRecord_.errorMessage) : QStringLiteral("not_run"),
-             hasVerifyRecord_ ? target_control::toString(verifyRecord_.state) : QStringLiteral("not_run"),
-             hasVerifyRecord_ ? QString::number(verifyRecord_.diffCount) : QStringLiteral("0"),
-             writeRecord_.rawReturn,
-             verifyRecord_.rawReturn);
-
-    int writeProgress = 0;
-    const bool writeAttempted =
-        writeRecord_.success || !writeRecord_.rawReturn.isEmpty() || !writeRecord_.errorMessage.isEmpty();
-    if (writeAttempted) {
-        writeProgress = 100;
-    } else if (hasImage_) {
-        writeProgress = 30;
+    QStringList lines;
+    lines.append(title);
+    lines.append(QStringLiteral("镜像: %1 / %2 bytes / %3")
+                     .arg(imageInfo_.fileName.isEmpty() ? QStringLiteral("未选择") : imageInfo_.fileName,
+                          QString::number(imageInfo_.sizeBytes),
+                          target_control::toString(imageInfo_.type)));
+    if (hasWriteRecord_) {
+        lines.append(writeRecord_.success
+            ? QStringLiteral("烧录: 成功")
+            : QStringLiteral("烧录: 失败，原因: %1").arg(writeRecord_.errorMessage));
+    } else {
+        lines.append(QStringLiteral("烧录: 未执行"));
     }
-
-    int readbackProgress = 0;
     if (hasVerifyRecord_) {
-        readbackProgress = 100;
+        lines.append(QStringLiteral("回读: %1, diff=%2%3")
+                         .arg(target_control::toString(verifyRecord_.state),
+                              QString::number(verifyRecord_.diffCount),
+                              verifyRecord_.errorMessage.isEmpty()
+                                  ? QString()
+                                  : QStringLiteral(", 原因: %1").arg(verifyRecord_.errorMessage)));
+    } else {
+        lines.append(QStringLiteral("回读: 未执行"));
     }
-    if (hasRunRecord_ && runRecord_.state == target_control::RunState::Running) {
-        writeProgress = 100;
-        readbackProgress = 100;
-    }
+    const QString text = lines.join(QLatin1Char('\n'));
+
+    int writeProgress = qBound(0, currentWriteProgress_, 100);
+    int readbackProgress = qBound(0, currentReadbackProgress_, 100);
     window_->setRamSummary(text, writeProgress, readbackProgress);
 }
 
@@ -1671,25 +2559,73 @@ void WorkbenchController::setRunSummaryFromCurrentState(
     const int runProgressPercent,
     const int stopProgressPercent)
 {
+    refreshRunSummary(title, runProgressPercent, stopProgressPercent);
+}
+
+void WorkbenchController::appendProgramSerialOutput(const QString& text)
+{
+    if (!runSerialCaptureActive_ || text.isEmpty()) {
+        return;
+    }
+
+    runSerialOutput_.append(text);
+    constexpr qsizetype kMaxSerialCaptureLength = 8000;
+    if (runSerialOutput_.size() > kMaxSerialCaptureLength) {
+        runSerialOutput_ = runSerialOutput_.right(kMaxSerialCaptureLength);
+        runSerialOutput_.prepend(QStringLiteral("... 串口输出过长，仅显示最新内容\n"));
+    }
+    if (!runOutputConfirmed_ && hasExpectedRunOutput(runSerialOutput_)) {
+        runOutputConfirmed_ = true;
+        currentRunProgress_ = 100;
+        logInfo(QStringLiteral("Run"), QStringLiteral("已从串口输出确认 Dhrystone 运行结果。"));
+        updateTopStatus();
+    }
+    refreshRunSummary(QStringLiteral("运行摘要更新"), currentRunProgress_, currentStopProgress_);
+}
+
+void WorkbenchController::updateRunButtonText()
+{
     if (window_ == nullptr) {
         return;
     }
 
-    const QString text = QStringLiteral(
-        "%1\n镜像: %2\n入口地址: %3\n运行状态: %4\n运行返回: %5\n运行快照: %6\n中止状态: %7\n中止返回: %8\n中止快照: %9\n错误: %10")
-        .arg(title,
-             imageInfo_.fileName.isEmpty() ? QStringLiteral("未确定") : imageInfo_.fileName,
-             addressText(imageInfo_.entryAddress),
-             hasRunRecord_ ? target_control::toString(runRecord_.state) : QStringLiteral("not_run"),
-             runRecord_.rawReturn,
-             runRecord_.snapshot,
-             hasHaltRecord_ ? target_control::toString(haltRecord_.state) : QStringLiteral("not_run"),
-             haltRecord_.rawReturn,
-             haltRecord_.snapshot,
-             !runRecord_.errorMessage.isEmpty() ? runRecord_.errorMessage : haltRecord_.errorMessage);
-    window_->setRunSummary(text, runProgressPercent, stopProgressPercent);
+    const bool stopped = hasHaltRecord_ && haltRecord_.state == target_control::RunState::Halted;
+    window_->setActionButtonText(
+        ui::UiAction::RunProgram,
+        stopped ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行"));
 }
 
+void WorkbenchController::refreshRunSummary(
+    const QString& title,
+    const int runProgressPercent,
+    const int stopProgressPercent)
+{
+    if (window_ == nullptr) {
+        return;
+    }
+
+    Q_UNUSED(title);
+
+    QStringList lines;
+    lines.append(QStringLiteral("镜像: %1").arg(imageInfo_.fileName.isEmpty() ? QStringLiteral("未确定") : imageInfo_.fileName));
+    lines.append(QStringLiteral("运行状态: %1")
+                     .arg(runUiStateText(
+                         hardwareOperationBusy_,
+                         hardwareOperation_,
+                         hasRunRecord_,
+                         runRecord_.state,
+                         hasHaltRecord_,
+                         haltRecord_.state)));
+    lines.append(QStringLiteral("最新指令: %1").arg(latestRunInstruction_.isEmpty() ? QStringLiteral("无") : latestRunInstruction_));
+    const QString serialText = runSerialOutput_.trimmed();
+    if (!serialText.isEmpty()) {
+        lines.append(QString());
+        lines.append(QStringLiteral("串口输出:"));
+        lines.append(serialText);
+    }
+
+    window_->setRunSummary(lines.join(QLatin1Char('\n')), runProgressPercent, stopProgressPercent);
+}
 void WorkbenchController::resetExecutionState()
 {
     hasImage_ = false;
@@ -1702,10 +2638,19 @@ void WorkbenchController::resetExecutionState()
     verifyRecord_ = target_control::ReadbackVerifyRecord();
     runRecord_ = target_control::RunControlRecord();
     haltRecord_ = target_control::RunControlRecord();
+    currentWriteProgress_ = 0;
+    currentReadbackProgress_ = 0;
+    currentRunProgress_ = 0;
+    currentStopProgress_ = 0;
+    runSerialOutput_.clear();
+    latestRunInstruction_.clear();
+    runOutputConfirmed_ = false;
+    runSerialCaptureActive_ = false;
     if (window_ != nullptr) {
         window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
         window_->setRunSummary(QStringLiteral("程序运行控制摘要将在这里显示。"), 0, 0);
     }
+    updateRunButtonText();
 }
 
 bool WorkbenchController::saveProgramInputForCurrentTask(workspace::TaskInputSet* const inputs)
@@ -1795,6 +2740,7 @@ void WorkbenchController::restoreExecutionEvidenceForCurrentTask()
             !haltRecord_.rawReturn.isEmpty() ||
             !haltRecord_.snapshot.isEmpty();
     }
+    updateRunButtonText();
 }
 
 void WorkbenchController::logInfo(const QString& source, const QString& message) const
@@ -1920,7 +2866,7 @@ bool WorkbenchController::configureDebugServiceAccess(
     debugConfig_.targetConfigPath = QDir(resourceRootPath).filePath(profile.targetConfigPath);
     debugConfig_.temporaryDirectoryPath = QDir(workspaceRootPath_).filePath(QStringLiteral(".debug_service_tmp"));
     debugConfig_.adapterSpeedKhz = profile.jtagKhz;
-    debugConfig_.timeoutMs = 60000;
+    debugConfig_.timeoutMs = 300000;
     debugAccess_ = std::make_unique<target_control::DebugServiceAccess>(debugConfig_);
     logInfo(
         QStringLiteral("Resources"),

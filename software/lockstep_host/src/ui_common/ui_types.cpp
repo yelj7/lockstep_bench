@@ -58,7 +58,7 @@ QString toDisplayText(const NavigationPage page)
         text = QStringLiteral("错误注入");
         break;
     case NavigationPage::SamplingConfig:
-        text = QStringLiteral("采集配置");
+        text = QStringLiteral("采样配置");
         break;
     case NavigationPage::ProgramRun:
         text = QStringLiteral("程序运行");

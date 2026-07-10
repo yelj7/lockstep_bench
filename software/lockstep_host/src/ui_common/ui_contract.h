@@ -56,7 +56,10 @@ enum class UiAction : unsigned char {
     ClearSerialOutput = 27U,
     DetachLogWindow = 28U,
     GenerateReport = 29U,
-    DeleteTask = 30U
+    DeleteTask = 30U,
+    SendSerialData = 31U,
+    SaveSamplingConfig = 32U,
+    SendSamplingConfig = 33U
 };
 
 struct UiActionRequest final {

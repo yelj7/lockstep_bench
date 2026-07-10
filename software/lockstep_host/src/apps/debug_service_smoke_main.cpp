@@ -19,6 +19,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QTextStream>
+#include <QThread>
 
 #include "resource_manager.h"
 #include "target_control.h"
@@ -247,6 +248,8 @@ int main(int argc, char* argv[])
     const QCommandLineOption timeoutOption(QStringLiteral("timeout-ms"), QStringLiteral("单个调试服务操作超时"), QStringLiteral("ms"), QStringLiteral("60000"));
     const QCommandLineOption taskIdOption(QStringLiteral("task-id"), QStringLiteral("测试任务 ID"), QStringLiteral("id"), QStringLiteral("debug_service_smoke"));
     const QCommandLineOption ramLimitOption(QStringLiteral("ram-limit"), QStringLiteral("允许写入空间大小"), QStringLiteral("bytes"), QString::number(kDefaultDebugMemorySizeBytes));
+    const QCommandLineOption runWaitOption(QStringLiteral("run-wait-ms"), QStringLiteral("运行后等待再终止"), QStringLiteral("ms"), QStringLiteral("0"));
+    const QCommandLineOption noHaltOption(QStringLiteral("no-halt-after-run"), QStringLiteral("运行后不自动终止"));
 
     parser.addOptions({
         resourcesOption,
@@ -259,7 +262,9 @@ int main(int argc, char* argv[])
         speedOption,
         timeoutOption,
         taskIdOption,
-        ramLimitOption
+        ramLimitOption,
+        runWaitOption,
+        noHaltOption
     });
     parser.process(app);
 
@@ -375,13 +380,20 @@ int main(int argc, char* argv[])
         run.errorMessage = QStringLiteral("回读校验未通过，运行未执行。");
     }
 
-    if (run.state == lockstep::target_control::RunState::Running) {
+    const quint64 runWaitMs = parseHexOrDecimal(parser.value(runWaitOption), 0U);
+    if (run.state == lockstep::target_control::RunState::Running && runWaitMs > 0U) {
+        QThread::msleep(static_cast<unsigned long>(qMin<quint64>(runWaitMs, 600000U)));
+    }
+
+    if (run.state == lockstep::target_control::RunState::Running && !parser.isSet(noHaltOption)) {
         halt = programController.haltTarget(debugAccess, taskId);
     } else {
         halt.taskId = taskId;
         halt.operation = lockstep::target_control::ProgramOperation::Halt;
         halt.state = lockstep::target_control::RunState::NotAllowed;
-        halt.errorMessage = QStringLiteral("程序未进入运行态，中止未执行。");
+        halt.errorMessage = parser.isSet(noHaltOption)
+            ? QStringLiteral("halt skipped by --no-halt-after-run")
+            : QStringLiteral("程序未进入运行态，终止未执行。");
     }
 
     const lockstep::target_control::ConnectionRecord disconnect =
@@ -411,7 +423,7 @@ int main(int argc, char* argv[])
         write.success &&
         verify.state == lockstep::target_control::VerifyState::Passed &&
         run.state == lockstep::target_control::RunState::Running &&
-        halt.state == lockstep::target_control::RunState::Halted;
+        (parser.isSet(noHaltOption) || halt.state == lockstep::target_control::RunState::Halted);
 
     QJsonObject summary;
     summary.insert(QStringLiteral("schema"), QStringLiteral("lockstep-debug-service-smoke-v1"));

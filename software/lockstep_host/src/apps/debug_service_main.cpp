@@ -1,4 +1,4 @@
-/**********************************************************
+﻿/**********************************************************
 * 文件名: debug_service_main.cpp
 * 日期: 2026-07-09
 * 版本: 1.0.0.1
@@ -14,9 +14,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QSaveFile>
 #include <QString>
 #include <QStringList>
@@ -32,12 +35,14 @@ namespace {
 
 constexpr char kRequestSchema[] = "lockstep-debug-service-request-v1";
 constexpr char kResponseSchema[] = "lockstep-debug-service-response-v1";
+constexpr char kLocalServerName[] = "lockstep_debug_service_local_v1";
 
 constexpr unsigned short kDefaultCmsisDapVendorId = 0x0D28U;
 constexpr unsigned short kDefaultCmsisDapProductId = 0x0204U;
 constexpr int kCmsisDapPayloadBytes = 64;
 constexpr int kCmsisDapReportBytes = kCmsisDapPayloadBytes + 1;
 constexpr int kCmsisDapTimeoutMs = 3000;
+constexpr int kCmsisDapCommandRetryCount = 3;
 
 constexpr unsigned char kDapInfo = 0x00U;
 constexpr unsigned char kDapConnect = 0x02U;
@@ -142,6 +147,12 @@ enum class DebugOperation : unsigned char {
     Unknown = 8U
 };
 
+struct MemorySegmentRequest final {
+    quint64 address = 0U;
+    quint64 length = 0U;
+    QString dataPath;
+};
+
 struct DebugServiceRequest final {
     QString requestId;
     DebugOperation operation = DebugOperation::Unknown;
@@ -150,11 +161,13 @@ struct DebugServiceRequest final {
     QJsonObject profile;
     QString interfaceConfigPath;
     QString targetConfigPath;
+    QString progressPath;
     int adapterSpeedKhz = 0;
     quint64 address = 0U;
     quint64 entryAddress = 0U;
     quint64 length = 0U;
     QString dataPath;
+    QList<MemorySegmentRequest> segments;
     QString strategy;
 };
 
@@ -395,6 +408,25 @@ bool writeJsonObject(
         return false;
     }
     return true;
+}
+
+bool writeProgressObject(
+    const QString& path,
+    const quint64 completedBytes,
+    const quint64 totalBytes,
+    const QString& message)
+{
+    if (path.trimmed().isEmpty()) {
+        return true;
+    }
+
+    QJsonObject object;
+    object.insert(QStringLiteral("schema"), QStringLiteral("lockstep-debug-service-progress-v1"));
+    object.insert(QStringLiteral("completed_bytes"), QString::number(completedBytes));
+    object.insert(QStringLiteral("total_bytes"), QString::number(totalBytes));
+    object.insert(QStringLiteral("message"), message);
+    QString ignoredError;
+    return writeJsonObject(path, object, &ignoredError);
 }
 
 QJsonObject requestProfileSnapshot(const DebugServiceRequest& request)
@@ -789,6 +821,9 @@ struct TargetDebugConfig final {
     int dmiRetryCount = kDefaultDmiRetryCount;
     int dmPollCount = kDefaultDmPollCount;
     int systemBusAccessBytes = kDefaultSystemBusAccessBytes;
+    int sbaReadPollInterval = 1;
+    int sbaWritePollInterval = 1;
+    int sbaWritePipelineWords = 1;
     int xlen = kDefaultRiscvXlen;
 };
 
@@ -889,6 +924,15 @@ bool loadTargetDebugConfig(
     if (parseIntJsonValue(memory.value(QStringLiteral("system_bus_access_bytes")), &intValue)) {
         parsed.systemBusAccessBytes = intValue;
     }
+    if (parseIntJsonValue(memory.value(QStringLiteral("sba_read_poll_interval")), &intValue)) {
+        parsed.sbaReadPollInterval = intValue;
+    }
+    if (parseIntJsonValue(memory.value(QStringLiteral("sba_write_poll_interval")), &intValue)) {
+        parsed.sbaWritePollInterval = intValue;
+    }
+    if (parseIntJsonValue(memory.value(QStringLiteral("sba_write_pipeline_words")), &intValue)) {
+        parsed.sbaWritePipelineWords = intValue;
+    }
     if (parseIntJsonValue(object.value(QStringLiteral("xlen")), &intValue)) {
         parsed.xlen = intValue;
     }
@@ -906,6 +950,18 @@ bool loadTargetDebugConfig(
         parsed.systemBusAccessBytes != 4 &&
         parsed.systemBusAccessBytes != 8) {
         setError(errorMessage, QStringLiteral("目标 SBA 访问字节数无效。"));
+        return false;
+    }
+    if (parsed.sbaReadPollInterval <= 0 || parsed.sbaReadPollInterval > 256) {
+        setError(errorMessage, QStringLiteral("Invalid SBA read poll interval."));
+        return false;
+    }
+    if (parsed.sbaWritePollInterval <= 0 || parsed.sbaWritePollInterval > 256) {
+        setError(errorMessage, QStringLiteral("目标 SBA 写入 poll 间隔无效。"));
+        return false;
+    }
+    if (parsed.sbaWritePipelineWords <= 0 || parsed.sbaWritePipelineWords > 2) {
+        setError(errorMessage, QStringLiteral("目标 SBA 写入流水深度无效。"));
         return false;
     }
     if (parsed.xlen != 32 && parsed.xlen != 64) {
@@ -1037,52 +1093,59 @@ public:
             output[i + 1] = request.at(i);
         }
 
-        const int written = hid_write(
-            handle_,
-            reinterpret_cast<const unsigned char*>(output.constData()),
-            static_cast<size_t>(output.size()));
-        if (written < 0) {
-            setError(errorMessage, QStringLiteral("CMSIS-DAP 写入失败: %1").arg(hidErrorString(handle_)));
-            return false;
+        QString lastError;
+        for (int attempt = 0; attempt < kCmsisDapCommandRetryCount; ++attempt) {
+            unsigned char stale[kCmsisDapReportBytes] = {};
+            while (hid_read_timeout(handle_, stale, sizeof(stale), 0) > 0) {
+            }
+
+            const int written = hid_write(
+                handle_,
+                reinterpret_cast<const unsigned char*>(output.constData()),
+                static_cast<size_t>(output.size()));
+            if (written < 0) {
+                lastError = QStringLiteral("CMSIS-DAP 写入失败: %1").arg(hidErrorString(handle_));
+                continue;
+            }
+
+            unsigned char input[kCmsisDapReportBytes] = {};
+            const int readCount = hid_read_timeout(
+                handle_,
+                input,
+                sizeof(input),
+                kCmsisDapTimeoutMs);
+            if (readCount <= 0) {
+                lastError = QStringLiteral("CMSIS-DAP 读取超时或失败: %1").arg(hidErrorString(handle_));
+                continue;
+            }
+
+            const QByteArray raw(reinterpret_cast<const char*>(input), readCount);
+            int offset = -1;
+            const unsigned char expectedCommand = byteAt(request, 0);
+            if (raw.size() >= 1 && byteAt(raw, 0) == expectedCommand) {
+                offset = 0;
+            } else if (raw.size() >= 2 && byteAt(raw, 1) == expectedCommand) {
+                offset = 1;
+            }
+
+            if (offset < 0) {
+                lastError = QStringLiteral("CMSIS-DAP 响应命令不匹配: tx=%1 rx=%2")
+                    .arg(QString::fromLatin1(request.toHex()), QString::fromLatin1(raw.toHex()));
+                continue;
+            }
+
+            const QByteArray payload = raw.mid(offset);
+            lastExchange_ = QStringLiteral("tx=%1 rx=%2")
+                .arg(QString::fromLatin1(request.toHex()), QString::fromLatin1(payload.toHex()));
+            transcript_.append(lastExchange_);
+            if (response != nullptr) {
+                *response = payload;
+            }
+            return true;
         }
 
-        unsigned char input[kCmsisDapReportBytes] = {};
-        const int readCount = hid_read_timeout(
-            handle_,
-            input,
-            sizeof(input),
-            kCmsisDapTimeoutMs);
-        if (readCount <= 0) {
-            setError(errorMessage, QStringLiteral("CMSIS-DAP 读取超时或失败: %1").arg(hidErrorString(handle_)));
-            return false;
-        }
-
-        const QByteArray raw(reinterpret_cast<const char*>(input), readCount);
-        int offset = -1;
-        const unsigned char expectedCommand = byteAt(request, 0);
-        if (raw.size() >= 1 && byteAt(raw, 0) == expectedCommand) {
-            offset = 0;
-        } else if (raw.size() >= 2 && byteAt(raw, 1) == expectedCommand) {
-            offset = 1;
-        }
-
-        if (offset < 0) {
-            setError(
-                errorMessage,
-                QStringLiteral("CMSIS-DAP 响应命令不匹配: tx=%1 rx=%2")
-                    .arg(QString::fromLatin1(request.toHex()), QString::fromLatin1(raw.toHex())));
-            return false;
-        }
-
-        const QByteArray payload = raw.mid(offset);
-        lastExchange_ = QStringLiteral("tx=%1 rx=%2")
-            .arg(QString::fromLatin1(request.toHex()), QString::fromLatin1(payload.toHex()));
-        transcript_.append(lastExchange_);
-        if (response != nullptr) {
-            *response = payload;
-        }
-        return true;
-    }
+        setError(errorMessage, lastError);
+        return false;    }
 
     QString infoString(const unsigned char infoId)
     {
@@ -1135,7 +1198,7 @@ public:
     QString serialNumber() const { return serialNumber_; }
     QString selectedInfo() const { return selectedInfo_; }
     QString lastExchange() const { return lastExchange_; }
-    QString transcript() const { return transcript_.join(QChar::fromLatin1('\n')); }
+    qsizetype exchangeCount() const { return transcript_.size(); }
 
 private:
     hid_device* handle_ = nullptr;
@@ -1152,6 +1215,10 @@ class CmsisDapJtagSession final {
 public:
     bool initialize(const DebugServiceRequest& request, QString* const errorMessage)
     {
+        if (initialized_) {
+            return true;
+        }
+
         CmsisDapProbeConfig probeConfig;
         if (!loadProbeConfig(request.interfaceConfigPath, &probeConfig, errorMessage)) {
             return false;
@@ -1213,13 +1280,13 @@ public:
             setError(errorMessage, idcodeFailure_);
             return false;
         }
-        return true;
         if (!isValidJtagIdCode(idCode_)) {
             idcodeFailure_ = QStringLiteral("JTAG IDCODE 无效: %1").arg(hexU32(idCode_));
             hasIdCode_ = false;
             setError(errorMessage, idcodeFailure_);
             return false;
         }
+        initialized_ = true;
         return true;
     }
 
@@ -1237,11 +1304,20 @@ public:
     {
         QByteArray request;
         request.append(static_cast<char>(kDapDisconnect));
-        return device_.expectStatusOk(request, QStringLiteral("断开 CMSIS-DAP"), errorMessage);
+        const bool ok = device_.expectStatusOk(request, QStringLiteral("断开 CMSIS-DAP"), errorMessage);
+        initialized_ = false;
+        debugModuleReady_ = false;
+        currentIr_ = std::numeric_limits<quint32>::max();
+        return ok;
     }
 
     QJsonObject snapshot(const DebugServiceRequest& request, const QString& targetState) const
     {
+        quint64 segmentTotalLength = 0U;
+        for (const MemorySegmentRequest& segment : request.segments) {
+            segmentTotalLength += segment.length;
+        }
+
         QJsonObject object;
         object.insert(QStringLiteral("target_state"), targetState);
         object.insert(QStringLiteral("operation"), operationToText(request.operation));
@@ -1262,6 +1338,9 @@ public:
         object.insert(QStringLiteral("dtmcs"), hexU32(dtmcs_));
         object.insert(QStringLiteral("dmi_address_bits"), dmiAddressBits_);
         object.insert(QStringLiteral("dmi_idle_cycles"), dmiIdleCycles_);
+        object.insert(QStringLiteral("sba_read_poll_interval"), targetConfig_.sbaReadPollInterval);
+        object.insert(QStringLiteral("sba_write_poll_interval"), targetConfig_.sbaWritePollInterval);
+        object.insert(QStringLiteral("sba_write_pipeline_words"), targetConfig_.sbaWritePipelineWords);
         object.insert(QStringLiteral("dmstatus"), hexU32(lastDmStatus_));
         object.insert(QStringLiteral("sbcs"), hexU32(lastSbCs_));
         object.insert(QStringLiteral("last_dmi_error"), lastDmiError_);
@@ -1269,10 +1348,12 @@ public:
         object.insert(QStringLiteral("jtag_idcode"), hasIdCode_ ? hexU32(idCode_) : QString());
         object.insert(QStringLiteral("jtag_idcode_error"), idcodeFailure_);
         object.insert(QStringLiteral("last_exchange"), device_.lastExchange());
-        object.insert(QStringLiteral("transcript"), device_.transcript());
+        object.insert(QStringLiteral("exchange_count"), QString::number(device_.exchangeCount()));
         object.insert(QStringLiteral("address"), hexAddress(request.address));
         object.insert(QStringLiteral("entry_address"), hexAddress(request.entryAddress));
         object.insert(QStringLiteral("length"), QString::number(request.length));
+        object.insert(QStringLiteral("segment_count"), request.segments.size());
+        object.insert(QStringLiteral("segment_total_length"), QString::number(segmentTotalLength));
         return object;
     }
 
@@ -1284,6 +1365,9 @@ public:
     bool readMemory(
         const quint64 address,
         const quint64 length,
+        const QString& progressPath,
+        const quint64 progressBaseBytes,
+        const quint64 progressTotalBytes,
         QByteArray* const data,
         QString* const errorMessage)
     {
@@ -1304,23 +1388,58 @@ public:
         QByteArray output;
         output.reserve(static_cast<int>(length));
         quint64 offset = 0U;
+        quint64 nextProgressBytes = 1024U;
+        const quint64 totalProgressBytes = (progressTotalBytes == 0U) ? length : progressTotalBytes;
+        (void)writeProgressObject(progressPath, progressBaseBytes, totalProgressBytes, QStringLiteral("read_start"));
         while (offset < length) {
             const quint64 currentAddress = address + offset;
             const int directBytes = bestDirectAccessBytes(currentAddress, length - offset);
             if (directBytes > 0) {
-                quint64 value = 0U;
-                if (!systemBusReadValue(currentAddress, directBytes, &value, errorMessage)) {
+                if (!configureSystemBusAccess(directBytes, true, true, true, errorMessage)) {
                     return false;
                 }
-                appendLeValue(&output, value, directBytes);
-                offset += static_cast<quint64>(directBytes);
+                if (!writeSystemBusAddress(currentAddress, errorMessage)) {
+                    return false;
+                }
+                int readsSincePoll = 0;
+                while (offset < length) {
+                    const quint64 burstAddress = address + offset;
+                    if ((burstAddress % static_cast<quint64>(directBytes)) != 0U ||
+                        (length - offset) < static_cast<quint64>(directBytes)) {
+                        break;
+                    }
+
+                    quint64 value = 0U;
+                    ++readsSincePoll;
+                    const bool shouldPoll = readsSincePoll >= targetConfig_.sbaReadPollInterval;
+                    if (!readSystemBusDataValue(directBytes, shouldPoll, &value, errorMessage)) {
+                        return false;
+                    }
+                    if (shouldPoll) {
+                        readsSincePoll = 0;
+                    }
+                    appendLeValue(&output, value, directBytes);
+                    offset += static_cast<quint64>(directBytes);
+                    if (offset >= nextProgressBytes || offset == length) {
+                        (void)writeProgressObject(progressPath, progressBaseBytes + offset, totalProgressBytes, QStringLiteral("read_progress"));
+                        nextProgressBytes = offset + 1024U;
+                    }
+                }
+                if (readsSincePoll > 0 && !waitSystemBusReady(errorMessage)) {
+                    return false;
+                }
             } else if (!readOneByteByWiderAccess(currentAddress, &output, errorMessage)) {
                 return false;
             } else {
                 ++offset;
+                if (offset >= nextProgressBytes || offset == length) {
+                    (void)writeProgressObject(progressPath, progressBaseBytes + offset, totalProgressBytes, QStringLiteral("read_progress"));
+                    nextProgressBytes = offset + 1024U;
+                }
             }
         }
 
+        (void)writeProgressObject(progressPath, progressBaseBytes + length, totalProgressBytes, QStringLiteral("read_done"));
         *data = output;
         return true;
     }
@@ -1328,6 +1447,9 @@ public:
     bool writeMemory(
         const quint64 address,
         const QByteArray& data,
+        const QString& progressPath,
+        const quint64 progressBaseBytes,
+        const quint64 progressTotalBytes,
         QString* const errorMessage)
     {
         if (data.isEmpty()) {
@@ -1345,16 +1467,76 @@ public:
         }
 
         quint64 offset = 0U;
+        quint64 nextProgressBytes = 1024U;
+        const quint64 totalBytes = static_cast<quint64>(data.size());
+        const quint64 totalProgressBytes = (progressTotalBytes == 0U) ? totalBytes : progressTotalBytes;
+        (void)writeProgressObject(progressPath, progressBaseBytes, totalProgressBytes, QStringLiteral("write_start"));
         while (offset < static_cast<quint64>(data.size())) {
             const quint64 currentAddress = address + offset;
             const quint64 remaining = static_cast<quint64>(data.size()) - offset;
             const int directBytes = bestDirectAccessBytes(currentAddress, remaining);
             if (directBytes > 0) {
-                const quint64 value = leValueFromBytes(data, static_cast<int>(offset), directBytes);
-                if (!systemBusWriteValue(currentAddress, directBytes, value, errorMessage)) {
+                if (!configureSystemBusAccess(directBytes, false, false, true, errorMessage)) {
                     return false;
                 }
-                offset += static_cast<quint64>(directBytes);
+                if (!writeSystemBusAddress(currentAddress, errorMessage)) {
+                    return false;
+                }
+                int writesSincePoll = 0;
+                while (offset < static_cast<quint64>(data.size())) {
+                    const quint64 burstAddress = address + offset;
+                    const quint64 burstRemaining = static_cast<quint64>(data.size()) - offset;
+                    if ((burstAddress % static_cast<quint64>(directBytes)) != 0U ||
+                        burstRemaining < static_cast<quint64>(directBytes)) {
+                        break;
+                    }
+
+                    const bool canPipelinePair =
+                        (directBytes == 4) &&
+                        (targetConfig_.sbaWritePipelineWords >= 2) &&
+                        (burstRemaining >= 8U) &&
+                        ((writesSincePoll + 2) <= targetConfig_.sbaWritePollInterval);
+                    if (canPipelinePair) {
+                        const quint32 firstValue = static_cast<quint32>(
+                            leValueFromBytes(data, static_cast<int>(offset), directBytes) & 0xFFFFFFFFULL);
+                        const quint32 secondValue = static_cast<quint32>(
+                            leValueFromBytes(data, static_cast<int>(offset + 4U), directBytes) & 0xFFFFFFFFULL);
+                        if (!writeSystemBusDataPair32(firstValue, secondValue, errorMessage)) {
+                            return false;
+                        }
+                        writesSincePoll += 2;
+                        offset += 8U;
+                        if (writesSincePoll >= targetConfig_.sbaWritePollInterval) {
+                            if (!waitSystemBusReady(errorMessage)) {
+                                return false;
+                            }
+                            writesSincePoll = 0;
+                        }
+                        if (offset >= nextProgressBytes || offset == totalBytes) {
+                            (void)writeProgressObject(progressPath, progressBaseBytes + offset, totalProgressBytes, QStringLiteral("write_progress"));
+                            nextProgressBytes = offset + 1024U;
+                        }
+                        continue;
+                    }
+
+                    const quint64 value = leValueFromBytes(data, static_cast<int>(offset), directBytes);
+                    ++writesSincePoll;
+                    const bool shouldPoll = writesSincePoll >= targetConfig_.sbaWritePollInterval;
+                    if (!writeSystemBusDataValue(directBytes, value, shouldPoll, errorMessage)) {
+                        return false;
+                    }
+                    if (shouldPoll) {
+                        writesSincePoll = 0;
+                    }
+                    offset += static_cast<quint64>(directBytes);
+                    if (offset >= nextProgressBytes || offset == totalBytes) {
+                        (void)writeProgressObject(progressPath, progressBaseBytes + offset, totalProgressBytes, QStringLiteral("write_progress"));
+                        nextProgressBytes = offset + 1024U;
+                    }
+                }
+                if (writesSincePoll > 0 && !waitSystemBusReady(errorMessage)) {
+                    return false;
+                }
             } else if (!writeOneByteByWiderAccess(
                            currentAddress,
                            static_cast<unsigned char>(data.at(static_cast<int>(offset))),
@@ -1362,8 +1544,13 @@ public:
                 return false;
             } else {
                 ++offset;
+                if (offset >= nextProgressBytes || offset == totalBytes) {
+                    (void)writeProgressObject(progressPath, progressBaseBytes + offset, totalProgressBytes, QStringLiteral("write_progress"));
+                    nextProgressBytes = offset + 1024U;
+                }
             }
         }
+        (void)writeProgressObject(progressPath, progressBaseBytes + totalBytes, totalProgressBytes, QStringLiteral("write_done"));
         return true;
     }
 
@@ -1375,7 +1562,7 @@ public:
         if (!ensureHalted(errorMessage)) {
             return false;
         }
-        if (entryAddress != 0U && !writeDpc(entryAddress, errorMessage)) {
+        if (!writeDpc(entryAddress, errorMessage)) {
             return false;
         }
         return resumeHart(errorMessage);
@@ -1431,6 +1618,55 @@ private:
             spec.bitCount = bitCount;
             captures->push_back(spec);
         }
+    }
+
+    void appendJtagRunIdle(
+        QByteArray* const body,
+        std::vector<CaptureSpec>* const captures,
+        const int cycles) const
+    {
+        if (body == nullptr || captures == nullptr) {
+            return;
+        }
+
+        int remaining = cycles;
+        while (remaining > 0) {
+            const int chunk = qMin(remaining, 64);
+            appendJtagSequence(body, chunk, false, false, QByteArray((chunk + 7) / 8, '\0'), captures);
+            remaining -= chunk;
+        }
+    }
+
+    void appendDrScan(
+        QByteArray* const body,
+        std::vector<CaptureSpec>* const captures,
+        const QByteArray& tdiBits,
+        const int bitCount) const
+    {
+        if (body == nullptr || captures == nullptr || bitCount <= 0 || bitCount > 96) {
+            return;
+        }
+
+        appendJtagSequence(body, 1, true, false, QByteArray(1, '\0'), captures);
+        appendJtagSequence(body, 2, false, false, QByteArray(1, '\0'), captures);
+
+        int consumedBits = 0;
+        int leadingBits = bitCount - 1;
+        while (leadingBits > 0) {
+            const int chunkBits = qMin(leadingBits, 64);
+            appendJtagSequence(
+                body,
+                chunkBits,
+                false,
+                true,
+                packedBitRange(tdiBits, consumedBits, chunkBits),
+                captures);
+            consumedBits += chunkBits;
+            leadingBits -= chunkBits;
+        }
+        appendJtagSequence(body, 1, true, true, packedBitRange(tdiBits, consumedBits, 1), captures);
+        appendJtagSequence(body, 1, true, false, QByteArray(1, '\0'), captures);
+        appendJtagSequence(body, 1, false, false, QByteArray(1, '\0'), captures);
     }
 
     bool sendJtagSequences(
@@ -1497,18 +1733,13 @@ private:
 
     bool jtagRunIdle(const int cycles, QString* const errorMessage)
     {
-        int remaining = cycles;
-        while (remaining > 0) {
-            const int chunk = qMin(remaining, 64);
-            QByteArray body;
-            std::vector<CaptureSpec> captures;
-            appendJtagSequence(&body, chunk, false, false, QByteArray((chunk + 7) / 8, '\0'), &captures);
-            if (!sendJtagSequences(body, captures, nullptr, errorMessage)) {
-                return false;
-            }
-            remaining -= chunk;
+        QByteArray body;
+        std::vector<CaptureSpec> captures;
+        appendJtagRunIdle(&body, &captures, cycles);
+        if (captures.empty()) {
+            return true;
         }
-        return true;
+        return sendJtagSequences(body, captures, nullptr, errorMessage);
     }
 
     bool selectIr(const quint32 instruction, QString* const errorMessage)
@@ -1533,7 +1764,11 @@ private:
         appendJtagSequence(&body, 1, true, false, packedBitRange(irBits, scanBits - 1, 1), &captures);
         appendJtagSequence(&body, 1, true, false, QByteArray(1, '\0'), &captures);
         appendJtagSequence(&body, 1, false, false, QByteArray(1, '\0'), &captures);
-        return sendJtagSequences(body, captures, nullptr, errorMessage);
+        if (!sendJtagSequences(body, captures, nullptr, errorMessage)) {
+            return false;
+        }
+        currentIr_ = instruction;
+        return true;
     }
 
     bool scanDr(
@@ -1549,26 +1784,7 @@ private:
 
         QByteArray body;
         std::vector<CaptureSpec> captures;
-        appendJtagSequence(&body, 1, true, false, QByteArray(1, '\0'), &captures);
-        appendJtagSequence(&body, 2, false, false, QByteArray(1, '\0'), &captures);
-
-        int consumedBits = 0;
-        int leadingBits = bitCount - 1;
-        while (leadingBits > 0) {
-            const int chunkBits = qMin(leadingBits, 64);
-            appendJtagSequence(
-                &body,
-                chunkBits,
-                false,
-                true,
-                packedBitRange(tdiBits, consumedBits, chunkBits),
-                &captures);
-            consumedBits += chunkBits;
-            leadingBits -= chunkBits;
-        }
-        appendJtagSequence(&body, 1, true, true, packedBitRange(tdiBits, consumedBits, 1), &captures);
-        appendJtagSequence(&body, 1, true, false, QByteArray(1, '\0'), &captures);
-        appendJtagSequence(&body, 1, false, false, QByteArray(1, '\0'), &captures);
+        appendDrScan(&body, &captures, tdiBits, bitCount);
         return sendJtagSequences(body, captures, capturedBits, errorMessage);
     }
 
@@ -1695,7 +1911,7 @@ private:
             return false;
         }
 
-        if (!selectIr(targetConfig_.dmiIr, errorMessage)) {
+        if (currentIr_ != targetConfig_.dmiIr && !selectIr(targetConfig_.dmiIr, errorMessage)) {
             return false;
         }
 
@@ -1707,7 +1923,7 @@ private:
         return true;
     }
 
-    bool dmiExchange(
+    bool dmiExchangeWithSelectedIr(
         const quint32 address,
         const quint32 data,
         const quint32 op,
@@ -1720,22 +1936,24 @@ private:
         }
 
         for (int attempt = 0; attempt < targetConfig_.dmiRetryCount; ++attempt) {
-            DmiResponse ignored;
-            if (!dmiScan(address, data, op, &ignored, errorMessage)) {
+            QByteArray body;
+            std::vector<CaptureSpec> captures;
+            appendDrScan(&body, &captures, makeDmiBits(address, data, op), dmiScanBits_);
+            appendJtagRunIdle(&body, &captures, dmiIdleCycles_);
+            appendDrScan(&body, &captures, makeDmiBits(0U, 0U, kDmiOpNop), dmiScanBits_);
+            appendJtagRunIdle(&body, &captures, dmiIdleCycles_);
+
+            QByteArray captured;
+            if (!sendJtagSequences(body, captures, &captured, errorMessage)) {
                 return false;
             }
-            if (!jtagRunIdle(dmiIdleCycles_, errorMessage)) {
+            if ((captured.size() * 8) < (dmiScanBits_ * 2)) {
+                setError(errorMessage, QStringLiteral("DMI batch response is incomplete."));
                 return false;
             }
 
-            DmiResponse candidate;
-            if (!dmiScan(0U, 0U, kDmiOpNop, &candidate, errorMessage)) {
-                return false;
-            }
-            if (!jtagRunIdle(dmiIdleCycles_, errorMessage)) {
-                return false;
-            }
-
+            const DmiResponse candidate =
+                parseDmiBits(packedBitRange(captured, dmiScanBits_, dmiScanBits_));
             if (candidate.opStatus == kDmiStatusSuccess) {
                 *response = candidate;
                 lastDmiError_.clear();
@@ -1747,6 +1965,9 @@ private:
                 .arg(hexU32(address))
                 .arg(dmiStatusText(candidate.opStatus));
             if (!resetDmi(errorMessage)) {
+                return false;
+            }
+            if (!selectIr(targetConfig_.dmiIr, errorMessage)) {
                 return false;
             }
 
@@ -1762,6 +1983,24 @@ private:
                 .arg(hexU32(address))
                 .arg(targetConfig_.dmiRetryCount));
         return false;
+    }
+
+    bool dmiExchange(
+        const quint32 address,
+        const quint32 data,
+        const quint32 op,
+        DmiResponse* const response,
+        QString* const errorMessage)
+    {
+        if (response == nullptr) {
+            setError(errorMessage, QStringLiteral("DMI response object is null."));
+            return false;
+        }
+
+        if (currentIr_ != targetConfig_.dmiIr && !selectIr(targetConfig_.dmiIr, errorMessage)) {
+            return false;
+        }
+        return dmiExchangeWithSelectedIr(address, data, op, response, errorMessage);
     }
 
     bool dmiRead(
@@ -1789,6 +2028,54 @@ private:
     {
         DmiResponse response;
         return dmiExchange(address, data, kDmiOpWrite, &response, errorMessage);
+    }
+
+    bool dmiWritePair(
+        const quint32 address,
+        const quint32 firstData,
+        const quint32 secondData,
+        QString* const errorMessage)
+    {
+        if (dmiAddressBits_ <= 0 || dmiScanBits_ <= 0) {
+            setError(errorMessage, QStringLiteral("DMI scan width is not initialized."));
+            return false;
+        }
+        if (currentIr_ != targetConfig_.dmiIr && !selectIr(targetConfig_.dmiIr, errorMessage)) {
+            return false;
+        }
+
+        QByteArray body;
+        std::vector<CaptureSpec> captures;
+        appendDrScan(&body, &captures, makeDmiBits(address, firstData, kDmiOpWrite), dmiScanBits_);
+        appendJtagRunIdle(&body, &captures, dmiIdleCycles_);
+        appendDrScan(&body, &captures, makeDmiBits(address, secondData, kDmiOpWrite), dmiScanBits_);
+        appendJtagRunIdle(&body, &captures, dmiIdleCycles_);
+        appendDrScan(&body, &captures, makeDmiBits(0U, 0U, kDmiOpNop), dmiScanBits_);
+        appendJtagRunIdle(&body, &captures, dmiIdleCycles_);
+
+        QByteArray captured;
+        if (!sendJtagSequences(body, captures, &captured, errorMessage)) {
+            return false;
+        }
+        if ((captured.size() * 8) < (dmiScanBits_ * 3)) {
+            setError(errorMessage, QStringLiteral("DMI pipelined response is incomplete."));
+            return false;
+        }
+
+        const DmiResponse firstResponse =
+            parseDmiBits(packedBitRange(captured, dmiScanBits_, dmiScanBits_));
+        const DmiResponse secondResponse =
+            parseDmiBits(packedBitRange(captured, dmiScanBits_ * 2, dmiScanBits_));
+        if (firstResponse.opStatus == kDmiStatusSuccess && secondResponse.opStatus == kDmiStatusSuccess) {
+            lastDmiError_.clear();
+            return true;
+        }
+
+        lastDmiError_ = QStringLiteral("DMI pipelined write returned %1/%2")
+            .arg(dmiStatusText(firstResponse.opStatus), dmiStatusText(secondResponse.opStatus));
+        (void)resetDmi(errorMessage);
+        setError(errorMessage, lastDmiError_);
+        return false;
     }
 
     quint32 baseDmControl() const
@@ -2150,6 +2437,36 @@ private:
         return waitSystemBusReady(errorMessage);
     }
 
+    bool readSystemBusDataValue(
+        const int byteCount,
+        const bool waitAfterRead,
+        quint64* const value,
+        QString* const errorMessage)
+    {
+        if (value == nullptr) {
+            setError(errorMessage, QStringLiteral("SBA data read output is null."));
+            return false;
+        }
+
+        quint32 low = 0U;
+        if (!dmiRead(kDmSbData0, &low, errorMessage)) {
+            return false;
+        }
+        quint64 combined = low;
+        if (byteCount == 8) {
+            quint32 high = 0U;
+            if (!dmiRead(kDmSbData1, &high, errorMessage)) {
+                return false;
+            }
+            combined |= static_cast<quint64>(high) << 32U;
+        }
+        *value = combined & lowBitMask(byteCount * 8);
+        if (!waitAfterRead) {
+            return true;
+        }
+        return waitSystemBusReady(errorMessage);
+    }
+
     bool systemBusWriteValue(
         const quint64 address,
         const int byteCount,
@@ -2171,6 +2488,34 @@ private:
             return false;
         }
         return waitSystemBusReady(errorMessage);
+    }
+
+    bool writeSystemBusDataValue(
+        const int byteCount,
+        const quint64 value,
+        const bool waitAfterWrite,
+        QString* const errorMessage)
+    {
+        if (byteCount == 8) {
+            if (!dmiWrite(kDmSbData1, static_cast<quint32>((value >> 32U) & 0xFFFFFFFFULL), errorMessage)) {
+                return false;
+            }
+        }
+        if (!dmiWrite(kDmSbData0, static_cast<quint32>(value & 0xFFFFFFFFULL), errorMessage)) {
+            return false;
+        }
+        if (!waitAfterWrite) {
+            return true;
+        }
+        return waitSystemBusReady(errorMessage);
+    }
+
+    bool writeSystemBusDataPair32(
+        const quint32 firstValue,
+        const quint32 secondValue,
+        QString* const errorMessage)
+    {
+        return dmiWritePair(kDmSbData0, firstValue, secondValue, errorMessage);
     }
 
     bool readOneByteByWiderAccess(
@@ -2370,8 +2715,10 @@ private:
     bool hasIdCode_ = false;
     quint32 idCode_ = 0U;
     QString idcodeFailure_;
+    bool initialized_ = false;
     bool debugModuleReady_ = false;
     quint32 dtmcs_ = 0U;
+    quint32 currentIr_ = std::numeric_limits<quint32>::max();
     int dmiAddressBits_ = 0;
     int dmiScanBits_ = 0;
     int dmiIdleCycles_ = 1;
@@ -2432,9 +2779,30 @@ bool parseRequest(
     parsed.targetConfigPath = object.value(QStringLiteral("target_config_path")).toString().trimmed();
     parsed.adapterSpeedKhz = object.value(QStringLiteral("adapter_speed_khz")).toInt(0);
     parsed.dataPath = object.value(QStringLiteral("data_path")).toString().trimmed();
+    parsed.progressPath = object.value(QStringLiteral("progress_path")).toString().trimmed();
     parsed.strategy = object.value(QStringLiteral("strategy")).toString().trimmed();
+    const QJsonArray segments = object.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segmentValue : segments) {
+        const QJsonObject segmentObject = segmentValue.toObject();
+        MemorySegmentRequest segment;
+        if (!parseJsonU64(segmentObject.value(QStringLiteral("address")), &segment.address) ||
+            !parseJsonU64(segmentObject.value(QStringLiteral("length")), &segment.length) ||
+            segment.length == 0U) {
+            setError(errorCode, QStringLiteral("INVALID_SEGMENT"));
+            setError(errorMessage, QStringLiteral("Segment request requires valid address and length."));
+            return false;
+        }
+        segment.dataPath = segmentObject.value(QStringLiteral("data_path")).toString().trimmed();
+        if (parsed.operation == DebugOperation::Write && segment.dataPath.isEmpty()) {
+            setError(errorCode, QStringLiteral("INVALID_SEGMENT_DATA"));
+            setError(errorMessage, QStringLiteral("Write segment request requires data_path."));
+            return false;
+        }
+        parsed.segments.append(segment);
+    }
 
-    if (parsed.operation == DebugOperation::Read || parsed.operation == DebugOperation::Write) {
+    if ((parsed.operation == DebugOperation::Read || parsed.operation == DebugOperation::Write) &&
+        parsed.segments.isEmpty()) {
         if (!parseJsonU64(object.value(QStringLiteral("address")), &parsed.address)) {
             setError(errorCode, QStringLiteral("INVALID_ADDRESS"));
             setError(errorMessage, QStringLiteral("Read/write request requires a valid address."));
@@ -2452,7 +2820,7 @@ bool parseRequest(
         }
     }
 
-    if (parsed.operation == DebugOperation::Write) {
+    if (parsed.operation == DebugOperation::Write && parsed.segments.isEmpty()) {
         const QFileInfo dataFile(parsed.dataPath);
         if (parsed.dataPath.isEmpty() || !dataFile.exists() || !dataFile.isFile()) {
             setError(errorCode, QStringLiteral("INVALID_DATA_PATH"));
@@ -2463,6 +2831,21 @@ bool parseRequest(
             setError(errorCode, QStringLiteral("DATA_LENGTH_MISMATCH"));
             setError(errorMessage, QStringLiteral("Write data length does not match request length."));
             return false;
+        }
+    }
+    if (parsed.operation == DebugOperation::Write && !parsed.segments.isEmpty()) {
+        for (const MemorySegmentRequest& segment : parsed.segments) {
+            const QFileInfo dataFile(segment.dataPath);
+            if (segment.dataPath.isEmpty() || !dataFile.exists() || !dataFile.isFile()) {
+                setError(errorCode, QStringLiteral("INVALID_SEGMENT_DATA_PATH"));
+                setError(errorMessage, QStringLiteral("Write segment request requires a valid data_path."));
+                return false;
+            }
+            if (static_cast<quint64>(dataFile.size()) != segment.length) {
+                setError(errorCode, QStringLiteral("SEGMENT_DATA_LENGTH_MISMATCH"));
+                setError(errorMessage, QStringLiteral("Write segment data length does not match request length."));
+                return false;
+            }
         }
     }
 
@@ -2503,28 +2886,44 @@ class SelfDevelopedBoardTransport final : public BoardDebugTransport {
 public:
     TransportResult connectTarget(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
-        QString error;
-        if (!session.initialize(request, &error)) {
-            TransportResult result = hardwareFailure(QStringLiteral("CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+        if (session_ != nullptr) {
+            QString error;
+            if (!session_->initialize(request, &error)) {
+                TransportResult result = hardwareFailure(QStringLiteral("CONNECT_FAILED"), error, request);
+                result.snapshot = session_->snapshot(request, QStringLiteral("unknown"));
+                session_.reset();
+                return result;
+            }
+
+            TransportResult result;
+            result.success = true;
+            result.errorCode = QStringLiteral("OK");
+            result.snapshot = session_->snapshot(request, QStringLiteral("connected"));
             return result;
         }
+
+        auto nextSession = std::make_unique<CmsisDapJtagSession>();
+        QString error;
+        if (!nextSession->initialize(request, &error)) {
+            TransportResult result = hardwareFailure(QStringLiteral("CONNECT_FAILED"), error, request);
+            result.snapshot = nextSession->snapshot(request, QStringLiteral("unknown"));
+            return result;
+        }
+        session_ = std::move(nextSession);
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+        result.snapshot = session_->snapshot(request, QStringLiteral("connected"));
         return result;
     }
 
     TransportResult disconnectTarget(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
-        QString error;
-        if (session.initialize(request, &error)) {
+        if (session_ != nullptr) {
             QString disconnectError;
-            (void)session.disconnect(&disconnectError);
+            (void)session_->disconnect(&disconnectError);
+            session_.reset();
         }
 
         TransportResult result;
@@ -2539,35 +2938,62 @@ public:
 
     TransportResult status(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
         QString error;
-        if (!session.initialize(request, &error)) {
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
             TransportResult result = hardwareFailure(QStringLiteral("STATUS_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
             return result;
         }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+        result.snapshot = session->snapshot(request, QStringLiteral("connected"));
         return result;
     }
 
     TransportResult readMemory(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
         QString error;
-        if (!session.initialize(request, &error)) {
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
             TransportResult result = hardwareFailure(QStringLiteral("MEMORY_READ_CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
             return result;
         }
 
         QByteArray data;
-        if (!session.readMemory(request.address, request.length, &data, &error)) {
+        if (!request.segments.isEmpty()) {
+            quint64 progressBase = 0U;
+            quint64 progressTotal = 0U;
+            for (const MemorySegmentRequest& segment : request.segments) {
+                progressTotal += segment.length;
+            }
+            for (const MemorySegmentRequest& segment : request.segments) {
+                QByteArray segmentData;
+                if (!session->readMemory(
+                        segment.address,
+                        segment.length,
+                        request.progressPath,
+                        progressBase,
+                        progressTotal,
+                        &segmentData,
+                        &error)) {
+                    TransportResult result = hardwareFailure(QStringLiteral("MEMORY_READ_FAILED"), error, request);
+                    result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                    session_.reset();
+                    return result;
+                }
+                data.append(segmentData);
+                progressBase += segment.length;
+            }
+        } else if (!session->readMemory(request.address, request.length, request.progressPath, 0U, request.length, &data, &error)) {
             TransportResult result = hardwareFailure(QStringLiteral("MEMORY_READ_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+            result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+            session_.reset();
             return result;
         }
 
@@ -2575,104 +3001,167 @@ public:
         result.success = true;
         result.errorCode = QStringLiteral("OK");
         result.data = data;
-        result.snapshot = session.snapshot(request, QStringLiteral("halted"));
+        result.snapshot = session->snapshot(request, QStringLiteral("halted"));
         return result;
     }
 
     TransportResult writeMemory(const DebugServiceRequest& request) override
     {
-        QByteArray payload;
         QString error;
-        if (!readBinaryFile(request.dataPath, &payload, &error)) {
-            return hardwareFailure(QStringLiteral("MEMORY_WRITE_DATA_READ_FAILED"), error, request);
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
+            TransportResult result = hardwareFailure(QStringLiteral("MEMORY_WRITE_CONNECT_FAILED"), error, request);
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
+            return result;
         }
 
-        CmsisDapJtagSession session;
-        if (!session.initialize(request, &error)) {
-            TransportResult result = hardwareFailure(QStringLiteral("MEMORY_WRITE_CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
-            return result;
-        }
-        if (!session.writeMemory(request.address, payload, &error)) {
-            TransportResult result = hardwareFailure(QStringLiteral("MEMORY_WRITE_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("connected"));
-            return result;
+        if (!request.segments.isEmpty()) {
+            quint64 progressBase = 0U;
+            quint64 progressTotal = 0U;
+            for (const MemorySegmentRequest& segment : request.segments) {
+                progressTotal += segment.length;
+            }
+            for (const MemorySegmentRequest& segment : request.segments) {
+                QByteArray payload;
+                if (!readBinaryFile(segment.dataPath, &payload, &error)) {
+                    return hardwareFailure(QStringLiteral("MEMORY_WRITE_DATA_READ_FAILED"), error, request);
+                }
+                if (!session->writeMemory(
+                        segment.address,
+                        payload,
+                        request.progressPath,
+                        progressBase,
+                        progressTotal,
+                        &error)) {
+                    TransportResult result = hardwareFailure(QStringLiteral("MEMORY_WRITE_FAILED"), error, request);
+                    result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                    session_.reset();
+                    return result;
+                }
+                progressBase += static_cast<quint64>(payload.size());
+            }
+        } else {
+            QByteArray payload;
+            if (!readBinaryFile(request.dataPath, &payload, &error)) {
+                return hardwareFailure(QStringLiteral("MEMORY_WRITE_DATA_READ_FAILED"), error, request);
+            }
+            if (!session->writeMemory(request.address, payload, request.progressPath, 0U, static_cast<quint64>(payload.size()), &error)) {
+                TransportResult result = hardwareFailure(QStringLiteral("MEMORY_WRITE_FAILED"), error, request);
+                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                session_.reset();
+                return result;
+            }
         }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("halted"));
+        result.snapshot = session->snapshot(request, QStringLiteral("halted"));
         return result;
     }
 
     TransportResult resetTarget(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
         QString error;
-        if (!session.initialize(request, &error)) {
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
             TransportResult result = hardwareFailure(QStringLiteral("RESET_CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
             return result;
         }
-        if (!session.resetTarget(&error)) {
+        if (!session->resetTarget(&error)) {
             TransportResult result = hardwareFailure(QStringLiteral("RESET_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+            result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+            session_.reset();
             return result;
         }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("reset"));
+        result.snapshot = session->snapshot(request, QStringLiteral("reset"));
         return result;
     }
 
     TransportResult runTarget(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
         QString error;
-        if (!session.initialize(request, &error)) {
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
             TransportResult result = hardwareFailure(QStringLiteral("RUN_CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
             return result;
         }
-        if (!session.runTarget(request.entryAddress, &error)) {
+        if (!session->runTarget(request.entryAddress, &error)) {
             TransportResult result = hardwareFailure(QStringLiteral("RUN_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+            result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+            session_.reset();
             return result;
         }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("running"));
+        result.snapshot = session->snapshot(request, QStringLiteral("running"));
         return result;
     }
 
     TransportResult haltTarget(const DebugServiceRequest& request) override
     {
-        CmsisDapJtagSession session;
         QString error;
-        if (!session.initialize(request, &error)) {
+        CmsisDapJtagSession* const session = ensureSession(request, &error);
+        if (session == nullptr) {
             TransportResult result = hardwareFailure(QStringLiteral("HALT_CONNECT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("unknown"));
+            result.snapshot = snapshotForFailure(request);
+            session_.reset();
             return result;
         }
-        if (!session.haltTarget(&error)) {
+        if (!session->haltTarget(&error)) {
             TransportResult result = hardwareFailure(QStringLiteral("HALT_FAILED"), error, request);
-            result.snapshot = session.snapshot(request, QStringLiteral("connected"));
+            result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+            session_.reset();
             return result;
         }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
-        result.snapshot = session.snapshot(request, QStringLiteral("halted"));
+        result.snapshot = session->snapshot(request, QStringLiteral("halted"));
         return result;
     }
 
 private:
+    CmsisDapJtagSession* ensureSession(
+        const DebugServiceRequest& request,
+        QString* const errorMessage)
+    {
+        if (session_ == nullptr) {
+            auto nextSession = std::make_unique<CmsisDapJtagSession>();
+            if (!nextSession->initialize(request, errorMessage)) {
+                return nullptr;
+            }
+            session_ = std::move(nextSession);
+        } else if (!session_->initialize(request, errorMessage)) {
+            return nullptr;
+        }
+        return session_.get();
+    }
+
+    QJsonObject snapshotForFailure(const DebugServiceRequest& request) const
+    {
+        if (session_ != nullptr) {
+            return session_->snapshot(request, QStringLiteral("unknown"));
+        }
+        QJsonObject object;
+        object.insert(QStringLiteral("target_state"), QStringLiteral("unknown"));
+        object.insert(QStringLiteral("operation"), operationToText(request.operation));
+        object.insert(QStringLiteral("transport"), QStringLiteral("cmsis_dap_hid_jtag"));
+        return object;
+    }
+
     TransportResult hardwareFailure(
         const QString& code,
         const QString& message,
@@ -2691,6 +3180,7 @@ private:
         return result;
     }
 
+    std::unique_ptr<CmsisDapJtagSession> session_;
 };
 
 TransportResult dispatchRequest(
@@ -2745,6 +3235,130 @@ QJsonObject makeParseFailureResponse(
     return makeResponse(request, result);
 }
 
+bool processRequestFile(
+    const QString& requestPath,
+    BoardDebugTransport* const transport,
+    QString* const requestId,
+    QString* const errorMessage)
+{
+    QJsonObject rawRequest;
+    QString error;
+    if (!readJsonObject(requestPath, &rawRequest, &error)) {
+        setError(errorMessage, error);
+        return false;
+    }
+
+    DebugServiceRequest request;
+    QString errorCode;
+    QString parseError;
+    QJsonObject response;
+    if (!parseRequest(rawRequest, &request, &errorCode, &parseError)) {
+        response = makeParseFailureResponse(rawRequest, errorCode, parseError);
+        request.responsePath = rawRequest.value(QStringLiteral("response_path")).toString().trimmed();
+    } else {
+        response = makeResponse(request, dispatchRequest(transport, request));
+    }
+
+    if (requestId != nullptr) {
+        *requestId = request.requestId;
+    }
+
+    const QString responsePath = request.responsePath.trimmed();
+    if (responsePath.isEmpty()) {
+        setError(errorMessage, QStringLiteral("请求缺少 response_path"));
+        return false;
+    }
+
+    if (!writeJsonObject(responsePath, response, &error)) {
+        setError(errorMessage, error);
+        return false;
+    }
+    return true;
+}
+
+int runServerLoop(BoardDebugTransport* const transport)
+{
+    QTextStream input(stdin);
+    QTextStream output(stdout);
+    output << QStringLiteral("READY") << Qt::endl;
+
+    while (true) {
+        const QString line = input.readLine().trimmed();
+        if (line.isNull()) {
+            break;
+        }
+        if (line == QStringLiteral("__quit__")) {
+            output << QStringLiteral("BYE") << Qt::endl;
+            break;
+        }
+        if (line.isEmpty()) {
+            continue;
+        }
+
+        QString requestId;
+        QString error;
+        if (processRequestFile(line, transport, &requestId, &error)) {
+            output << QStringLiteral("DONE ") << requestId << Qt::endl;
+        } else {
+            output << QStringLiteral("ERROR ") << error << Qt::endl;
+        }
+    }
+    return 0;
+}
+
+int runLocalServerLoop(BoardDebugTransport* const transport)
+{
+    QLocalServer server;
+    const QString serverName = QString::fromLatin1(kLocalServerName);
+    if (!server.listen(serverName)) {
+        QLocalServer::removeServer(serverName);
+        if (!server.listen(serverName)) {
+            QTextStream(stderr) << QStringLiteral("local server listen failed: ")
+                                << server.errorString() << Qt::endl;
+            return 2;
+        }
+    }
+
+    while (server.waitForNewConnection(-1)) {
+        std::unique_ptr<QLocalSocket> socket(server.nextPendingConnection());
+        if (socket == nullptr) {
+            continue;
+        }
+        if (!socket->waitForReadyRead(30000)) {
+            socket->write("ERROR request timeout\n");
+            socket->waitForBytesWritten(1000);
+            continue;
+        }
+
+        const QString line = QString::fromUtf8(socket->readLine()).trimmed();
+        if (line == QStringLiteral("__ping__")) {
+            socket->write("PONG\n");
+            socket->waitForBytesWritten(1000);
+            continue;
+        }
+        if (line == QStringLiteral("__quit__")) {
+            socket->write("BYE\n");
+            socket->waitForBytesWritten(1000);
+            break;
+        }
+        if (line.isEmpty()) {
+            socket->write("ERROR empty request\n");
+            socket->waitForBytesWritten(1000);
+            continue;
+        }
+
+        QString requestId;
+        QString error;
+        if (processRequestFile(line, transport, &requestId, &error)) {
+            socket->write(QStringLiteral("DONE %1\n").arg(requestId).toUtf8());
+        } else {
+            socket->write(QStringLiteral("ERROR %1\n").arg(error).toUtf8());
+        }
+        socket->waitForBytesWritten(1000);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[])
@@ -2762,40 +3376,33 @@ int main(int argc, char* argv[])
         QStringLiteral("request"),
         QStringLiteral("调试服务请求 JSON 路径"),
         QStringLiteral("path"));
+    const QCommandLineOption serverOption(
+        QStringLiteral("server"),
+        QStringLiteral("以常驻服务模式运行"));
+    const QCommandLineOption localServerOption(
+        QStringLiteral("local-server"),
+        QStringLiteral("以本机常驻服务模式运行"));
     parser.addOption(requestOption);
+    parser.addOption(serverOption);
+    parser.addOption(localServerOption);
     parser.process(app);
+
+    std::unique_ptr<BoardDebugTransport> transport = std::make_unique<SelfDevelopedBoardTransport>();
+    if (parser.isSet(localServerOption)) {
+        return runLocalServerLoop(transport.get());
+    }
+    if (parser.isSet(serverOption)) {
+        return runServerLoop(transport.get());
+    }
 
     if (!parser.isSet(requestOption)) {
         QTextStream(stderr) << QStringLiteral("必须提供 --request") << Qt::endl;
         return 2;
     }
 
-    QJsonObject rawRequest;
     QString error;
-    if (!readJsonObject(parser.value(requestOption), &rawRequest, &error)) {
-        QTextStream(stderr) << error << Qt::endl;
-        return 2;
-    }
-
-    DebugServiceRequest request;
-    QString errorCode;
-    QString errorMessage;
-    QJsonObject response;
-    if (!parseRequest(rawRequest, &request, &errorCode, &errorMessage)) {
-        response = makeParseFailureResponse(rawRequest, errorCode, errorMessage);
-        request.responsePath = rawRequest.value(QStringLiteral("response_path")).toString().trimmed();
-    } else {
-        std::unique_ptr<BoardDebugTransport> transport = std::make_unique<SelfDevelopedBoardTransport>();
-        response = makeResponse(request, dispatchRequest(transport.get(), request));
-    }
-
-    const QString responsePath = request.responsePath.trimmed();
-    if (responsePath.isEmpty()) {
-        QTextStream(stderr) << QStringLiteral("请求缺少 response_path") << Qt::endl;
-        return 2;
-    }
-
-    if (!writeJsonObject(responsePath, response, &error)) {
+    QString requestId;
+    if (!processRequestFile(parser.value(requestOption), transport.get(), &requestId, &error)) {
         QTextStream(stderr) << error << Qt::endl;
         return 2;
     }

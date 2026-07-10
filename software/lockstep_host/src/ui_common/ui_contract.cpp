@@ -63,7 +63,7 @@ QString toDisplayText(const UiAction action)
         text = QStringLiteral("程序运行");
         break;
     case UiAction::StopProgram:
-        text = QStringLiteral("程序中止");
+        text = QStringLiteral("程序终止");
         break;
     case UiAction::ShowVerifySummary:
         text = QStringLiteral("回读校验摘要");
@@ -110,6 +110,15 @@ QString toDisplayText(const UiAction action)
     case UiAction::GenerateReport:
         text = QStringLiteral("生成报告");
         break;
+    case UiAction::SendSerialData:
+        text = QStringLiteral("发送串口数据");
+        break;
+    case UiAction::SaveSamplingConfig:
+        text = QStringLiteral("保存采样配置");
+        break;
+    case UiAction::SendSamplingConfig:
+        text = QStringLiteral("下发采样配置");
+        break;
     default:
         text = QStringLiteral("未知动作");
         break;
@@ -123,7 +132,7 @@ UiWorkbenchState makeDefaultWorkbenchState(const UiMode mode)
     UiWorkbenchState state;
     state.topStatus = makeDefaultGlobalStatus(mode);
     state.logText = QStringLiteral("[INFO] UI 预览窗口已启动\n[INFO] 当前为纯 UI 占位，按钮只发出动作请求");
-    state.serialText = QStringLiteral("[SERIAL] 串口监控占位：当前未接入真实串口");
+    state.serialText.clear();
     return state;
 }
 

@@ -32,8 +32,10 @@
 
 class QDialog;
 class QGroupBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
+class QComboBox;
 class QWidget;
 
 namespace lockstep::ui {
@@ -81,6 +83,7 @@ public:
     void setWorkflowStatusText(const QString& text);
     void setRamSummary(const QString& text, int writeProgressPercent, int readbackProgressPercent);
     void setRunSummary(const QString& text, int runProgressPercent, int stopProgressPercent);
+    void setActionButtonText(UiAction action, const QString& text);
     void setWaveformTraceView(
         const QString& statusText,
         const QString& pathText,
@@ -103,6 +106,19 @@ public:
         const QString& ramBaseAddress,
         const QString& resetStrategy,
         const QString& statusText);
+    void setConnectionDiagnostics(
+        const QString& serviceState,
+        const QString& targetState,
+        const QString& precheckState,
+        const QString& jtagIdcode,
+        const QString& debugModule,
+        const QString& sbaState,
+        const QString& errorText,
+        const QString& rawText);
+    void setSerialPorts(const QStringList& displayNames, const QStringList& portNames, const QString& statusText);
+    void setSerialStatus(const QString& statusText, bool opened);
+    [[nodiscard]] QString selectedSerialPortName() const;
+    [[nodiscard]] int selectedSerialBaudRate() const;
 
 signals:
     void actionRequested(lockstep::ui::UiActionRequest request);
@@ -125,9 +141,7 @@ private:
     QWidget* createConnectionPage();
     QWidget* createModePage();
     QWidget* createRamProgramPage();
-    QWidget* createProgramRunPage();
-    QWidget* createProgramOperationPage(const QString& title, NavigationPage page, bool includeRunControls);
-    QWidget* createRunImagePanel();
+    QWidget* createSamplingConfigPage();
     QWidget* createEmptyPage(const QString& title);
     QWidget* createWaveformPage();
     QWidget* createProtocolPage();
@@ -136,7 +150,6 @@ private:
     QWidget* createLogPanel();
     QWidget* createSerialConfigPanel();
     QWidget* createSerialMonitorPanel();
-    QWidget* createImagePanel(NavigationPage page);
     QWidget* createControlPanel();
     QWidget* createTodoCard(const QString& title, const QString& body, QWidget* parent);
     QWidget* createMetricCard(const QString& title, const QString& value, const QString& detail, QWidget* parent);
@@ -148,6 +161,7 @@ private:
     void setActivePage(const QString& pageId);
     void emitAction(UiAction action, NavigationPage page, const QString& objectName);
     void setActionButtonsEnabled(UiAction action, bool enabled);
+    void setProgramSummaryPage(bool runSummary);
     void applyWaveformTraceToDisplay(QWidget* widget) const;
     void appendFormattedLog(QPlainTextEdit* view, LogLevel level, const QString& source, const QString& message);
     QString currentLogText() const;
@@ -163,7 +177,9 @@ private:
     QPlainTextEdit* logEdit_;
     QPlainTextEdit* serialOutputEdit_;
     QDialog* detachedLogDialog_;
+    QTabWidget* detachedLogTabs_;
     QPlainTextEdit* detachedLogEdit_;
+    QPlainTextEdit* detachedSerialOutputEdit_;
     QWidget* waveformDisplayWidget_;
     QDialog* detachedWaveformDialog_;
     QWidget* detachedWaveformDisplayWidget_;

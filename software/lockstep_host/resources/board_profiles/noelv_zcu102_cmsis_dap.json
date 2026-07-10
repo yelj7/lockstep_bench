@@ -3,7 +3,7 @@
   "gdbPort": 3333,
   "host": "127.0.0.1",
   "interfaceConfigPath": "debug_adapters/self_debug_service/interface_cmsis_dap.json",
-  "jtagKhz": 14,
+  "jtagKhz": 1000,
   "profileName": "NOEL-V ZCU102 CMSIS-DAP RISC-V JTAG Working",
   "ramBaseAddress": "0x0",
   "resetStrategy": "reset halt",

@@ -23,6 +23,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 namespace lockstep::target_control {
 
 enum class ConnectionState : unsigned char {
@@ -187,6 +189,8 @@ struct ProgramGate final {
     QString reason;
 };
 
+using OperationProgressCallback = std::function<void(quint64 completedBytes, quint64 totalBytes, const QString& message)>;
+
 struct DebugServiceConfig final {
     QString debugServicePath;
     QString interfaceConfigPath;
@@ -240,12 +244,19 @@ private:
 class DebugServiceAccess final : public DebugAccess {
 public:
     explicit DebugServiceAccess(const DebugServiceConfig& config);
+    ~DebugServiceAccess() override;
+
+    void setProgressCallback(const OperationProgressCallback& callback);
+    void assumeConnected(const DebugProfile& profile);
+    void assumeDisconnected();
 
     DebugResult connectTarget(const DebugProfile& profile) override;
     DebugResult disconnectTarget() override;
     DebugResult status() override;
     DebugResult read(quint64 address, quint64 length) override;
     DebugResult write(quint64 address, const QByteArray& data) override;
+    DebugResult readSegments(const QList<ImageSegment>& segments);
+    DebugResult writeSegments(const QList<ImageSegment>& segments);
     DebugResult reset(const QString& strategy) override;
     DebugResult run(quint64 entryAddress) override;
     DebugResult halt() override;
@@ -254,11 +265,13 @@ private:
     DebugResult runDebugService(
         const QString& idPrefix,
         const QJsonObject& request,
-        bool requireConnection) const;
+        bool requireConnection);
     QString makeTemporaryPath(const QString& prefix, const QString& suffix) const;
+    bool ensurePersistentService(QString* errorMessage);
 
     DebugServiceConfig config_;
     DebugProfile profile_;
+    OperationProgressCallback progressCallback_;
     bool connected_ = false;
 };
 
@@ -275,11 +288,13 @@ public:
     WriteRecord programTarget(
         DebugAccess& access,
         const QString& taskId,
-        const ProgramImageInfo& image) const;
+        const ProgramImageInfo& image,
+        const OperationProgressCallback& progressCallback = OperationProgressCallback()) const;
     ReadbackVerifyRecord verifyReadback(
         DebugAccess& access,
         const QString& taskId,
-        const ProgramImageInfo& image) const;
+        const ProgramImageInfo& image,
+        const OperationProgressCallback& progressCallback = OperationProgressCallback()) const;
     RunControlRecord runTarget(
         DebugAccess& access,
         const QString& taskId,

@@ -14,6 +14,7 @@ add_library(lockstep_target_control STATIC
 target_link_libraries(lockstep_target_control
     PUBLIC
         Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Network
 )
 
 target_compile_features(lockstep_target_control PUBLIC cxx_std_17)

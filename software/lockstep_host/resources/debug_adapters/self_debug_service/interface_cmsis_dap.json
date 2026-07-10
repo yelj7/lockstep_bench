@@ -3,7 +3,7 @@
   "interface_id": "cmsis_dap",
   "display_name": "CMSIS-DAP interface",
   "transport": "jtag",
-  "adapter_speed_khz": 14,
+  "adapter_speed_khz": 1000,
   "usb": {
     "vendor_id": "0x0D28",
     "product_id": "0x0204"

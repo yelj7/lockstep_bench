@@ -18,10 +18,10 @@
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
-#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -44,6 +44,7 @@
 #include <QSplitter>
 #include <QStyle>
 #include <QStyleOptionComboBox>
+#include <QTabBar>
 #include <QTextCursor>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -59,15 +60,35 @@ namespace {
 constexpr int kMinimumWidth = 1280;
 constexpr int kMinimumHeight = 720;
 constexpr int kSidebarWidth = 224;
-constexpr int kDiagnosticsMinHeight = 112;
-constexpr int kDiagnosticsMaxHeight = 150;
+constexpr int kDiagnosticsMinHeight = 140;
+constexpr int kDiagnosticsMaxHeight = 188;
 constexpr int kDetachedLogWidth = 900;
 constexpr int kDetachedLogHeight = 420;
-constexpr int kProgramPageLeftInitialWidth = 420;
-constexpr int kProgramPageRightInitialWidth = 560;
+constexpr int kProgramPageLeftInitialWidth = 450;
+constexpr int kProgramPageRightInitialWidth = 540;
+constexpr int kProgramActionButtonHeight = 34;
 constexpr int kTaskIdRole = Qt::UserRole + 1;
 constexpr int kTaskDescriptionRole = Qt::UserRole + 2;
 constexpr int kTaskBasicInfoRole = Qt::UserRole + 3;
+constexpr int kSamplingSampleCount = 4096;
+constexpr int kSamplingPretrigger = 2047;
+constexpr int kSamplingPosttrigger = 2049;
+constexpr int kSamplingTriggerCount = 1;
+constexpr int kSamplingPostAfterTrigger = 2048;
+constexpr int kSamplingSampleWordBits = 512;
+constexpr int kSamplingMismatchBits = 5;
+
+const QStringList& samplingMismatchDescriptions()
+{
+    static const QStringList descriptions = {
+        QStringLiteral("计数器输出不匹配"),
+        QStringLiteral("trace 输出不匹配"),
+        QStringLiteral("debug 输出不匹配"),
+        QStringLiteral("irq 输出不匹配"),
+        QStringLiteral("AHB master 输出不匹配")
+    };
+    return descriptions;
+}
 
 class WorkbenchComboBox final : public QComboBox {
 public:
@@ -1117,7 +1138,7 @@ QString pageIdForPage(const NavigationPage page)
         pageId = QStringLiteral("sampling_config");
         break;
     case NavigationPage::ProgramRun:
-        pageId = QStringLiteral("program_run");
+        pageId = QStringLiteral("ram_program");
         break;
     case NavigationPage::Waveform:
         pageId = QStringLiteral("waveform");
@@ -1149,7 +1170,9 @@ MainWindowShell::MainWindowShell(QWidget* const parent)
       logEdit_(nullptr),
       serialOutputEdit_(nullptr),
       detachedLogDialog_(nullptr),
+      detachedLogTabs_(nullptr),
       detachedLogEdit_(nullptr),
+      detachedSerialOutputEdit_(nullptr),
       waveformDisplayWidget_(nullptr),
       detachedWaveformDialog_(nullptr),
       detachedWaveformDisplayWidget_(nullptr),
@@ -1211,6 +1234,9 @@ void MainWindowShell::setSerialPlaceholderText(const QString& text)
     if (serialOutputEdit_ != nullptr) {
         serialOutputEdit_->setPlainText(text);
     }
+    if (detachedSerialOutputEdit_ != nullptr) {
+        detachedSerialOutputEdit_->setPlainText(text);
+    }
 }
 
 QString MainWindowShell::programImagePath() const
@@ -1228,17 +1254,6 @@ void MainWindowShell::setProgramImagePath(const QString& path)
     const QList<QLineEdit*> edits = findChildren<QLineEdit*>(QStringLiteral("program_image_path_edit"));
     for (QLineEdit* const edit : edits) {
         edit->setText(path);
-    }
-    const QList<QLineEdit*> runPathEdits =
-        findChildren<QLineEdit*>(QStringLiteral("program_run_image_path_edit"));
-    for (QLineEdit* const edit : runPathEdits) {
-        edit->setText(path);
-    }
-    const QString fileName = QFileInfo(path).fileName();
-    const QList<QLineEdit*> runNameEdits =
-        findChildren<QLineEdit*>(QStringLiteral("program_run_image_name_edit"));
-    for (QLineEdit* const edit : runNameEdits) {
-        edit->setText(fileName);
     }
 }
 
@@ -1375,6 +1390,8 @@ void MainWindowShell::setRamSummary(
     const int writeProgressPercent,
     const int readbackProgressPercent)
 {
+    setProgramSummaryPage(false);
+
     const QList<QProgressBar*> writeProgressBars =
         findChildren<QProgressBar*>(QStringLiteral("program_write_progress_bar"));
     const QList<QProgressBar*> readbackProgressBars =
@@ -1409,6 +1426,33 @@ void MainWindowShell::setRunSummary(
     }
     for (QPlainTextEdit* const summary : summaries) {
         summary->setPlainText(text);
+    }
+}
+
+void MainWindowShell::setProgramSummaryPage(const bool runSummary)
+{
+    QStackedWidget* const stack = findChild<QStackedWidget*>(QStringLiteral("program_summary_stack"));
+    if (stack != nullptr) {
+        stack->setCurrentIndex(runSummary ? 1 : 0);
+    }
+
+    QPushButton* const ramButton = findChild<QPushButton*>(QStringLiteral("program_summary_ram_button"));
+    if (ramButton != nullptr) {
+        ramButton->setChecked(!runSummary);
+    }
+    QPushButton* const runButton = findChild<QPushButton*>(QStringLiteral("program_summary_run_button"));
+    if (runButton != nullptr) {
+        runButton->setChecked(runSummary);
+    }
+}
+
+void MainWindowShell::setActionButtonText(const UiAction action, const QString& text)
+{
+    const QList<QPushButton*> buttons = findChildren<QPushButton*>();
+    for (QPushButton* const button : buttons) {
+        if (button != nullptr && button->property("uiAction").toInt() == static_cast<int>(action)) {
+            button->setText(text);
+        }
     }
 }
 
@@ -1524,6 +1568,115 @@ void MainWindowShell::setConnectionProfileDetails(
     setWorkflowStatusText(statusText);
 }
 
+void MainWindowShell::setConnectionDiagnostics(
+    const QString& serviceState,
+    const QString& targetState,
+    const QString& precheckState,
+    const QString& jtagIdcode,
+    const QString& debugModule,
+    const QString& sbaState,
+    const QString& errorText,
+    const QString& rawText)
+{
+    const QList<QPair<QString, QString>> labels = {
+        {QStringLiteral("debug_service_state_label"), serviceState},
+        {QStringLiteral("target_connection_state_label"), targetState},
+        {QStringLiteral("precheck_state_label"), precheckState},
+        {QStringLiteral("jtag_idcode_label"), jtagIdcode},
+        {QStringLiteral("debug_module_label"), debugModule},
+        {QStringLiteral("sba_state_label"), sbaState},
+        {QStringLiteral("connection_error_label"), errorText.isEmpty() ? QStringLiteral("无") : errorText},
+    };
+
+    for (const QPair<QString, QString>& item : labels) {
+        QLabel* const label = findChild<QLabel*>(item.first);
+        if (label != nullptr) {
+            label->setText(item.second);
+        }
+    }
+
+    QPlainTextEdit* const rawEdit = findChild<QPlainTextEdit*>(QStringLiteral("connection_raw_return_edit"));
+    if (rawEdit != nullptr) {
+        rawEdit->setPlainText(rawText);
+    }
+}
+
+void MainWindowShell::setSerialPorts(
+    const QStringList& displayNames,
+    const QStringList& portNames,
+    const QString& statusText)
+{
+    QComboBox* const combo = findChild<QComboBox*>(QStringLiteral("serial_port_combo"));
+    if (combo != nullptr) {
+        const QString previousPort = combo->currentData().toString();
+        const QString previousText = combo->currentText();
+        const QSignalBlocker blocker(combo);
+        combo->clear();
+        for (int index = 0; index < displayNames.size(); ++index) {
+            const QString portName = (index < portNames.size()) ? portNames.at(index) : displayNames.at(index);
+            combo->addItem(displayNames.at(index), portName);
+        }
+        if (!previousPort.isEmpty()) {
+            const int index = combo->findData(previousPort);
+            if (index >= 0) {
+                combo->setCurrentIndex(index);
+            }
+        } else if (!previousText.isEmpty()) {
+            const int index = combo->findText(previousText);
+            if (index >= 0) {
+                combo->setCurrentIndex(index);
+            }
+        }
+    }
+    setSerialStatus(statusText, false);
+}
+
+void MainWindowShell::setSerialStatus(const QString& statusText, const bool opened)
+{
+    QLabel* const label = findChild<QLabel*>(QStringLiteral("serial_status_label"));
+    if (label != nullptr) {
+        label->setText(statusText);
+    }
+
+    const QComboBox* const combo = findChild<QComboBox*>(QStringLiteral("serial_port_combo"));
+    bool hasAvailablePort = false;
+    if (combo != nullptr) {
+        for (int index = 0; index < combo->count(); ++index) {
+            if (!combo->itemData(index).toString().trimmed().isEmpty()) {
+                hasAvailablePort = true;
+                break;
+            }
+        }
+    }
+
+    const QList<QPushButton*> buttons = findChildren<QPushButton*>();
+    for (QPushButton* const button : buttons) {
+        if (button != nullptr &&
+            button->property("uiAction").toInt() == static_cast<int>(UiAction::ToggleSerialMonitor)) {
+            button->setText(opened ? QStringLiteral("关闭串口") : QStringLiteral("打开串口"));
+            button->setEnabled(opened || hasAvailablePort);
+        }
+    }
+}
+
+QString MainWindowShell::selectedSerialPortName() const
+{
+    const QComboBox* const combo = findChild<QComboBox*>(QStringLiteral("serial_port_combo"));
+    if (combo == nullptr) {
+        return QString();
+    }
+    const QString dataText = combo->currentData().toString().trimmed();
+    return dataText.isEmpty() ? combo->currentText().trimmed() : dataText;
+}
+
+int MainWindowShell::selectedSerialBaudRate() const
+{
+    const QComboBox* const combo = findChild<QComboBox*>(QStringLiteral("serial_baud_combo"));
+    bool ok = false;
+    const int baudRate = (combo == nullptr) ? 0 : combo->currentText().trimmed().toInt(&ok);
+    return ok ? baudRate : 115200;
+}
+
 void MainWindowShell::switchWorkbenchPage()
 {
     const QPushButton* const button = qobject_cast<QPushButton*>(sender());
@@ -1537,6 +1690,12 @@ void MainWindowShell::clearVisibleLog()
     QPlainTextEdit* const view = currentLogView();
     if (view != nullptr) {
         view->clear();
+    }
+    if (view == logEdit_ && detachedLogEdit_ != nullptr) {
+        detachedLogEdit_->clear();
+    }
+    if (view == serialOutputEdit_ && detachedSerialOutputEdit_ != nullptr) {
+        detachedSerialOutputEdit_->clear();
     }
 }
 
@@ -1556,18 +1715,73 @@ void MainWindowShell::toggleLogDetached()
     detachedLogDialog_->resize(kDetachedLogWidth, kDetachedLogHeight);
     UiTheme::applyWorkbenchStyle(detachedLogDialog_);
 
-    detachedLogEdit_ = new QPlainTextEdit(detachedLogDialog_);
-    detachedLogEdit_->setReadOnly(true);
-    detachedLogEdit_->setLineWrapMode(QPlainTextEdit::NoWrap);
-    detachedLogEdit_->setPlainText(currentLogText());
-
     QVBoxLayout* const layout = new QVBoxLayout(detachedLogDialog_);
     layout->setContentsMargins(8, 8, 8, 8);
-    layout->addWidget(detachedLogEdit_);
+
+    detachedLogTabs_ = new QTabWidget(detachedLogDialog_);
+    detachedLogTabs_->setObjectName(QStringLiteral("diagnostics_output_tabs"));
+    detachedLogTabs_->setDocumentMode(true);
+    detachedLogTabs_->tabBar()->setDrawBase(false);
+
+    QWidget* const logPage = new QWidget(detachedLogTabs_);
+    QVBoxLayout* const logLayout = new QVBoxLayout(logPage);
+    logLayout->setContentsMargins(0, 6, 0, 0);
+    detachedLogEdit_ = new QPlainTextEdit(logPage);
+    detachedLogEdit_->setReadOnly(true);
+    detachedLogEdit_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    detachedLogEdit_->setPlainText((logEdit_ == nullptr) ? QString() : logEdit_->toPlainText());
+    logLayout->addWidget(detachedLogEdit_, 1);
+
+    QWidget* const serialPage = new QWidget(detachedLogTabs_);
+    QVBoxLayout* const serialLayout = new QVBoxLayout(serialPage);
+    serialLayout->setContentsMargins(0, 6, 0, 0);
+    serialLayout->setSpacing(6);
+    detachedSerialOutputEdit_ = new QPlainTextEdit(serialPage);
+    detachedSerialOutputEdit_->setReadOnly(true);
+    detachedSerialOutputEdit_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    detachedSerialOutputEdit_->setPlainText((serialOutputEdit_ == nullptr) ? QString() : serialOutputEdit_->toPlainText());
+    serialLayout->addWidget(detachedSerialOutputEdit_, 1);
+    QWidget* const sendRow = new QWidget(serialPage);
+    QHBoxLayout* const sendLayout = new QHBoxLayout(sendRow);
+    sendLayout->setContentsMargins(0, 0, 0, 0);
+    sendLayout->setSpacing(6);
+    QLineEdit* const sendInput = new QLineEdit(sendRow);
+    sendInput->setPlaceholderText(QStringLiteral("输入要发送到串口的数据"));
+    QPushButton* const sendButton = new QPushButton(QStringLiteral("发送"), sendRow);
+    sendButton->setFixedWidth(54);
+    sendLayout->addWidget(sendInput, 1);
+    sendLayout->addWidget(sendButton);
+    serialLayout->addWidget(sendRow, 0);
+
+    const auto sendDetachedSerialText = [this, sendInput]() {
+        if (sendInput == nullptr) {
+            return;
+        }
+        UiActionRequest request;
+        request.action = UiAction::SendSerialData;
+        request.page = NavigationPage::Connection;
+        request.objectName = QStringLiteral("detached_serial_send_input");
+        request.parameters.insert(QStringLiteral("pageId"), pageIdForPage(NavigationPage::Connection));
+        request.parameters.insert(QStringLiteral("actionText"), toDisplayText(UiAction::SendSerialData));
+        request.parameters.insert(QStringLiteral("serialText"), sendInput->text());
+        sendInput->clear();
+        emit actionRequested(request);
+    };
+    connect(sendButton, &QPushButton::clicked, this, sendDetachedSerialText);
+    connect(sendInput, &QLineEdit::returnPressed, this, sendDetachedSerialText);
+
+    detachedLogTabs_->addTab(logPage, QStringLiteral("Log"));
+    detachedLogTabs_->addTab(serialPage, QStringLiteral("串口监控"));
+    if (logTabs_ != nullptr) {
+        detachedLogTabs_->setCurrentIndex(logTabs_->currentIndex());
+    }
+    layout->addWidget(detachedLogTabs_, 1);
 
     connect(detachedLogDialog_, &QDialog::finished, this, [this]() {
         detachedLogDialog_ = nullptr;
+        detachedLogTabs_ = nullptr;
         detachedLogEdit_ = nullptr;
+        detachedSerialOutputEdit_ = nullptr;
     });
     detachedLogDialog_->show();
 }
@@ -1703,10 +1917,9 @@ QWidget* MainWindowShell::createSidebar(QWidget* const parent)
         {QStringLiteral("project"), QStringLiteral("任务管理")},
         {QStringLiteral("connection"), QStringLiteral("目标连接")},
         {QStringLiteral("mode"), QStringLiteral("工作模式")},
-        {QStringLiteral("ram_program"), QStringLiteral("程序烧录")},
         {QStringLiteral("fault_injection"), QStringLiteral("错误注入")},
-        {QStringLiteral("sampling_config"), QStringLiteral("采集配置")},
-        {QStringLiteral("program_run"), QStringLiteral("程序运行")},
+        {QStringLiteral("sampling_config"), QStringLiteral("采样配置")},
+        {QStringLiteral("ram_program"), QStringLiteral("程序烧录与运行")},
         {QStringLiteral("waveform"), QStringLiteral("波形显示")},
         {QStringLiteral("protocol"), QStringLiteral("协议解析")},
         {QStringLiteral("stats"), QStringLiteral("测试报告")},
@@ -1739,10 +1952,9 @@ QWidget* MainWindowShell::createPageContainer(QWidget* const parent)
     addWorkbenchPage(QStringLiteral("project"), NavigationPage::Project, createProjectPage());
     addWorkbenchPage(QStringLiteral("connection"), NavigationPage::Connection, createConnectionPage());
     addWorkbenchPage(QStringLiteral("mode"), NavigationPage::Mode, createModePage());
-    addWorkbenchPage(QStringLiteral("ram_program"), NavigationPage::RamProgram, createRamProgramPage());
     addWorkbenchPage(QStringLiteral("fault_injection"), NavigationPage::FaultInjection, createEmptyPage(QStringLiteral("错误注入")));
-    addWorkbenchPage(QStringLiteral("sampling_config"), NavigationPage::SamplingConfig, createEmptyPage(QStringLiteral("采集配置")));
-    addWorkbenchPage(QStringLiteral("program_run"), NavigationPage::ProgramRun, createProgramRunPage());
+    addWorkbenchPage(QStringLiteral("sampling_config"), NavigationPage::SamplingConfig, createSamplingConfigPage());
+    addWorkbenchPage(QStringLiteral("ram_program"), NavigationPage::RamProgram, createRamProgramPage());
     addWorkbenchPage(QStringLiteral("waveform"), NavigationPage::Waveform, createWaveformPage());
     addWorkbenchPage(QStringLiteral("protocol"), NavigationPage::Protocol, createProtocolPage());
     addWorkbenchPage(QStringLiteral("stats"), NavigationPage::Stats, createStatsPage());
@@ -1758,7 +1970,7 @@ QWidget* MainWindowShell::createProjectPage()
     content->setObjectName(QStringLiteral("page_project"));
     content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QVBoxLayout* const layout = new QVBoxLayout(content);
-    layout->setSpacing(12);
+    layout->setSpacing(10);
 
     QHBoxLayout* const header = new QHBoxLayout();
     header->addWidget(pageTitle(QStringLiteral("任务管理"), content));
@@ -1888,127 +2100,73 @@ QWidget* MainWindowShell::createModePage()
 
 QWidget* MainWindowShell::createRamProgramPage()
 {
-    return createProgramOperationPage(QStringLiteral("程序烧录"), NavigationPage::RamProgram, false);
-}
-
-QWidget* MainWindowShell::createProgramRunPage()
-{
     QWidget* const content = new QWidget(this);
-    content->setObjectName(QStringLiteral("page_program_run"));
+    content->setObjectName(QStringLiteral("page_ram_program"));
     QVBoxLayout* const layout = new QVBoxLayout(content);
     layout->setSpacing(12);
-    layout->addWidget(pageTitle(QStringLiteral("程序运行"), content));
+    layout->addWidget(pageTitle(QStringLiteral("程序烧录与运行"), content));
 
-    QSplitter* const split = new QSplitter(content);
+    QSplitter* const split = new QSplitter(Qt::Horizontal, content);
     split->setChildrenCollapsible(false);
 
     QWidget* const left = new QWidget(split);
     QVBoxLayout* const leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(12);
-    leftLayout->addWidget(createRunImagePanel());
+    leftLayout->setSpacing(8);
 
-    QGroupBox* const controlPanel = panelBox(QStringLiteral("程序运行控制"), left);
-    QGridLayout* const controlLayout = new QGridLayout(controlPanel);
-    controlLayout->setSpacing(8);
-    controlLayout->setColumnStretch(0, 1);
-    controlLayout->setColumnStretch(1, 1);
-    QPushButton* const runButton = createActionButton(UiAction::RunProgram, NavigationPage::ProgramRun, controlPanel, true);
-    QPushButton* const stopButton = createActionButton(UiAction::StopProgram, NavigationPage::ProgramRun, controlPanel, false);
+    QGroupBox* const imagePanel = panelBox(QStringLiteral("程序镜像"), left);
+    imagePanel->setObjectName(QStringLiteral("image_load"));
+    QFormLayout* const imageLayout = new QFormLayout(imagePanel);
+    imageLayout->setContentsMargins(2, 2, 2, 2);
+    imageLayout->setHorizontalSpacing(8);
+    imageLayout->setVerticalSpacing(6);
+    imageLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    QLineEdit* const programImageEdit = new QLineEdit(imagePanel);
+    programImageEdit->setObjectName(QStringLiteral("program_image_path_edit"));
+    programImageEdit->setFixedHeight(kProgramActionButtonHeight);
+    QPushButton* const browseProgramButton =
+        createActionButton(UiAction::BrowseProgramImage, NavigationPage::RamProgram, imagePanel, false);
+    browseProgramButton->setFixedHeight(kProgramActionButtonHeight);
+    imageLayout->addRow(
+        QStringLiteral("程序"),
+        createPathInputRow(
+            imagePanel,
+            programImageEdit,
+            browseProgramButton));
+    leftLayout->addWidget(imagePanel);
+
+    QGroupBox* const operationPanel = panelBox(QStringLiteral("程序操作"), left);
+    QGridLayout* const operationLayout = new QGridLayout(operationPanel);
+    operationLayout->setContentsMargins(2, 2, 2, 2);
+    operationLayout->setHorizontalSpacing(8);
+    operationLayout->setVerticalSpacing(6);
+    operationLayout->setColumnStretch(0, 1);
+    operationLayout->setColumnStretch(1, 1);
+    QPushButton* const programButton =
+        createActionButton(UiAction::ProgramImage, NavigationPage::RamProgram, operationPanel, false);
+    QPushButton* const verifyButton =
+        createActionButton(UiAction::VerifyReadback, NavigationPage::RamProgram, operationPanel, false);
+    QPushButton* const runButton =
+        createActionButton(UiAction::RunProgram, NavigationPage::RamProgram, operationPanel, true);
+    QPushButton* const stopButton =
+        createActionButton(UiAction::StopProgram, NavigationPage::RamProgram, operationPanel, false);
     stopButton->setProperty("danger_button", true);
-    for (QPushButton* const button : {runButton, stopButton}) {
-        button->setMinimumHeight(42);
+    for (QPushButton* const button : {programButton, verifyButton, runButton, stopButton}) {
+        button->setFixedHeight(kProgramActionButtonHeight);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
-    controlLayout->addWidget(runButton, 0, 0);
-    controlLayout->addWidget(stopButton, 0, 1);
-    leftLayout->addWidget(controlPanel);
+    operationLayout->addWidget(programButton, 0, 0);
+    operationLayout->addWidget(verifyButton, 0, 1);
+    operationLayout->addWidget(runButton, 1, 0);
+    operationLayout->addWidget(stopButton, 1, 1);
+    leftLayout->addWidget(operationPanel);
 
-    QWidget* const progressPanel = new QWidget(left);
+    QGroupBox* const progressPanel = panelBox(QStringLiteral("进度"), left);
     QFormLayout* const progressLayout = new QFormLayout(progressPanel);
-    progressLayout->setContentsMargins(0, 0, 0, 0);
-    progressLayout->setSpacing(6);
-    QProgressBar* const runProgress = new QProgressBar(progressPanel);
-    runProgress->setObjectName(QStringLiteral("program_run_progress_bar"));
-    runProgress->setRange(0, 100);
-    runProgress->setValue(0);
-    QProgressBar* const stopProgress = new QProgressBar(progressPanel);
-    stopProgress->setObjectName(QStringLiteral("program_stop_progress_bar"));
-    stopProgress->setRange(0, 100);
-    stopProgress->setValue(0);
-    progressLayout->addRow(QStringLiteral("运行进度"), runProgress);
-    progressLayout->addRow(QStringLiteral("终止进度"), stopProgress);
-    leftLayout->addWidget(progressPanel);
-    leftLayout->addStretch(1);
-    split->addWidget(left);
-
-    QGroupBox* const right = panelBox(QStringLiteral("运行摘要"), split);
-    QVBoxLayout* const rightLayout = new QVBoxLayout(right);
-    rightLayout->setContentsMargins(10, 2, 10, 10);
-    rightLayout->setSpacing(3);
-    QHBoxLayout* const summaryTools = new QHBoxLayout();
-    summaryTools->setContentsMargins(0, 0, 0, 0);
-    QPushButton* const clearSummaryButton = new QPushButton(QStringLiteral("清空窗口"), right);
-    clearSummaryButton->setObjectName(QStringLiteral("log_clear_button"));
-    clearSummaryButton->setFixedSize(70, 22);
-    summaryTools->addStretch(1);
-    summaryTools->addWidget(clearSummaryButton);
-    rightLayout->addLayout(summaryTools);
-
-    QPlainTextEdit* const runSummaryView = new QPlainTextEdit(right);
-    runSummaryView->setObjectName(QStringLiteral("run_summary_edit"));
-    runSummaryView->setReadOnly(true);
-    runSummaryView->setMinimumHeight(180);
-    runSummaryView->setPlainText(QStringLiteral("程序运行控制摘要将在这里显示。"));
-    rightLayout->addWidget(runSummaryView, 1);
-    connect(clearSummaryButton, &QPushButton::clicked, runSummaryView, &QPlainTextEdit::clear);
-
-    split->addWidget(right);
-    split->setStretchFactor(0, 3);
-    split->setStretchFactor(1, 4);
-    split->setSizes({kProgramPageLeftInitialWidth, kProgramPageRightInitialWidth});
-    layout->addWidget(split, 1);
-    return content;
-}
-
-QWidget* MainWindowShell::createProgramOperationPage(
-    const QString& title,
-    const NavigationPage page,
-    const bool includeRunControls)
-{
-    QWidget* const content = new QWidget(this);
-    content->setObjectName(includeRunControls ? QStringLiteral("page_program_run") : QStringLiteral("page_ram_program"));
-    QVBoxLayout* const layout = new QVBoxLayout(content);
-    layout->setSpacing(12);
-    layout->addWidget(pageTitle(title, content));
-
-    QSplitter* const split = new QSplitter(content);
-    split->setChildrenCollapsible(false);
-
-    QWidget* const left = new QWidget(split);
-    QVBoxLayout* const leftLayout = new QVBoxLayout(left);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(12);
-    leftLayout->addWidget(createImagePanel(page));
-
-    QGroupBox* const actionPanel = panelBox(QStringLiteral("烧录与回读"), left);
-    QGridLayout* const actionLayout = new QGridLayout(actionPanel);
-    actionLayout->setSpacing(8);
-    actionLayout->setColumnStretch(0, 1);
-    actionLayout->setColumnStretch(1, 1);
-    QPushButton* const programButton = createActionButton(UiAction::ProgramImage, page, actionPanel, true);
-    QPushButton* const verifyButton = createActionButton(UiAction::VerifyReadback, page, actionPanel, false);
-    for (QPushButton* const button : {programButton, verifyButton}) {
-        button->setMinimumHeight(42);
-        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    }
-    actionLayout->addWidget(programButton, 0, 0);
-    actionLayout->addWidget(verifyButton, 0, 1);
-    leftLayout->addWidget(actionPanel);
-    QWidget* const progressPanel = new QWidget(left);
-    QFormLayout* const progressLayout = new QFormLayout(progressPanel);
-    progressLayout->setContentsMargins(0, 0, 0, 0);
-    progressLayout->setSpacing(6);
+    progressLayout->setContentsMargins(2, 0, 2, 0);
+    progressLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    progressLayout->setHorizontalSpacing(8);
+    progressLayout->setVerticalSpacing(4);
     QProgressBar* const writeProgress = new QProgressBar(progressPanel);
     writeProgress->setObjectName(QStringLiteral("program_write_progress_bar"));
     writeProgress->setRange(0, 100);
@@ -2017,37 +2175,149 @@ QWidget* MainWindowShell::createProgramOperationPage(
     readbackProgress->setObjectName(QStringLiteral("readback_verify_progress_bar"));
     readbackProgress->setRange(0, 100);
     readbackProgress->setValue(0);
-    progressLayout->addRow(QStringLiteral("烧写进度"), writeProgress);
+    QProgressBar* const runProgress = new QProgressBar(progressPanel);
+    runProgress->setObjectName(QStringLiteral("program_run_progress_bar"));
+    runProgress->setRange(0, 100);
+    runProgress->setValue(0);
+    QProgressBar* const stopProgress = new QProgressBar(progressPanel);
+    stopProgress->setObjectName(QStringLiteral("program_stop_progress_bar"));
+    stopProgress->setRange(0, 100);
+    stopProgress->setValue(0);
+    for (QProgressBar* const progress : {writeProgress, readbackProgress, runProgress, stopProgress}) {
+        progress->setFixedHeight(14);
+    }
+    progressLayout->addRow(QStringLiteral("烧录进度"), writeProgress);
     progressLayout->addRow(QStringLiteral("回读进度"), readbackProgress);
+    progressLayout->addRow(QStringLiteral("运行进度"), runProgress);
+    progressLayout->addRow(QStringLiteral("终止进度"), stopProgress);
     leftLayout->addWidget(progressPanel);
     leftLayout->addStretch(1);
     split->addWidget(left);
 
-    QGroupBox* const right = panelBox(QStringLiteral("烧录与回读摘要"), split);
+    QGroupBox* const right = panelBox(QStringLiteral("摘要"), split);
     QVBoxLayout* const rightLayout = new QVBoxLayout(right);
-    rightLayout->setContentsMargins(10, 2, 10, 10);
-    rightLayout->setSpacing(3);
-    QPushButton* const clearSummaryButton = new QPushButton(QStringLiteral("清空窗口"), right);
-    clearSummaryButton->setObjectName(QStringLiteral("log_clear_button"));
-    clearSummaryButton->setFixedSize(70, 22);
-    QHBoxLayout* const summaryTools = new QHBoxLayout();
-    summaryTools->setContentsMargins(0, 0, 0, 0);
-    summaryTools->addStretch(1);
-    summaryTools->addWidget(clearSummaryButton);
-    rightLayout->addLayout(summaryTools);
-    QPlainTextEdit* const readbackView = new QPlainTextEdit(right);
+    rightLayout->setContentsMargins(10, 12, 10, 10);
+    rightLayout->setSpacing(10);
+
+    QWidget* const summaryButtonRow = new QWidget(right);
+    QHBoxLayout* const summaryButtonLayout = new QHBoxLayout(summaryButtonRow);
+    summaryButtonLayout->setContentsMargins(0, 0, 0, 0);
+    summaryButtonLayout->setSpacing(8);
+    QPushButton* const ramSummaryButton = new QPushButton(QStringLiteral("烧录与回读摘要"), summaryButtonRow);
+    ramSummaryButton->setObjectName(QStringLiteral("program_summary_ram_button"));
+    ramSummaryButton->setProperty("summaryTab", true);
+    ramSummaryButton->setCheckable(true);
+    ramSummaryButton->setChecked(true);
+    QPushButton* const runSummaryButton = new QPushButton(QStringLiteral("程序运行与终止摘要"), summaryButtonRow);
+    runSummaryButton->setObjectName(QStringLiteral("program_summary_run_button"));
+    runSummaryButton->setProperty("summaryTab", true);
+    runSummaryButton->setCheckable(true);
+    summaryButtonLayout->addWidget(ramSummaryButton, 0);
+    summaryButtonLayout->addWidget(runSummaryButton, 0);
+    summaryButtonLayout->addStretch(1);
+    rightLayout->addWidget(summaryButtonRow, 0);
+
+    QStackedWidget* const summaryStack = new QStackedWidget(right);
+    summaryStack->setObjectName(QStringLiteral("program_summary_stack"));
+    QPlainTextEdit* const readbackView = new QPlainTextEdit(summaryStack);
     readbackView->setObjectName(QStringLiteral("ram_summary_edit"));
     readbackView->setReadOnly(true);
-    readbackView->setMinimumHeight(180);
     readbackView->setPlainText(QStringLiteral("烧录记录和回读校验摘要将在这里显示。"));
-    rightLayout->addWidget(readbackView, 1);
-    connect(clearSummaryButton, &QPushButton::clicked, readbackView, &QPlainTextEdit::clear);
+    QPlainTextEdit* const runSummaryView = new QPlainTextEdit(summaryStack);
+    runSummaryView->setObjectName(QStringLiteral("run_summary_edit"));
+    runSummaryView->setReadOnly(true);
+    runSummaryView->setPlainText(QStringLiteral("程序运行与终止摘要将在这里显示。"));
+    summaryStack->addWidget(readbackView);
+    summaryStack->addWidget(runSummaryView);
+    summaryStack->setCurrentIndex(0);
+    rightLayout->addWidget(summaryStack, 1);
+
+    connect(ramSummaryButton, &QPushButton::clicked, this, [this]() {
+        setProgramSummaryPage(false);
+    });
+    connect(runSummaryButton, &QPushButton::clicked, this, [this]() {
+        setProgramSummaryPage(true);
+    });
     split->addWidget(right);
+
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 4);
     split->setSizes({kProgramPageLeftInitialWidth, kProgramPageRightInitialWidth});
     layout->addWidget(split, 1);
     return content;
+}
+
+QWidget* MainWindowShell::createSamplingConfigPage()
+{
+    QWidget* const content = new QWidget(this);
+    content->setObjectName(QStringLiteral("page_sampling_config"));
+    QVBoxLayout* const layout = new QVBoxLayout(content);
+    layout->setSpacing(12);
+    layout->addWidget(pageTitle(QStringLiteral("采样配置"), content));
+
+    QGroupBox* const triggerPanel = panelBox(QStringLiteral("触发条件"), content);
+    QGridLayout* const triggerLayout = new QGridLayout(triggerPanel);
+    triggerLayout->setColumnStretch(0, 0);
+    triggerLayout->setColumnStretch(1, 1);
+    triggerLayout->setHorizontalSpacing(10);
+    triggerLayout->setVerticalSpacing(10);
+
+    QLineEdit* const triggerAddrEdit = new QLineEdit(triggerPanel);
+    triggerAddrEdit->setObjectName(QStringLiteral("sampling_trigger_addr_edit"));
+    triggerAddrEdit->setText(QStringLiteral("0x00000000"));
+    triggerAddrEdit->setPlaceholderText(QStringLiteral("0x00000000"));
+    triggerAddrEdit->setClearButtonEnabled(true);
+    triggerLayout->addWidget(new QLabel(QStringLiteral("PC addr == x"), triggerPanel), 0, 0);
+    triggerLayout->addWidget(triggerAddrEdit, 0, 1);
+
+    QLabel* const mismatchTitle = new QLabel(QStringLiteral("会引起触发的mismatch："), triggerPanel);
+    triggerLayout->addWidget(mismatchTitle, 1, 0, 1, 2);
+
+    QWidget* const mismatchGrid = new QWidget(triggerPanel);
+    mismatchGrid->setObjectName(QStringLiteral("sampling_mismatch_grid"));
+    QGridLayout* const mismatchLayout = new QGridLayout(mismatchGrid);
+    mismatchLayout->setContentsMargins(0, 0, 0, 0);
+    mismatchLayout->setHorizontalSpacing(28);
+    mismatchLayout->setVerticalSpacing(8);
+    const QStringList& mismatchNames = samplingMismatchDescriptions();
+    for (int bit = 0; bit < kSamplingMismatchBits; ++bit) {
+        QCheckBox* const bitCheck = new QCheckBox(
+            QStringLiteral("mismatch [%1] : %2").arg(bit).arg(mismatchNames.at(bit)),
+            mismatchGrid);
+        bitCheck->setObjectName(QStringLiteral("sampling_mismatch_bit_%1_check").arg(bit));
+        bitCheck->setChecked(true);
+        bitCheck->setProperty("mismatchBit", bit);
+        mismatchLayout->addWidget(bitCheck, bit / 2, bit % 2);
+    }
+    triggerLayout->addWidget(mismatchGrid, 2, 0, 1, 2);
+    triggerLayout->addWidget(
+        mutedLabel(QStringLiteral("触发逻辑：(valid == 1 && ready == 1 && addr == x) || 勾选的 mismatch 任意一位 0->1。"), triggerPanel),
+        3,
+        0,
+        1,
+        2);
+    triggerLayout->addWidget(
+        mutedLabel(QStringLiteral("采样窗口：采样窗口为4096点，触发前2047点，触发时1点触发后2048点。"), triggerPanel),
+        4,
+        0,
+        1,
+        2);
+    layout->addWidget(triggerPanel);
+
+    QGroupBox* const actionPanel = panelBox(QStringLiteral("配置操作"), content);
+    QHBoxLayout* const actionLayout = new QHBoxLayout(actionPanel);
+    actionLayout->addStretch(1);
+    QPushButton* const saveButton =
+        createActionButton(UiAction::SaveSamplingConfig, NavigationPage::SamplingConfig, actionPanel, false);
+    QPushButton* const sendButton =
+        createActionButton(UiAction::SendSamplingConfig, NavigationPage::SamplingConfig, actionPanel, true);
+    saveButton->setMinimumHeight(38);
+    sendButton->setMinimumHeight(38);
+    actionLayout->addWidget(saveButton);
+    actionLayout->addWidget(sendButton);
+    layout->addWidget(actionPanel);
+    layout->addStretch(1);
+    return scrollPage(content);
 }
 
 QWidget* MainWindowShell::createEmptyPage(const QString& title)
@@ -2273,14 +2543,13 @@ QWidget* MainWindowShell::createLogPanel()
     logPage->setObjectName(QStringLiteral("diagnostics_log_page"));
     logPage->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout* const logLayout = new QVBoxLayout(logPage);
-    logLayout->setContentsMargins(0, 6, 0, 0);
+    logLayout->setContentsMargins(0, 8, 0, 0);
     logLayout->setSpacing(0);
     logEdit_ = new QPlainTextEdit(logPage);
     logEdit_->setObjectName(QStringLiteral("workbench_log_edit"));
     logEdit_->setReadOnly(true);
     logEdit_->setMaximumBlockCount(4000);
-    logEdit_->setMinimumHeight(42);
-    logEdit_->setMaximumHeight(72);
+    logEdit_->setMinimumHeight(86);
     logEdit_->setPlaceholderText(QStringLiteral("关键流程日志和失败原文显示在这里。"));
     logLayout->addWidget(logEdit_, 1);
     logTabs_->addTab(logPage, QStringLiteral("Log"));
@@ -2301,15 +2570,35 @@ QWidget* MainWindowShell::createSerialConfigPanel()
     layout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     QComboBox* const portCombo = new WorkbenchComboBox(group);
-    portCombo->addItem(QStringLiteral("COM 占位"));
+    portCombo->setObjectName(QStringLiteral("serial_port_combo"));
+    portCombo->addItem(QStringLiteral("未刷新"));
     QComboBox* const baudCombo = new WorkbenchComboBox(group);
-    baudCombo->addItems({QStringLiteral("9600"), QStringLiteral("115200"), QStringLiteral("921600")});
+    baudCombo->setObjectName(QStringLiteral("serial_baud_combo"));
+    baudCombo->addItems({
+        QStringLiteral("1200"),
+        QStringLiteral("2400"),
+        QStringLiteral("4800"),
+        QStringLiteral("9600"),
+        QStringLiteral("19200"),
+        QStringLiteral("38400"),
+        QStringLiteral("57600"),
+        QStringLiteral("115200"),
+        QStringLiteral("230400"),
+        QStringLiteral("460800"),
+        QStringLiteral("500000"),
+        QStringLiteral("921600"),
+        QStringLiteral("1000000"),
+        QStringLiteral("1500000"),
+        QStringLiteral("2000000")
+    });
     baudCombo->setCurrentText(QStringLiteral("115200"));
     QComboBox* const displayModeCombo = new WorkbenchComboBox(group);
+    displayModeCombo->setObjectName(QStringLiteral("serial_display_mode_combo"));
     displayModeCombo->addItems({QStringLiteral("文本"), QStringLiteral("HEX")});
     QPushButton* const refreshButton = createActionButton(UiAction::RefreshSerialPorts, NavigationPage::Connection, group, false);
     QPushButton* const openButton = createActionButton(UiAction::ToggleSerialMonitor, NavigationPage::Connection, group, false);
     QPushButton* const clearButton = createActionButton(UiAction::ClearSerialOutput, NavigationPage::Connection, group, false);
+    openButton->setEnabled(false);
 
     QWidget* const portRow = new QWidget(group);
     QHBoxLayout* const portLayout = new QHBoxLayout(portRow);
@@ -2326,11 +2615,14 @@ QWidget* MainWindowShell::createSerialConfigPanel()
     actionLayout->addWidget(clearButton);
     actionLayout->addStretch(1);
 
+    QLabel* const serialStatusLabel = mutedLabel(QStringLiteral("串口未刷新。"), group);
+    serialStatusLabel->setObjectName(QStringLiteral("serial_status_label"));
+
     layout->addRow(QStringLiteral("串口"), portRow);
     layout->addRow(QStringLiteral("波特率"), baudCombo);
     layout->addRow(QStringLiteral("显示"), displayModeCombo);
     layout->addRow(QStringLiteral("操作"), actionRow);
-    layout->addRow(QStringLiteral("状态"), mutedLabel(QStringLiteral("串口尚未打开。当前为 UI 占位，不访问真实串口。"), group));
+    layout->addRow(QStringLiteral("串口状态"), serialStatusLabel);
     return group;
 }
 
@@ -2340,51 +2632,35 @@ QWidget* MainWindowShell::createSerialMonitorPanel()
     panel->setObjectName(QStringLiteral("serial_monitor_panel"));
     panel->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout* const layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 6, 0, 0);
+    layout->setContentsMargins(0, 8, 0, 0);
     layout->setSpacing(6);
     serialOutputEdit_ = new QPlainTextEdit(panel);
     serialOutputEdit_->setObjectName(QStringLiteral("serial_output_edit"));
     serialOutputEdit_->setReadOnly(true);
-    serialOutputEdit_->setMinimumHeight(42);
-    serialOutputEdit_->setMaximumHeight(72);
+    serialOutputEdit_->setMinimumHeight(86);
     serialOutputEdit_->setMaximumBlockCount(4000);
-    serialOutputEdit_->setPlaceholderText(QStringLiteral("串口打印信息会显示在这里。当前为只读占位，无输入框。"));
+    serialOutputEdit_->setPlaceholderText(QString());
     layout->addWidget(serialOutputEdit_, 1);
+
+    QWidget* const sendRow = new QWidget(panel);
+    sendRow->setObjectName(QStringLiteral("serial_send_row"));
+    QHBoxLayout* const sendLayout = new QHBoxLayout(sendRow);
+    sendLayout->setContentsMargins(0, 0, 0, 0);
+    sendLayout->setSpacing(6);
+    QLineEdit* const sendInput = new QLineEdit(sendRow);
+    sendInput->setObjectName(QStringLiteral("serial_send_input"));
+    sendInput->setPlaceholderText(QStringLiteral("输入要发送到串口的数据"));
+    QPushButton* const sendButton =
+        createActionButton(UiAction::SendSerialData, NavigationPage::Connection, sendRow, true);
+    sendButton->setText(QStringLiteral("发送"));
+    sendButton->setFixedWidth(54);
+    sendLayout->addWidget(sendInput, 1);
+    sendLayout->addWidget(sendButton);
+    layout->addWidget(sendRow, 0);
+    connect(sendInput, &QLineEdit::returnPressed, this, [this]() {
+        emitAction(UiAction::SendSerialData, NavigationPage::Connection, QStringLiteral("serial_send_input"));
+    });
     return panel;
-}
-
-QWidget* MainWindowShell::createImagePanel(const NavigationPage page)
-{
-    QGroupBox* const group = panelBox(QStringLiteral("程序镜像"), this);
-    group->setObjectName(QStringLiteral("image_load"));
-    QFormLayout* const layout = new QFormLayout(group);
-    QLineEdit* const programImageEdit = new QLineEdit(group);
-    programImageEdit->setObjectName(QStringLiteral("program_image_path_edit"));
-    layout->addRow(QStringLiteral("文件"),
-                   createPathInputRow(group,
-                                      programImageEdit,
-                                      createActionButton(UiAction::BrowseProgramImage, page, group, false)));
-    return group;
-}
-
-QWidget* MainWindowShell::createRunImagePanel()
-{
-    QGroupBox* const group = panelBox(QStringLiteral("程序镜像"), this);
-    group->setObjectName(QStringLiteral("run_image_info"));
-    QFormLayout* const layout = new QFormLayout(group);
-
-    QLineEdit* const imageNameEdit = new QLineEdit(group);
-    imageNameEdit->setObjectName(QStringLiteral("program_run_image_name_edit"));
-    imageNameEdit->setReadOnly(true);
-    imageNameEdit->setPlaceholderText(QStringLiteral("等待程序烧录确定镜像"));
-    QLineEdit* const imagePathEdit = new QLineEdit(group);
-    imagePathEdit->setObjectName(QStringLiteral("program_run_image_path_edit"));
-    imagePathEdit->setReadOnly(true);
-    imagePathEdit->setPlaceholderText(QStringLiteral("等待程序烧录确定镜像路径"));
-
-    layout->addRow(QStringLiteral("名称"), imageNameEdit);
-    layout->addRow(QStringLiteral("路径"), imagePathEdit);
-    return group;
 }
 
 QWidget* MainWindowShell::createControlPanel()
@@ -2395,7 +2671,26 @@ QWidget* MainWindowShell::createControlPanel()
     QHBoxLayout* const debugRow = new QHBoxLayout();
     debugRow->addWidget(createActionButton(UiAction::StartDebugService, NavigationPage::Connection, group, false));
     debugRow->addWidget(createActionButton(UiAction::StopDebugService, NavigationPage::Connection, group, false));
+    debugRow->addStretch(1);
     layout->addLayout(debugRow);
+    QFormLayout* const diagnosticsLayout = new QFormLayout();
+    diagnosticsLayout->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    const QList<QPair<QString, QString>> diagnostics = {
+        {QStringLiteral("debug_service_state_label"), QStringLiteral("未连接")},
+        {QStringLiteral("precheck_state_label"), QStringLiteral("未执行")},
+    };
+    const QStringList titles = {
+        QStringLiteral("调试服务"),
+        QStringLiteral("自检结论"),
+    };
+    for (int index = 0; index < diagnostics.size(); ++index) {
+        QLabel* const value = mutedLabel(diagnostics.at(index).second, group);
+        value->setObjectName(diagnostics.at(index).first);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        diagnosticsLayout->addRow(titles.at(index), value);
+    }
+    layout->addLayout(diagnosticsLayout);
+
     QLabel* const status = new QLabel(QStringLiteral("研发调试就绪"), group);
     status->setObjectName(QStringLiteral("workflow_status_label"));
     layout->addWidget(status);
@@ -2507,6 +2802,15 @@ void MainWindowShell::setActivePage(const QString& pageId)
 
 void MainWindowShell::emitAction(const UiAction action, const NavigationPage page, const QString& objectName)
 {
+    if ((action == UiAction::ProgramImage) || (action == UiAction::VerifyReadback) ||
+        (action == UiAction::ShowVerifySummary)) {
+        setProgramSummaryPage(false);
+    }
+    if ((action == UiAction::RunProgram) || (action == UiAction::StopProgram) ||
+        (action == UiAction::ShowRunSummary)) {
+        setProgramSummaryPage(true);
+    }
+
     UiActionRequest request;
     request.action = action;
     request.page = page;
@@ -2523,6 +2827,37 @@ void MainWindowShell::emitAction(const UiAction action, const NavigationPage pag
     if (action == UiAction::SaveTaskEdit) {
         request.parameters.insert(QStringLiteral("taskName"), taskNameText());
         request.parameters.insert(QStringLiteral("description"), taskDescriptionText());
+    }
+    if (action == UiAction::SendSerialData) {
+        QLineEdit* const serialInput = findChild<QLineEdit*>(QStringLiteral("serial_send_input"));
+        if (serialInput != nullptr) {
+            request.parameters.insert(QStringLiteral("serialText"), serialInput->text());
+            serialInput->clear();
+        }
+    }
+    if ((action == UiAction::SaveSamplingConfig) || (action == UiAction::SendSamplingConfig)) {
+        QLineEdit* const triggerAddrEdit = findChild<QLineEdit*>(QStringLiteral("sampling_trigger_addr_edit"));
+        int mismatchMask = 0;
+        for (int bit = 0; bit < kSamplingMismatchBits; ++bit) {
+            QCheckBox* const bitCheck =
+                findChild<QCheckBox*>(QStringLiteral("sampling_mismatch_bit_%1_check").arg(bit));
+            if (bitCheck != nullptr && bitCheck->isChecked()) {
+                mismatchMask |= (1 << bit);
+            }
+        }
+        request.parameters.insert(
+            QStringLiteral("trigger_addr"),
+            triggerAddrEdit == nullptr ? QStringLiteral("0x00000000") : triggerAddrEdit->text().trimmed());
+        request.parameters.insert(QStringLiteral("sample_count"), kSamplingSampleCount);
+        request.parameters.insert(QStringLiteral("pretrigger"), kSamplingPretrigger);
+        request.parameters.insert(QStringLiteral("posttrigger"), kSamplingPosttrigger);
+        request.parameters.insert(QStringLiteral("trigger_count"), kSamplingTriggerCount);
+        request.parameters.insert(QStringLiteral("post_after_trigger"), kSamplingPostAfterTrigger);
+        request.parameters.insert(QStringLiteral("sample_word_bits"), kSamplingSampleWordBits);
+        request.parameters.insert(QStringLiteral("mismatch_enable"), mismatchMask != 0);
+        request.parameters.insert(QStringLiteral("mismatch_mask"), mismatchMask);
+        request.parameters.insert(QStringLiteral("mismatch_source"), QStringLiteral("mismatch[4:0]"));
+        request.parameters.insert(QStringLiteral("trigger_logic"), QStringLiteral("valid_ready_addr_or_mismatch_rise"));
     }
     emit actionRequested(request);
 }
@@ -2563,9 +2898,13 @@ void MainWindowShell::appendFormattedLog(
                                   message);
     view->appendPlainText(line);
     view->moveCursor(QTextCursor::End);
-    if (detachedLogEdit_ != nullptr) {
-        detachedLogEdit_->setPlainText(currentLogText());
+    if (view == logEdit_ && detachedLogEdit_ != nullptr) {
+        detachedLogEdit_->appendPlainText(line);
         detachedLogEdit_->moveCursor(QTextCursor::End);
+    }
+    if (view == serialOutputEdit_ && detachedSerialOutputEdit_ != nullptr) {
+        detachedSerialOutputEdit_->appendPlainText(line);
+        detachedSerialOutputEdit_->moveCursor(QTextCursor::End);
     }
 }
 
@@ -2601,7 +2940,7 @@ NavigationPage MainWindowShell::pageForId(const QString& pageId)
         return NavigationPage::SamplingConfig;
     }
     if (pageId == QStringLiteral("program_run")) {
-        return NavigationPage::ProgramRun;
+        return NavigationPage::RamProgram;
     }
     if (pageId == QStringLiteral("waveform")) {
         return NavigationPage::Waveform;

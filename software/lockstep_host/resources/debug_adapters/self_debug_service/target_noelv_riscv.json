@@ -29,7 +29,10 @@
   "memory": {
     "default_ram_base": "0x0",
     "default_run_address": "0x0",
-    "system_bus_access_bytes": 4
+    "system_bus_access_bytes": 4,
+    "sba_read_poll_interval": 64,
+    "sba_write_poll_interval": 64,
+    "sba_write_pipeline_words": 2
   },
   "xlen": 64
 }
