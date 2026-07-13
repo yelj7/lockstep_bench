@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: build-kylin-offline-package.sh
 # * 日期: 2026-07-13
-# * 版本: v1.0
-# * 更新记录: 初版创建银河麒麟离线套件构建脚本
+# * 版本: v1.1
+# * 更新记录: 支持 Ninja 缺失时自动使用 Unix Makefiles
 # * 描述: 原生构建、测试、审计并生成自包含 DEB 和离线交付目录
 # **********************************************************/
 
@@ -28,12 +28,22 @@ if [[ ${LOCKSTEP_ALLOW_UNSUPPORTED_BUILD:-0} != 1 ]]; then
 fi
 [[ $(uname -m) == x86_64 ]] || { echo "仅支持 x86_64/amd64 构建" >&2; exit 1; }
 
-for command_name in cmake cpack ctest ninja dpkg-deb file readelf ldd lddtree sha256sum md5sum patchelf qmake pkg-config realpath; do
+for command_name in cmake cpack ctest dpkg-deb file readelf ldd lddtree sha256sum md5sum patchelf qmake pkg-config realpath; do
     command -v "${command_name}" >/dev/null 2>&1 || {
         echo "缺少构建工具: ${command_name}" >&2
         exit 1
     }
 done
+
+if command -v ninja >/dev/null 2>&1; then
+    cmake_generator=Ninja
+elif command -v make >/dev/null 2>&1; then
+    cmake_generator="Unix Makefiles"
+else
+    echo "缺少构建工具：请离线安装 Ninja 或 GNU Make 其中之一" >&2
+    exit 1
+fi
+echo "使用 CMake 生成器: ${cmake_generator}"
 
 qt_version=$(qmake -query QT_VERSION)
 [[ ${qt_version} == 5.15.2 ]] || { echo "要求 Qt 5.15.2，当前为 ${qt_version}" >&2; exit 1; }
@@ -67,7 +77,7 @@ assert_safe_output_path "${dist_dir}"
 rm -rf "${build_dir}" "${dist_dir}"
 mkdir -p "${build_dir}" "${dist_dir}"
 
-cmake -S "${source_dir}" -B "${build_dir}" -G Ninja \
+cmake -S "${source_dir}" -B "${build_dir}" -G "${cmake_generator}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/ \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -206,6 +216,7 @@ cat >"${package_tree}/opt/lockstep-host/share/doc/build-environment.json" <<EOF
   "qt_version": "${qt_version}",
   "hidapi_version": "${hidapi_version}",
   "cmake_version": "$(cmake --version | head -n 1 | awk '{print $3}')",
+  "cmake_generator": "${cmake_generator}",
   "compiler": "$(c++ --version | head -n 1)",
   "source_commit": "$(git -C "${source_dir}" rev-parse HEAD 2>/dev/null || echo unknown)"
 }
