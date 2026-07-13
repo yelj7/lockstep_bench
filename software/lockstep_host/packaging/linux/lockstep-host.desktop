@@ -1,0 +1,16 @@
+# /**********************************************************
+# * 文件名: lockstep-host.desktop
+# * 日期: 2026-07-13
+# * 版本: v1.0
+# * 更新记录: 初版创建银河麒麟桌面入口
+# * 描述: 定义锁步研发测试系统上位机的应用菜单入口
+# **********************************************************/
+[Desktop Entry]
+Type=Application
+Name=锁步研发测试系统
+Comment=锁步处理器研发与测试上位机
+Exec=lockstep-host
+Icon=applications-development
+Terminal=false
+Categories=Development;Engineering;
+StartupNotify=true

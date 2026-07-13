@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      ui_preview_main.cpp
-*  @brief     UI预览程序入口实现
-*  Details.   实现UI预览程序启动、模式解析和主窗口创建流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: ui_preview_main.cpp
+* 日期: 2026-07-13
+* 版本: v1.1
+* 更新记录: 将 UI 预览入口正式化为上位机产品入口
+* 描述: 解析运行模式并启动锁步研发测试系统主窗口
+**********************************************************/
 
 #include <QApplication>
 #include <QStringList>
@@ -45,6 +37,9 @@ lockstep::ui::UiMode parseMode(const QStringList& arguments)
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    QCoreApplication::setApplicationName(QStringLiteral("lockstep_host"));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(LOCKSTEP_APP_VERSION));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("锁步研发测试系统"));
     application.setQuitOnLastWindowClosed(false);
 
     const lockstep::ui::UiMode mode = parseMode(application.arguments());
@@ -53,7 +48,7 @@ int main(int argc, char* argv[])
     lockstep::apps::WorkbenchController controller(&window, mode, &application);
 
     lockstep::ui::UiWorkbenchState state = lockstep::ui::makeDefaultWorkbenchState(mode);
-    state.topStatus.taskStatusText = QStringLiteral("任务: UI预览任务");
+    state.topStatus.taskStatusText = QStringLiteral("任务: 未选择");
     state.topStatus.targetStatusText = QStringLiteral("目标: 未连接");
     state.topStatus.programStatusText = QStringLiteral("程序: 未选择");
     window.setWorkbenchState(state);
@@ -77,7 +72,7 @@ int main(int argc, char* argv[])
             lockstep::ui::LogChannel::Operation,
             lockstep::ui::LogLevel::Info,
             QStringLiteral("UI"),
-            QStringLiteral("UI 预览窗口已启动"));
+            QStringLiteral("上位机主窗口已启动"));
 
         application.setQuitOnLastWindowClosed(true);
         window.show();

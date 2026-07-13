@@ -1,17 +1,9 @@
 ﻿/*****************************************************************************
-*  @file      workbench_controller.cpp
-*  @brief     UI与底层模块适配控制器实现
-*  Details.   实现UI动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
+* 文件名: workbench_controller.cpp
+* 日期: 2026-07-13
+* 版本: v1.1
+* 更新记录: 增加安装布局资源路径并统一中文文件头
+* 描述: 实现 UI 动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配
 *****************************************************************************/
 
 #include "workbench_controller.h"
@@ -1206,6 +1198,7 @@ void WorkbenchController::loadResourcePackIfAvailable()
     const QStringList candidates = {
         QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("resources")),
         QDir(QDir::currentPath()).filePath(QStringLiteral("resources")),
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../resources")),
         QDir(QDir::currentPath()).filePath(QStringLiteral("software/lockstep_host/resources"))
     };
 

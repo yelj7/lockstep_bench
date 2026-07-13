@@ -1,0 +1,15 @@
+#!/bin/sh
+# /**********************************************************
+# * 文件名: lockstep-host
+# * 日期: 2026-07-13
+# * 版本: v1.0
+# * 更新记录: 初版创建正式程序启动器
+# * 描述: 设置上位机私有运行库和 Qt 插件路径后启动主程序
+# **********************************************************/
+
+set -eu
+
+LOCKSTEP_ROOT=/opt/lockstep-host
+export QT_PLUGIN_PATH="${LOCKSTEP_ROOT}/plugins"
+
+exec "${LOCKSTEP_ROOT}/bin/lockstep_host" "$@"

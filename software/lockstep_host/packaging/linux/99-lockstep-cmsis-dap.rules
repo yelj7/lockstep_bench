@@ -1,0 +1,8 @@
+# /**********************************************************
+# * 文件名: 99-lockstep-cmsis-dap.rules
+# * 日期: 2026-07-13
+# * 版本: v1.0
+# * 更新记录: 初版创建 CMSIS-DAP 普通用户访问规则
+# * 描述: 授权 0D28:0204 CMSIS-DAP hidraw 设备给桌面用户和 plugdev 组
+# **********************************************************/
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0660", GROUP="plugdev", TAG+="uaccess"

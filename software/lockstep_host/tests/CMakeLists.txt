@@ -27,3 +27,12 @@ else()
 endif()
 
 add_test(NAME lockstep_trace_analysis_test COMMAND lockstep_trace_analysis_test)
+
+add_test(
+    NAME lockstep_package_resources_test
+    COMMAND ${CMAKE_COMMAND}
+        -DMANIFEST_TOOL=$<TARGET_FILE:lockstep_resource_manifest_tool>
+        -DSOURCE_RESOURCES=${CMAKE_SOURCE_DIR}/resources
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/package_resources_test
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/package_resources_test.cmake
+)

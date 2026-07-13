@@ -3365,7 +3365,7 @@ int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("lockstep_debug_service"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0.1"));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(LOCKSTEP_APP_VERSION));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Lockstep 自研片上调试服务"));

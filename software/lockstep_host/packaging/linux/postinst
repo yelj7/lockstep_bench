@@ -1,0 +1,22 @@
+#!/bin/sh
+# /**********************************************************
+# * 文件名: postinst
+# * 日期: 2026-07-13
+# * 版本: v1.0
+# * 更新记录: 初版创建 DEB 安装后维护脚本
+# * 描述: 确保设备访问组存在并刷新 udev 与桌面缓存
+# **********************************************************/
+
+set -e
+
+getent group plugdev >/dev/null 2>&1 || groupadd --system plugdev
+getent group dialout >/dev/null 2>&1 || groupadd --system dialout
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger --subsystem-match=hidraw || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+
+exit 0

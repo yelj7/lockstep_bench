@@ -1,0 +1,19 @@
+#!/bin/sh
+# /**********************************************************
+# * 文件名: postrm
+# * 日期: 2026-07-13
+# * 版本: v1.0
+# * 更新记录: 初版创建 DEB 卸载后维护脚本
+# * 描述: 卸载后刷新 udev 与桌面缓存，不删除用户工作区
+# **********************************************************/
+
+set -e
+
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+
+exit 0
