@@ -36,3 +36,10 @@ add_test(
         -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/package_resources_test
         -P ${CMAKE_CURRENT_SOURCE_DIR}/package_resources_test.cmake
 )
+
+if(UNIX)
+    add_test(
+        NAME lockstep_build_env_scripts_test
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/build_env_scripts_test.sh ${CMAKE_SOURCE_DIR}
+    )
+endif()

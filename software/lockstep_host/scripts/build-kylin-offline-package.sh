@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: build-kylin-offline-package.sh
 # * 日期: 2026-07-13
-# * 版本: v1.1
-# * 更新记录: 支持 Ninja 缺失时自动使用 Unix Makefiles
+# * 版本: v1.2
+# * 更新记录: 接入统一构建环境需求检查并保留生成器自动选择
 # * 描述: 原生构建、测试、审计并生成自包含 DEB 和离线交付目录
 # **********************************************************/
 
@@ -14,26 +14,11 @@ source_dir=$(CDPATH= cd -- "${script_dir}/.." && pwd)
 build_dir=${LOCKSTEP_BUILD_DIR:-"${source_dir}/build-kylin-release"}
 dist_dir=${LOCKSTEP_DIST_DIR:-"${source_dir}/dist/kylin-v10-sp1-amd64"}
 
-if [[ ${LOCKSTEP_ALLOW_UNSUPPORTED_BUILD:-0} != 1 ]]; then
-    [[ -r /etc/os-release ]] || { echo "无法识别构建系统" >&2; exit 1; }
-    . /etc/os-release
-    [[ ${ID,,} == *kylin* || ${NAME,,} == *kylin* ]] || {
-        echo "必须在银河麒麟 V10 SP1 构建；仅可用 LOCKSTEP_ALLOW_UNSUPPORTED_BUILD=1 做开发验证" >&2
-        exit 1
-    }
-    grep -Fq "Desktop-V10-SP1-General-Release" /etc/.kyinfo /etc/os-release 2>/dev/null || {
-        echo "构建系统不是 Desktop-V10-SP1-General-Release 基线" >&2
-        exit 1
-    }
+if [[ ${LOCKSTEP_ALLOW_UNSUPPORTED_BUILD:-0} == 1 ]]; then
+    LOCKSTEP_SKIP_PLATFORM_CHECK=1 "${script_dir}/check-kylin-build-env.sh"
+else
+    "${script_dir}/check-kylin-build-env.sh"
 fi
-[[ $(uname -m) == x86_64 ]] || { echo "仅支持 x86_64/amd64 构建" >&2; exit 1; }
-
-for command_name in cmake cpack ctest dpkg-deb file readelf ldd lddtree sha256sum md5sum patchelf qmake pkg-config realpath; do
-    command -v "${command_name}" >/dev/null 2>&1 || {
-        echo "缺少构建工具: ${command_name}" >&2
-        exit 1
-    }
-done
 
 if command -v ninja >/dev/null 2>&1; then
     cmake_generator=Ninja
@@ -46,15 +31,7 @@ fi
 echo "使用 CMake 生成器: ${cmake_generator}"
 
 qt_version=$(qmake -query QT_VERSION)
-[[ ${qt_version} == 5.15.2 ]] || { echo "要求 Qt 5.15.2，当前为 ${qt_version}" >&2; exit 1; }
-if ! hidapi_version=$(pkg-config --modversion hidapi-hidraw 2>/dev/null); then
-    echo "无法通过 pkg-config 查询 hidapi-hidraw 版本" >&2
-    exit 1
-fi
-[[ ${hidapi_version} == 0.14.* ]] || {
-    echo "要求 hidapi 0.14.x hidraw 后端，当前为 ${hidapi_version}" >&2
-    exit 1
-}
+hidapi_version=$(pkg-config --modversion hidapi-hidraw)
 
 assert_safe_output_path()
 {

@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: .gitignore
 # * 日期: 2026-07-06
-# * 版本: v1.0
-# * 更新记录: 初版创建源码库忽略规则
+# * 版本: v1.1
+# * 更新记录: 忽略银河麒麟离线环境套件、DEB 输入和环境锁文件
 # * 描述: 忽略本地构建产物、IDE 临时文件和运行生成物
 # **********************************************************/
 
@@ -45,3 +45,9 @@ build.ninja
 /tmp/
 /software/lockstep_host/logs/
 /software/lockstep_host/tmp/
+
+# Offline build environment and package deliverables
+/software/lockstep_host/debs/
+/software/lockstep_host/offline-build-env/
+/software/lockstep_host/dist/
+/software/lockstep_host/build-environment.lock.json

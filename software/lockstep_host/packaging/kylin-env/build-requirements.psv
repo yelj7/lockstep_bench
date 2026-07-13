@@ -1,0 +1,34 @@
+# /**********************************************************
+# * 文件名: build-requirements.psv
+# * 日期: 2026-07-13
+# * 版本: v1.1
+# * 更新记录: 增加 Qt 开发模块和离线仓库制作能力检查
+# * 描述: 定义构建能力、版本约束和对应的银河麒麟 DEB 根包
+# **********************************************************/
+# id|probe|expected|packages|description
+gcc|command|gcc|gcc|GNU C 编译器
+gxx|command|g++|g++|GNU C++ 编译器
+cmake|cmake|>=3.16|cmake|CMake 构建系统
+cpack|command|cpack|cmake|CPack 打包工具
+ctest|command|ctest|cmake|CTest 测试工具
+generator|any-command|ninja,make|make|Ninja 或 GNU Make
+apt_get|command|apt-get|apt|APT 离线依赖解析
+dpkg_deb|command|dpkg-deb|dpkg;dpkg-dev|DEB 打包工具
+dpkg_scanpackages|command|dpkg-scanpackages|dpkg-dev|APT 仓库索引生成
+gzip|command|gzip|gzip|APT 仓库索引压缩
+file|command|file|file|ELF 类型识别
+readelf|command|readelf|binutils|ELF 元数据检查
+ldd|command|ldd|libc-bin|动态依赖检查
+lddtree|command|lddtree|pax-utils|递归动态依赖检查
+sha256sum|command|sha256sum|coreutils|SHA-256 校验
+md5sum|command|md5sum|coreutils|DEB 文件校验
+patchelf|command|patchelf|patchelf|ELF RPATH 修改
+realpath|command|realpath|coreutils|安全路径规范化
+qt|qt|5.15.2|qtbase5-dev;qt5-qmake;libqt5serialport5-dev|Qt 构建环境
+qt_core|pkg-config:Qt5Core|5.15.2|qtbase5-dev|Qt Core 开发模块
+qt_gui|pkg-config:Qt5Gui|5.15.2|qtbase5-dev|Qt Gui 开发模块
+qt_widgets|pkg-config:Qt5Widgets|5.15.2|qtbase5-dev|Qt Widgets 开发模块
+qt_network|pkg-config:Qt5Network|5.15.2|qtbase5-dev|Qt Network 开发模块
+qt_serialport|pkg-config:Qt5SerialPort|5.15.2|libqt5serialport5-dev|Qt SerialPort 开发模块
+hidapi|pkg-config:hidapi-hidraw|0.14.*|libhidapi-dev|CMSIS-DAP hidraw 开发库
+pkg_config|command|pkg-config|pkg-config|开发库元数据查询
