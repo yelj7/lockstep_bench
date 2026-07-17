@@ -1,16 +1,15 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
-# * 日期: 2026-07-07
-# * 版本: v1.0
-# * 更新记录: 初版创建 fault_injection 模块构建目标
-# * 描述: 定义故障注入模块的 CMake 目标占位
+# * 日期: 2026-07-14
+# * 版本: v1.1
+# * 更新记录: 接入固化脚本编排器
+# * 描述: 构建唯一上位机产品使用的错误注入模块。
 # **********************************************************/
 
-add_library(lockstep_fault_injection INTERFACE)
-
-target_compile_features(lockstep_fault_injection INTERFACE cxx_std_17)
-
-target_include_directories(lockstep_fault_injection
-    INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+add_library(lockstep_fault_injection STATIC
+    fault_injection_orchestrator.cpp
+    fault_injection_orchestrator.h
 )
+target_link_libraries(lockstep_fault_injection PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+target_compile_features(lockstep_fault_injection PUBLIC cxx_std_17)
+target_include_directories(lockstep_fault_injection PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

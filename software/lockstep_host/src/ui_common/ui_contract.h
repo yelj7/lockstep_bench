@@ -1,24 +1,18 @@
-/*****************************************************************************
-*  @file      ui_contract.h
-*  @brief     界面数据合同模块接口
-*  Details.   声明界面数据合同模块的公共类型、数据结构和调用接口。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: ui_contract.h
+* 日期: 2026-07-14
+* 版本: v1.1
+* 更新记录: 增加测试报告页面模型和报告文件操作
+* 描述: 声明上位机界面动作、工作台状态和报告页数据合同
+**********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_UI_COMMON_UI_CONTRACT_H_
 #define LOCKSTEP_HOST_SRC_UI_COMMON_UI_CONTRACT_H_
 
 #include <QString>
+#include <QStringList>
 #include <QVariantMap>
+#include <QVector>
 
 #include "global_status.h"
 #include "ui_types.h"
@@ -59,7 +53,88 @@ enum class UiAction : unsigned char {
     DeleteTask = 30U,
     SendSerialData = 31U,
     SaveSamplingConfig = 32U,
-    SendSamplingConfig = 33U
+    SendSamplingConfig = 33U,
+    OpenReportHtml = 34U,
+    OpenReportDirectory = 35U,
+    CopyReportPath = 36U,
+    OpenReportArtifact = 37U,
+    NavigateToReportSource = 38U,
+    StartSamplingCapture = 39U
+};
+
+enum class ReportLifecycleState : unsigned char {
+    NoTask = 0U,
+    NotGenerated = 1U,
+    Generating = 2U,
+    Current = 3U,
+    Stale = 4U,
+    GenerationError = 5U,
+    LoadError = 6U
+};
+
+struct ReportEvidenceViewItem final {
+    QString id;
+    QString displayName;
+    QString state;
+    QString stateText;
+    QString summary;
+    QString recordedAt;
+    QString relativePath;
+    QString details;
+    QStringList errorIds;
+};
+
+struct ReportDiagnosticViewItem final {
+    QString id;
+    QString code;
+    QString severity;
+    QString source;
+    QString message;
+    QString suggestion;
+    QString occurredAt;
+    QString targetPage;
+};
+
+struct ReportOptionalViewItem final {
+    QString id;
+    QString displayName;
+    QString state;
+    QString stateText;
+    QString summary;
+    QString recordedAt;
+    QString relativePath;
+};
+
+struct ReportPageViewModel final {
+    ReportLifecycleState lifecycle = ReportLifecycleState::NoTask;
+    QString lifecycleText;
+    QString taskName;
+    QString taskId;
+    QString modeText;
+    QString conclusion;
+    QString conclusionText;
+    QString persistedConclusion;
+    QString persistedConclusionText;
+    QString primaryReason;
+    QString reportId;
+    QString generatedAt;
+    QString reportRelativePath;
+    QString htmlRelativePath;
+    QString schemaVersion;
+    QString inputDigest;
+    QString reportSha256;
+    int revision = 0;
+    int warningCount = 0;
+    int blockingCount = 0;
+    bool hasTask = false;
+    bool hasPersistedReport = false;
+    bool stale = false;
+    bool generating = false;
+    QString errorMessage;
+    QVector<ReportEvidenceViewItem> requiredEvidence;
+    QVector<ReportDiagnosticViewItem> diagnostics;
+    QVector<ReportOptionalViewItem> optionalRecords;
+    QString archiveDetails;
 };
 
 struct UiActionRequest final {

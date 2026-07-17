@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      resource_manager.h
-*  @brief     固化资源与模式配置管理模块接口
-*  Details.   声明固化资源与模式配置管理模块的公共类型、数据结构和调用接口。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: resource_manager.h
+* 日期: 2026-07-14
+* 版本: 1.0.0
+* 更新记录: 移除外部调试服务资源字段
+* 描述: 固化资源与模式配置管理模块接口。
+**********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_RESOURCES_RESOURCE_MANAGER_H_
 #define LOCKSTEP_HOST_SRC_RESOURCES_RESOURCE_MANAGER_H_
@@ -63,7 +55,6 @@ struct BoardProfile final {
     int jtagKhz = 0;
     QString interfaceConfigPath;
     QString targetConfigPath;
-    QString targetDebugToolPath;
     quint64 ramBaseAddress = 0U;
     quint64 defaultRunAddress = 0U;
     QString resetStrategy;

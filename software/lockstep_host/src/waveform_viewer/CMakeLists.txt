@@ -14,6 +14,8 @@ add_library(lockstep_waveform_viewer STATIC
 target_link_libraries(lockstep_waveform_viewer
     PUBLIC
         Qt${QT_VERSION_MAJOR}::Core
+    PRIVATE
+        lockstep_protocol_analyzer
 )
 
 target_compile_features(lockstep_waveform_viewer PUBLIC cxx_std_17)

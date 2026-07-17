@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.0",
+  "sample_width": 1024,
+  "physical_channels": 1024,
+  "sample_signal": "CH0..CH1023",
+  "layout": "low_512_ahb_high_512_protocol_probe",
+  "protocol_ranges": [
+    {"group":"ahb","sample_lsb":0,"sample_msb":511},
+    {"group":"uart","sample_lsb":512,"sample_msb":543},
+    {"group":"spi","sample_lsb":544,"sample_msb":575},
+    {"group":"can","sample_lsb":576,"sample_msb":607},
+    {"group":"i2c","sample_lsb":608,"sample_msb":639},
+    {"group":"eth","sample_lsb":640,"sample_msb":703},
+    {"group":"usb","sample_lsb":704,"sample_msb":735},
+    {"group":"jtag","sample_lsb":736,"sample_msb":767},
+    {"group":"mismatch","sample_lsb":502,"sample_msb":507}
+  ],
+  "mismatch_bits": [
+    {"name":"mismatch[4]","sample_bit":506,"semantic":"ahb_master_output_mismatch"},
+    {"name":"mismatch[3]","sample_bit":505,"semantic":"irq_output_mismatch"},
+    {"name":"mismatch[2]","sample_bit":504,"semantic":"debug_output_mismatch"},
+    {"name":"mismatch[1]","sample_bit":503,"semantic":"trace_output_mismatch"},
+    {"name":"mismatch[0]","sample_bit":502,"semantic":"counter_output_mismatch"}
+  ],
+  "mapped_protocol_groups": ["ahb","uart","spi","can","i2c","eth","usb","jtag","mismatch"],
+  "pending_protocol_groups": []
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": "2.0",
+  "board": "NOEL-V ZCU102 FT601",
+  "capture_protocol": "FT601 capture frame protocol v1",
+  "sample_word_bits": 1024,
+  "physical_channels": 1024,
+  "ft601": {"out_pipe":"0x02","in_pipe":"0x82","transport":"D3XX dynamic"},
+  "vcd": "waveform/capture.vcd"
+}

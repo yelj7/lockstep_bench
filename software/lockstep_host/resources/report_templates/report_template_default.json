@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "template_id": "report_template_default",
-  "description": "Default JSON report template placeholder. Runtime v1 writes reports/report.json directly."
+  "description": "Versioned JSON and self-contained HTML report model for lockstep validation tasks."
 }

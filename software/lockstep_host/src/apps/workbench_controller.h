@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      workbench_controller.h
-*  @brief     UI与底层模块适配控制器接口
-*  Details.   声明UI动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配接口。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: workbench_controller.h
+* 日期: 2026-07-14
+* 版本: v1.2
+* 更新记录: 增加报告模型构建、生命周期刷新和报告文件操作
+* 描述: 声明 UI 与工作区、目标控制、报告及日志模块的适配控制器
+**********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_APPS_WORKBENCH_CONTROLLER_H_
 #define LOCKSTEP_HOST_SRC_APPS_WORKBENCH_CONTROLLER_H_
@@ -26,6 +18,7 @@
 #include <QVariantMap>
 
 #include "error_registry.h"
+#include "fault_injection_orchestrator.h"
 #include "main_window_shell.h"
 #include "protocol_analysis.h"
 #include "report_generator.h"
@@ -64,15 +57,18 @@ private:
     void startDebugService();
     void stopDebugService();
     void refreshSerialPorts();
+    bool openSelectedSerialPort();
     void toggleSerialMonitor();
     void clearSerialOutput();
     void sendSerialData(const QString& text);
-    void saveSamplingConfig(const QVariantMap& parameters, bool requestHardwareSend);
+    bool saveSamplingConfig(const QVariantMap& parameters, bool requestHardwareSend);
+    void startSamplingCapture(const QVariantMap& parameters);
     void browseProgramImage();
     void programImage();
     void verifyReadback();
     void beginHardwareOperation(lockstep::target_control::ProgramOperation operation, const QString& name);
     void endHardwareOperation();
+    void updateProgramActionAvailability();
     void updateWriteOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
     void updateReadbackOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
     void runProgram();
@@ -80,9 +76,16 @@ private:
     void appendProgramSerialOutput(const QString& text);
     void updateRunButtonText();
     void refreshRunSummary(const QString& title, int runProgressPercent, int stopProgressPercent);
+    lockstep::reporting::ReportDocumentModel buildReportModel() const;
+    void refreshReportView(const QString& generationError = QString());
     void generateReport();
+    void openReportHtml();
+    void openReportDirectory();
+    void copyReportPath();
+    void openReportArtifact(const QString& relativePath);
     void showVerifySummary();
     void showRunSummary();
+    void importWaveformFile();
     void refreshWaveformView();
     void refreshWaveformViewWithAutoAnalysis();
     void analyzeCurrentTrace(bool refreshAfterAnalysis = true);
@@ -163,6 +166,9 @@ private:
     bool runOutputConfirmed_;
     bool serialOpen_;
     bool runSerialCaptureActive_;
+    bool runButtonResetMode_;
+    bool reportGenerationBusy_;
+    bool samplingCaptureBusy_;
     lockstep::target_control::ProgramOperation hardwareOperation_;
     QString hardwareOperationName_;
     int currentWriteProgress_;

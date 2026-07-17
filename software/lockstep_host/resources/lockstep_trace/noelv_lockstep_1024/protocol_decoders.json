@@ -1,0 +1,22 @@
+{
+  "schema_version": "2.0",
+  "decoder_version": "2.1.0.0",
+  "implemented": [
+    {"group":"ahb","source":"raw_signals","required":["htrans","hready","hresp","haddr","hwrite","hwdata","hrdata"],"behaviors":["ahb_transfer","error_response"]},
+    {"group":"uart","source":"rtl_frame_hint","required":["tx","rx","tx_toggle","tx_byte","rx_byte"],"behaviors":["uart_frame"]},
+    {"group":"spi","source":"raw_signals","required":["sclk","mosi","miso","cs_n"],"behaviors":["spi_transfer"]},
+    {"group":"can","source":"rtl_frame_hint","required":["rx","tx","sof","eof","id"],"behaviors":["can_frame","error_marker"]},
+    {"group":"i2c","source":"raw_signals","required":["scl","sda"],"behaviors":["i2c_transfer"]},
+    {"group":"eth","source":"rtl_frame_hint","required":["tx_en","rx_dv","frame_start","frame_end","ethertype"],"behaviors":["eth_frame","receive_error"]},
+    {"group":"usb","source":"design_gap","required":["real_source"],"behaviors":[]},
+    {"group":"jtag","source":"raw_signals","required":["tck","tms","tdi","tdo"],"behaviors":["jtag_cycle"]},
+    {"group":"mismatch","source":"raw_signals","required":["mismatch[4:0]"],"behaviors":["mismatch_event","fault_diff"]}
+  ],
+  "synthetic_policy": "unavailable_design_gap_without_source_evidence",
+  "hardware_follow_up": {
+    "uart": "freeze baud/format metadata or keep tx_byte/rx_byte frame hints",
+    "can": "freeze bitrate/sample-point metadata or keep sof/eof/id frame hints",
+    "eth": "capture MII/RMII clock or keep frame_start/frame_end/ethertype hints",
+    "usb": "connect a real PHY source before enabling decode"
+  }
+}

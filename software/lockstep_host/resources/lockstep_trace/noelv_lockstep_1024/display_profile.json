@@ -1,0 +1,8 @@
+{
+  "schema_version": "2.0",
+  "default_groups": ["ahb","uart","spi","can","i2c","eth","usb","jtag","mismatch"],
+  "protocol_bundle": {"always_visible": true,"children_collapsed_by_default": true,"shared_time_axis": true},
+  "number_format": {"bus":"hex_prefix","single_bit":"level","merged_signal_bus":"hex_prefix"},
+  "merge_policy": "same_name_contiguous_or_declared_range",
+  "mismatch_style": {"foreground":"#b42318","background":"#fff1f0"}
+}

@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      resource_manager.cpp
-*  @brief     固化资源与模式配置管理模块实现
-*  Details.   实现固化资源与模式配置管理模块的业务逻辑、状态转换和文件访问流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: resource_manager.cpp
+* 日期: 2026-07-14
+* 版本: 1.0.0
+* 更新记录: 移除外部调试服务资源字段校验与解析
+* 描述: 实现固化资源与模式配置管理模块。
+**********************************************************/
 
 #include "resource_manager.h"
 
@@ -263,7 +255,6 @@ bool profileFromItem(
         QStringLiteral("jtagKhz"),
         QStringLiteral("interfaceConfigPath"),
         QStringLiteral("targetConfigPath"),
-        QStringLiteral("targetDebugToolPath"),
         QStringLiteral("ramBaseAddress"),
         QStringLiteral("defaultRunAddress"),
         QStringLiteral("resetStrategy"),
@@ -277,8 +268,7 @@ bool profileFromItem(
         }
     }
     if (!validateProfileResourcePath(resourceRootPath, QStringLiteral("interfaceConfigPath"), object, errorMessage) ||
-        !validateProfileResourcePath(resourceRootPath, QStringLiteral("targetConfigPath"), object, errorMessage) ||
-        !validateProfileResourcePath(resourceRootPath, QStringLiteral("targetDebugToolPath"), object, errorMessage)) {
+        !validateProfileResourcePath(resourceRootPath, QStringLiteral("targetConfigPath"), object, errorMessage)) {
         return false;
     }
 
@@ -293,7 +283,6 @@ bool profileFromItem(
     parsed.jtagKhz = object.value(QStringLiteral("jtagKhz")).toInt();
     parsed.interfaceConfigPath = object.value(QStringLiteral("interfaceConfigPath")).toString();
     parsed.targetConfigPath = object.value(QStringLiteral("targetConfigPath")).toString();
-    parsed.targetDebugToolPath = object.value(QStringLiteral("targetDebugToolPath")).toString();
     parsed.ramBaseAddress = parseHexOrDecimal(object.value(QStringLiteral("ramBaseAddress")).toString());
     parsed.defaultRunAddress = parseHexOrDecimal(object.value(QStringLiteral("defaultRunAddress")).toString());
     parsed.resetStrategy = object.value(QStringLiteral("resetStrategy")).toString();

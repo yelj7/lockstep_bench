@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      main_window_shell.cpp
-*  @brief     主窗口框架组件实现
-*  Details.   实现主窗口框架组件的业务逻辑、状态转换和文件访问流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: main_window_shell.cpp
+* 日期: 2026-07-14
+* 版本: v1.3
+* 更新记录: 内嵌波形滚动条减半为 9px，并仅显示真实协议波形信号
+* 描述: 实现上位机主窗口框架及各工作页面
+**********************************************************/
 
 #include "main_window_shell.h"
 
@@ -26,6 +18,7 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -37,6 +30,7 @@
 #include <QPainterPath>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -45,6 +39,8 @@
 #include <QStyle>
 #include <QStyleOptionComboBox>
 #include <QTabBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -77,7 +73,8 @@ constexpr int kSamplingPretrigger = 2047;
 constexpr int kSamplingPosttrigger = 2049;
 constexpr int kSamplingTriggerCount = 1;
 constexpr int kSamplingPostAfterTrigger = 2048;
-constexpr int kSamplingSampleWordBits = 512;
+constexpr int kSamplingSampleWordBits = 1024;
+constexpr int kSamplingSampleRateHz = 120000000;
 constexpr int kSamplingMismatchBits = 5;
 
 const QStringList& samplingMismatchDescriptions()
@@ -162,6 +159,7 @@ struct WaveformProtocolRow final {
     QString status;
     QString reason;
     QStringList transactions;
+    TraceFieldViewItem field;
     bool group = false;
     bool child = false;
     bool section = false;
@@ -178,31 +176,89 @@ public:
           pathText_(),
           timeRangeText_(),
           groups_(),
+          samples_(),
           expandedGroups_(),
           selectedRow_(0),
+          rowHeight_(kDefaultRowHeight),
           verticalOffset_(0),
-          horizontalZoom_(1.0)
+          horizontalZoom_(1.0),
+          timeUnitsPerPixel_(0.0),
+          visibleStartTime_(0.0),
+          hoverActive_(false),
+          hoverPoint_(),
+          hoverTime_(0),
+          horizontalScrollBar_(new QScrollBar(Qt::Horizontal, this)),
+          renderedProtocolEvents_(0),
+          firstProtocolEventRect_(),
+          panning_(false),
+          panStart_(),
+          panStartOffset_(0.0)
     {
         setObjectName(QStringLiteral("waveform_display_widget"));
-        setMinimumHeight(390);
+        setMinimumHeight(220);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(QStringLiteral("协议波形时间轴"));
         setMouseTracking(true);
         setAttribute(Qt::WA_OpaquePaintEvent, true);
+        horizontalScrollBar_->setObjectName(QStringLiteral("waveform_time_scrollbar"));
+        horizontalScrollBar_->setAccessibleName(QStringLiteral("波形时间轴水平滚动条"));
+        horizontalScrollBar_->setSingleStep(10000);
+        horizontalScrollBar_->setStyleSheet(QStringLiteral(
+            "QScrollBar#waveform_time_scrollbar:horizontal {"
+            "  height: 9px; background: #e5ebf1; border: 1px solid #c7d1dc;"
+            "}"
+            "QScrollBar#waveform_time_scrollbar::handle:horizontal {"
+            "  min-width: 36px; background: #8799ac; border: 1px solid #71869a;"
+            "}"
+            "QScrollBar#waveform_time_scrollbar::handle:horizontal:hover { background: #6f8498; }"
+            "QScrollBar#waveform_time_scrollbar::sub-line:horizontal,"
+            "QScrollBar#waveform_time_scrollbar::add-line:horizontal {"
+            "  width: 9px; background: #d5dee7; border: 1px solid #b8c4d0;"
+            "}"
+            "QScrollBar#waveform_time_scrollbar::sub-page:horizontal,"
+            "QScrollBar#waveform_time_scrollbar::add-page:horizontal { background: #e5ebf1; }"));
+        connect(horizontalScrollBar_, &QScrollBar::valueChanged, this, [this](const int value) {
+            if (horizontalScrollBar_->maximum() <= 0) return;
+            const WaveformTimeAxis base = baseTimeAxis();
+            const WaveformTimeAxis visible = timeAxis();
+            const qint64 scrollableSpan = qMax<qint64>(0,
+                (base.end - base.start) - (visible.end - visible.start));
+            visibleStartTime_ = static_cast<double>(base.start) +
+                static_cast<double>(value) * static_cast<double>(scrollableSpan) /
+                    static_cast<double>(horizontalScrollBar_->maximum());
+            if (hoverActive_) hoverTime_ = timeAtX(hoverPoint_.x());
+            updateAccessibleDescription();
+            update();
+        });
     }
 
     void setTrace(
         const QString& statusText,
         const QString& pathText,
         const QString& timeRangeText,
-        const QVector<TraceGroupViewItem>& groups)
+        const QVector<TraceGroupViewItem>& groups,
+        const QVector<TraceSampleViewItem>& samples)
     {
+        const quint64 previousFingerprint = sampleFingerprint(samples_);
+        const quint64 nextFingerprint = sampleFingerprint(samples);
+        const bool traceContextChanged = pathText_ != pathText || previousFingerprint != nextFingerprint;
         statusText_ = statusText;
         pathText_ = pathText;
         timeRangeText_ = timeRangeText;
         groups_ = groups;
+        samples_ = samples;
+        if (traceContextChanged) {
+            expandedGroups_.clear();
+            horizontalZoom_ = 1.0;
+            timeUnitsPerPixel_ = 0.0;
+            visibleStartTime_ = static_cast<double>(baseTimeAxis().start);
+            hoverActive_ = false;
+        }
         verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
         selectedRow_ = qBound(0, selectedRow_, qMax(0, rows().size() - 1));
+        updateAccessibleDescription();
+        updateHorizontalScrollBar();
         update();
     }
 
@@ -233,21 +289,29 @@ protected:
         drawRuler(&painter, rulerRect);
 
         const QVector<WaveformProtocolRow> visibleRows = rows();
-        painter.setClipRect(QRect(0, kRulerHeight, width(), height() - kRulerHeight));
+        renderedProtocolEvents_ = 0;
+        firstProtocolEventRect_ = QRect();
+        painter.setClipRect(QRect(0, kRulerHeight, width(),
+                                  qMax(0, height() - kRulerHeight - kHorizontalScrollBarHeight)));
         for (int index = 0; index < visibleRows.size(); ++index) {
-            const int y = kRulerHeight + index * kRowHeight - verticalOffset_;
-            if (y + kRowHeight < kRulerHeight) {
+            const int y = kRulerHeight + index * rowHeight_ - verticalOffset_;
+            if (y + rowHeight_ < kRulerHeight) {
                 continue;
             }
-            if (y > height()) {
+            if (y > height() - kHorizontalScrollBarHeight) {
                 break;
             }
-            drawRow(&painter, QRect(0, y, width(), kRowHeight), leftWidth, visibleRows.at(index), index);
+            drawRow(&painter, QRect(0, y, width(), rowHeight_), leftWidth, visibleRows.at(index), index);
         }
         painter.setClipping(false);
+        setProperty("waveformRenderedProtocolEvents", renderedProtocolEvents_);
+        setProperty("waveformFirstProtocolEventRect", firstProtocolEventRect_);
 
         drawRemainingGrid(&painter, leftWidth, visibleRows.size());
-        drawScrollBar(&painter, QRect(width() - 8, kRulerHeight, 6, height() - kRulerHeight));
+        drawScrollBar(&painter, QRect(width() - 8, kRulerHeight, 6,
+                                     height() - kRulerHeight - kHorizontalScrollBarHeight));
+        drawHoverCursor(&painter);
+        updateHorizontalScrollBar();
     }
 
     void mousePressEvent(QMouseEvent* const event) override
@@ -258,6 +322,7 @@ protected:
         }
 
         setFocus(Qt::MouseFocusReason);
+        const int leftWidth = leftPaneWidth();
         const int index = rowIndexAt(event->pos().y());
         const QVector<WaveformProtocolRow> visibleRows = rows();
         if (index < 0 || index >= visibleRows.size()) {
@@ -266,12 +331,74 @@ protected:
         }
 
         selectedRow_ = index;
-        if (visibleRows.at(index).group) {
+        if (event->pos().x() >= leftWidth) {
+            panning_ = true;
+            panStart_ = event->pos();
+            panStartOffset_ = visibleStartTime_;
+            setCursor(Qt::ClosedHandCursor);
+            update();
+        } else if (visibleRows.at(index).group) {
             toggleGroup(visibleRows.at(index).groupId);
         } else {
             update();
         }
         event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent* const event) override
+    {
+        if (event == nullptr) {
+            return;
+        }
+
+        if (panning_ && event->buttons().testFlag(Qt::LeftButton)) {
+            visibleStartTime_ = clampVisibleStart(
+                panStartOffset_ + static_cast<double>(panStart_.x() - event->pos().x()) *
+                    effectiveTimeUnitsPerPixel());
+            if (hoverActive_) hoverTime_ = timeAtX(hoverPoint_.x());
+            update();
+            event->accept();
+            return;
+        }
+
+        updateHover(event->pos());
+
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent* const event) override
+    {
+        hoverActive_ = false;
+        setProperty("waveformCursorText", QString());
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* const event) override
+    {
+        if (panning_ && event != nullptr && event->button() == Qt::LeftButton) {
+            panning_ = false;
+            unsetCursor();
+            event->accept();
+            return;
+        }
+
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* const event) override
+    {
+        if (event != nullptr && event->button() == Qt::RightButton && event->pos().x() >= leftPaneWidth()) {
+            horizontalZoom_ = 1.0;
+            timeUnitsPerPixel_ = 0.0;
+            visibleStartTime_ = static_cast<double>(baseTimeAxis().start);
+            updateAccessibleDescription();
+            update();
+            event->accept();
+            return;
+        }
+
+        QWidget::mouseDoubleClickEvent(event);
     }
 
     void keyPressEvent(QKeyEvent* const event) override
@@ -352,12 +479,33 @@ protected:
             return;
         }
 
-        const int delta = event->pixelDelta().isNull() ? event->angleDelta().y() : event->pixelDelta().y();
+        const QPoint angleDelta = event->angleDelta();
+        const QPoint pixelDelta = event->pixelDelta();
+        const bool horizontalWheel =
+            qAbs(angleDelta.x()) > qAbs(angleDelta.y()) ||
+            qAbs(pixelDelta.x()) > qAbs(pixelDelta.y()) ||
+            event->modifiers().testFlag(Qt::ShiftModifier);
+        const int wheelX = pixelDelta.isNull() ? angleDelta.x() : pixelDelta.x();
+        const int wheelY = pixelDelta.isNull() ? angleDelta.y() : pixelDelta.y();
+        const int delta = horizontalWheel ? (wheelX != 0 ? wheelX : wheelY) : wheelY;
+
         if (event->modifiers().testFlag(Qt::ControlModifier)) {
             if (delta != 0) {
-                horizontalZoom_ = qBound(0.5, horizontalZoom_ * (delta > 0 ? 1.15 : 1.0 / 1.15), 8.0);
+                zoomTimeAxisAt(delta > 0 ? 1.6 : 1.0 / 1.6, event->position().x());
                 update();
             }
+            event->accept();
+            return;
+        }
+
+        if (event->modifiers().testFlag(Qt::AltModifier)) {
+            if (delta != 0) zoomRowsAt(delta > 0 ? 3 : -3, event->position().y());
+            event->accept();
+            return;
+        }
+
+        if (horizontalWheel && delta != 0) {
+            panByPixels(-delta);
             event->accept();
             return;
         }
@@ -375,11 +523,23 @@ protected:
 
 private:
     static constexpr int kRulerHeight = 28;
-    static constexpr int kRowHeight = 27;
+    static constexpr int kDefaultRowHeight = 27;
+    static constexpr int kHorizontalScrollBarHeight = 9;
 
     static QColor canvasColor()
     {
         return QColor(QStringLiteral("#ffffff"));
+    }
+
+    static quint64 sampleFingerprint(const QVector<TraceSampleViewItem>& samples)
+    {
+        quint64 fingerprint = static_cast<quint64>(samples.size());
+        for (const TraceSampleViewItem& sample : samples) {
+            fingerprint = (fingerprint * 1099511628211ULL) ^ static_cast<quint64>(sample.time);
+            fingerprint = (fingerprint * 1099511628211ULL) ^ static_cast<quint64>(qHash(sample.valueHex));
+            fingerprint = (fingerprint * 1099511628211ULL) ^ static_cast<quint64>(sample.unknown);
+        }
+        return fingerprint;
     }
 
     static QColor rulerSurfaceColor()
@@ -399,27 +559,27 @@ private:
 
     static QColor signalWaveColor()
     {
-        return QColor(QStringLiteral("#0f766e"));
+        return QColor(QStringLiteral("#315b75"));
     }
 
     static QColor busFillColor()
     {
-        return QColor(QStringLiteral("#e8f1ff"));
+        return QColor(QStringLiteral("#eef4f8"));
     }
 
     static QColor busStrokeColor()
     {
-        return QColor(QStringLiteral("#1677ff"));
+        return QColor(QStringLiteral("#496f88"));
     }
 
     static QColor protocolFillColor()
     {
-        return QColor(QStringLiteral("#fff7e6"));
+        return QColor(QStringLiteral("#edf3f7"));
     }
 
     static QColor protocolStrokeColor()
     {
-        return QColor(QStringLiteral("#fa8c16"));
+        return QColor(QStringLiteral("#5b7080"));
     }
 
     static QColor mismatchFillColor()
@@ -434,7 +594,7 @@ private:
 
     static QColor selectedRowColor()
     {
-        return QColor(QStringLiteral("#f0e9ff"));
+        return QColor(QStringLiteral("#e8f0f5"));
     }
 
     static QColor sectionSurfaceColor()
@@ -459,12 +619,19 @@ private:
 
     static QColor okColor()
     {
-        return QColor(QStringLiteral("#22c55e"));
+        return QColor(QStringLiteral("#64748b"));
     }
 
     static QColor okFillColor()
     {
-        return QColor(QStringLiteral("#f0fdf4"));
+        return QColor(QStringLiteral("#f4f6f8"));
+    }
+
+    static QColor groupColor(const QString& groupId, const int index)
+    {
+        Q_UNUSED(groupId);
+        Q_UNUSED(index);
+        return protocolStrokeColor();
     }
 
     static QStringList fixedGroupIds()
@@ -490,41 +657,6 @@ private:
         return groupId.toUpper();
     }
 
-    static QStringList fallbackFields(const QString& groupId)
-    {
-        if (groupId == QStringLiteral("ahb")) {
-            return {QStringLiteral("addr[31:0]"), QStringLiteral("data[127:0]"), QStringLiteral("burst")};
-        }
-        if (groupId == QStringLiteral("uart")) {
-            return {QStringLiteral("rx"), QStringLiteral("tx")};
-        }
-        if (groupId == QStringLiteral("spi")) {
-            return {QStringLiteral("sclk"), QStringLiteral("mosi"), QStringLiteral("miso"), QStringLiteral("cs")};
-        }
-        if (groupId == QStringLiteral("can")) {
-            return {QStringLiteral("rx"), QStringLiteral("tx")};
-        }
-        if (groupId == QStringLiteral("i2c")) {
-            return {QStringLiteral("scl"), QStringLiteral("sda")};
-        }
-        if (groupId == QStringLiteral("eth")) {
-            return {QStringLiteral("rx"), QStringLiteral("tx")};
-        }
-        if (groupId == QStringLiteral("usb")) {
-            return {QStringLiteral("dp"), QStringLiteral("dm")};
-        }
-        if (groupId == QStringLiteral("jtag")) {
-            return {QStringLiteral("tck"), QStringLiteral("tms"), QStringLiteral("tdi"), QStringLiteral("tdo")};
-        }
-        return {
-            QStringLiteral("mismatch[4]"),
-            QStringLiteral("mismatch[3]"),
-            QStringLiteral("mismatch[2]"),
-            QStringLiteral("mismatch[1]"),
-            QStringLiteral("mismatch[0]"),
-        };
-    }
-
     const TraceGroupViewItem* findGroup(const QString& groupId) const
     {
         for (const TraceGroupViewItem& group : groups_) {
@@ -542,36 +674,6 @@ private:
         QVector<WaveformProtocolRow> result;
         const QStringList groupIds = fixedGroupIds();
         result.reserve(groupIds.size() * 6);
-
-        if (hasLoadedData()) {
-            WaveformProtocolRow signalSection;
-            signalSection.name = QStringLiteral("信号波形");
-            signalSection.section = true;
-            result.append(signalSection);
-
-            for (int groupIndex = 0; groupIndex < groupIds.size(); ++groupIndex) {
-                const QString groupId = groupIds.at(groupIndex);
-                const TraceGroupViewItem* const group = findGroup(groupId);
-                const QStringList fields = group != nullptr && !group->fields.isEmpty() ? group->fields : fallbackFields(groupId);
-                const int visibleFieldCount = qMin(fields.size(), groupId == QStringLiteral("mismatch") ? 5 : 4);
-                for (int fieldIndex = 0; fieldIndex < visibleFieldCount; ++fieldIndex) {
-                    WaveformProtocolRow fieldRow;
-                    fieldRow.groupId = groupId;
-                    fieldRow.name = QStringLiteral("%1: %2").arg(displayNameForId(groupId), fields.at(fieldIndex));
-                    fieldRow.status = group == nullptr ? QStringLiteral("not_captured") : group->status;
-                    fieldRow.reason = group == nullptr ? QString() : group->reason;
-                    fieldRow.child = true;
-                    fieldRow.groupIndex = groupIndex;
-                    fieldRow.childIndex = fieldIndex;
-                    result.append(fieldRow);
-                }
-            }
-
-            WaveformProtocolRow protocolSection;
-            protocolSection.name = QStringLiteral("协议解析");
-            protocolSection.section = true;
-            result.append(protocolSection);
-        }
 
         for (int groupIndex = 0; groupIndex < groupIds.size(); ++groupIndex) {
             const QString groupId = groupIds.at(groupIndex);
@@ -595,11 +697,14 @@ private:
                 continue;
             }
 
-            const QStringList fields = group != nullptr && !group->fields.isEmpty() ? group->fields : fallbackFields(groupId);
+            const QVector<TraceFieldViewItem> fields = group == nullptr
+                ? QVector<TraceFieldViewItem>() : group->fields;
             for (int fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex) {
                 WaveformProtocolRow fieldRow;
                 fieldRow.groupId = groupId;
-                fieldRow.name = fields.at(fieldIndex);
+                fieldRow.field = fields.at(fieldIndex);
+                fieldRow.name = fieldRow.field.displayName.isEmpty()
+                    ? fieldRow.field.name : fieldRow.field.displayName;
                 fieldRow.status = row.status;
                 fieldRow.reason = row.reason;
                 fieldRow.child = true;
@@ -613,7 +718,7 @@ private:
 
     bool hasLoadedData() const
     {
-        return !groups_.isEmpty();
+        return !samples_.isEmpty();
     }
 
     int leftPaneWidth() const
@@ -621,7 +726,7 @@ private:
         return qBound(190, width() / 4, 245);
     }
 
-    WaveformTimeAxis timeAxis() const
+    WaveformTimeAxis baseTimeAxis() const
     {
         WaveformTimeAxis axis;
         static const QRegularExpression rangeExpression(QStringLiteral("(-?\\d+)\\s*\\.\\.\\s*(-?\\d+)\\s*(\\S+)"));
@@ -638,9 +743,71 @@ private:
             }
         }
 
-        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
-        axis.end = axis.start + qMax<qint64>(1, static_cast<qint64>(span / horizontalZoom_));
         return axis;
+    }
+
+    WaveformTimeAxis timeAxis() const
+    {
+        const WaveformTimeAxis base = baseTimeAxis();
+        WaveformTimeAxis axis = base;
+        const int waveWidth = qMax(1, width() - leftPaneWidth());
+        const qint64 visibleSpan = qMax<qint64>(1, qRound64(effectiveTimeUnitsPerPixel() * waveWidth));
+        axis.start = qRound64(clampVisibleStart(visibleStartTime_));
+        axis.end = qMin(base.end, axis.start + visibleSpan);
+        if (axis.end <= axis.start) axis.end = axis.start + 1;
+        return axis;
+    }
+
+    double fitTimeUnitsPerPixel() const
+    {
+        const WaveformTimeAxis base = baseTimeAxis();
+        return static_cast<double>(qMax<qint64>(1, base.end - base.start)) /
+            static_cast<double>(qMax(1, width() - leftPaneWidth()));
+    }
+
+    double effectiveTimeUnitsPerPixel() const
+    {
+        return timeUnitsPerPixel_ > 0.0 ? timeUnitsPerPixel_ : fitTimeUnitsPerPixel();
+    }
+
+    double minimumTimeUnitsPerPixel() const
+    {
+        return 1.0 / static_cast<double>(qMax(1, width() - leftPaneWidth()));
+    }
+
+    double clampVisibleStart(const double value) const
+    {
+        const WaveformTimeAxis base = baseTimeAxis();
+        const double visibleSpan = effectiveTimeUnitsPerPixel() *
+            static_cast<double>(qMax(1, width() - leftPaneWidth()));
+        const double maximum = qMax(static_cast<double>(base.start),
+                                    static_cast<double>(base.end) - visibleSpan);
+        return qBound(static_cast<double>(base.start), value, maximum);
+    }
+
+    void panByPixels(const int delta)
+    {
+        visibleStartTime_ = clampVisibleStart(
+            visibleStartTime_ + static_cast<double>(delta) * effectiveTimeUnitsPerPixel());
+        if (hoverActive_) hoverTime_ = timeAtX(hoverPoint_.x());
+        update();
+    }
+
+    void zoomTimeAxisAt(const double factor, const double widgetX)
+    {
+        const int leftWidth = leftPaneWidth();
+        const int waveWidth = qMax(1, width() - leftWidth);
+        const double cursorPixels = qBound(0.0, widgetX - static_cast<double>(leftWidth),
+                                           static_cast<double>(waveWidth));
+        const double oldScale = effectiveTimeUnitsPerPixel();
+        const double anchorTime = visibleStartTime_ + cursorPixels * oldScale;
+        const double newScale = qBound(minimumTimeUnitsPerPixel(), oldScale / factor,
+                                       fitTimeUnitsPerPixel());
+        timeUnitsPerPixel_ = newScale;
+        visibleStartTime_ = clampVisibleStart(anchorTime - cursorPixels * newScale);
+        horizontalZoom_ = fitTimeUnitsPerPixel() / newScale;
+        if (hoverActive_) hoverTime_ = timeAtX(hoverPoint_.x());
+        updateAccessibleDescription();
     }
 
     void drawRuler(QPainter* const painter, const QRect& rect) const
@@ -672,7 +839,9 @@ private:
         painter->drawRect(QRect(rect.left() - 2, rect.top(), 4, rect.height()));
         painter->drawRoundedRect(QRect(rect.left() - 10, rect.top(), 20, 14), 2, 2);
         painter->setPen(QColor(QStringLiteral("#ffffff")));
-        painter->drawText(QRect(rect.left() - 10, rect.top(), 20, 14), Qt::AlignCenter, QStringLiteral("0"));
+        painter->drawText(QRect(rect.left() - 10, rect.top(), 20, 14),
+                          Qt::AlignCenter,
+                          QStringLiteral("0"));
     }
 
     void drawRow(
@@ -711,6 +880,15 @@ private:
         painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(), rowRect.bottom());
 
         if (row.group) {
+            painter->setPen(Qt::NoPen);
+            const QString normalizedStatus = row.status.trimmed().toLower();
+            const bool mismatchProblem = row.groupId == QStringLiteral("mismatch") &&
+                (normalizedStatus.contains(QStringLiteral("event")) ||
+                 normalizedStatus.contains(QStringLiteral("error")) ||
+                 normalizedStatus.contains(QStringLiteral("fault")));
+            painter->setBrush(mismatchProblem
+                ? mismatchStrokeColor() : groupColor(row.groupId, row.groupIndex));
+            painter->drawRect(QRect(2, rowRect.top() + 5, 4, rowRect.height() - 10));
             drawDisclosure(painter, QRect(10, rowRect.top() + 8, 11, 11), row.expanded);
         }
 
@@ -807,7 +985,7 @@ private:
             } else if (unavailableStatus(row.status)) {
                 drawUnavailable(painter, rect, row.reason);
             } else {
-                drawProtocolActivity(painter, rect.adjusted(0, 5, 0, -5), row);
+                drawEmptyActivity(painter, rect, QStringLiteral("已解析，未检测到协议事件"));
             }
             return;
         }
@@ -817,10 +995,10 @@ private:
             return;
         }
 
-        if (isBusField(row.name)) {
+        if (row.field.width > 1) {
             drawBusField(painter, rect, row);
         } else {
-            drawDigitalField(painter, rect, row.groupIndex + row.childIndex, row.name);
+            drawDigitalField(painter, rect, row);
         }
     }
 
@@ -849,141 +1027,244 @@ private:
         }
     }
 
-    static bool isBusField(const QString& name)
+    static void drawEmptyActivity(QPainter* const painter, const QRect& rect, const QString& text)
     {
-        return name.contains(QStringLiteral(":")) ||
-            name.contains(QStringLiteral("addr"), Qt::CaseInsensitive) ||
-            name.contains(QStringLiteral("data"), Qt::CaseInsensitive);
+        painter->setPen(QPen(protocolStrokeColor(), 1));
+        painter->drawLine(rect.left() + 18, rect.center().y(), rect.right() - 18, rect.center().y());
+        painter->setPen(textMutedColor());
+        painter->drawText(rect.adjusted(24, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
     }
 
-    static QString sampleFieldValue(const QString& name, const int index)
+    static QString groupHexDigits(const QString& hex)
     {
-        if (name.contains(QStringLiteral("127:0"))) {
-            return QStringLiteral("0x%1").arg(0x1000 + index * 0x40, 32, 16, QLatin1Char('0'));
+        QString grouped;
+        grouped.reserve(hex.size() + hex.size() / 4);
+        for (int index = 0; index < hex.size(); ++index) {
+            if (index > 0 && ((hex.size() - index) % 4) == 0) {
+                grouped.append(QLatin1Char('_'));
+            }
+            grouped.append(hex.at(index));
         }
-        if (name.contains(QStringLiteral("31:0"))) {
-            return QStringLiteral("0x%1").arg(0x80000000ULL + static_cast<quint64>(index) * 0x20ULL, 8, 16, QLatin1Char('0'));
-        }
-        return QStringLiteral("0x%1").arg(index + 1, 2, 16, QLatin1Char('0'));
+        return grouped;
     }
 
-    static void drawBusField(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row)
+    static int hexNibble(const QChar value)
     {
-        const int blockCount = qMax(2, qMin(4, rect.width() / 150));
-        const int span = qMax(1, rect.width() - 60);
-        for (int index = 0; index < blockCount; ++index) {
-            const int x = rect.left() + 24 + span * index / blockCount;
-            const QRect blockRect(x, rect.top() + 6, qMin(qMax(70, span / (blockCount + 1)), rect.right() - x - 8), rect.height() - 12);
-            if (blockRect.width() <= 20) {
+        const ushort code = value.toUpper().unicode();
+        if (code >= '0' && code <= '9') {
+            return static_cast<int>(code - '0');
+        }
+        if (code >= 'A' && code <= 'F') {
+            return static_cast<int>(code - 'A' + 10);
+        }
+        return 0;
+    }
+
+    static quint64 fieldValue(const TraceSampleViewItem& sample, const TraceFieldViewItem& field)
+    {
+        quint64 value = 0U;
+        const int width = qBound(1, field.width, 64);
+        for (int bit = 0; bit < width; ++bit) {
+            const int packedBit = field.lsb + bit;
+            const int nibbleIndex = sample.valueHex.size() - 1 - packedBit / 4;
+            if (nibbleIndex < 0 || nibbleIndex >= sample.valueHex.size()) {
                 continue;
             }
-            painter->setPen(busStrokeColor());
-            painter->setBrush(busFillColor());
-            painter->drawRoundedRect(blockRect, 2, 2);
-            painter->setPen(QColor(QStringLiteral("#0958d9")));
-            painter->drawText(blockRect.adjusted(6, 0, -6, 0),
-                              Qt::AlignVCenter | Qt::AlignLeft,
-                              painter->fontMetrics().elidedText(sampleFieldValue(row.name, index),
-                                                                Qt::ElideRight,
-                                                                blockRect.width() - 12));
+            if ((hexNibble(sample.valueHex.at(nibbleIndex)) & (1 << (packedBit % 4))) != 0) {
+                value |= quint64(1) << bit;
+            }
         }
+        return value;
     }
 
-    static void drawDigitalField(QPainter* const painter, const QRect& rect, const int seed, const QString& name)
+    static QString fieldValueText(const TraceSampleViewItem& sample, const TraceFieldViewItem& field)
     {
-        QPainterPath path;
+        const QString hex = QStringLiteral("%1")
+            .arg(fieldValue(sample, field), qMax(1, (field.width + 3) / 4), 16, QLatin1Char('0'))
+            .toUpper();
+        return QStringLiteral("0x%1").arg(groupHexDigits(hex));
+    }
+
+    static int timeToX(const qint64 time, const WaveformTimeAxis& axis, const QRect& rect)
+    {
+        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
+        const double ratio = qBound(
+            0.0,
+            static_cast<double>(time - axis.start) / static_cast<double>(span),
+            1.0);
+        return rect.left() + qRound(ratio * static_cast<double>(rect.width()));
+    }
+
+    int firstVisibleSampleIndex(const qint64 time) const
+    {
+        int low = 0;
+        int high = samples_.size();
+        while (low < high) {
+            const int middle = low + (high - low) / 2;
+            if (samples_.at(middle).time <= time) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        return qMax(0, low - 1);
+    }
+
+    void drawBusField(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
+    {
+        const WaveformTimeAxis axis = timeAxis();
+        const int top = rect.top() + 7;
+        const int bottom = rect.bottom() - 7;
+        const int first = firstVisibleSampleIndex(axis.start);
+        if (first < 0 || first >= samples_.size()) return;
+
+        const auto sameValue = [&](const int left, const int right) {
+            return samples_.at(left).unknown == samples_.at(right).unknown &&
+                fieldValue(samples_.at(left), row.field) == fieldValue(samples_.at(right), row.field);
+        };
+        const auto drawStableSegment = [&](const qint64 startTime, const qint64 endTime,
+                                           const int sampleIndex, const bool leftTransition,
+                                           const bool rightTransition) {
+            const int rawX0 = timeToX(qMax(startTime, axis.start), axis, rect);
+            const int rawX1 = timeToX(qMin(endTime, axis.end), axis, rect);
+            const int x0 = rawX0 + (leftTransition ? 4 : 0);
+            const int x1 = rawX1 - (rightTransition ? 4 : 0);
+            if (x1 <= x0) return;
+            const QRect blockRect(x0, top, x1 - x0, qMax(2, bottom - top));
+            QPen busPen(samples_.at(sampleIndex).unknown ? unavailableColor() : busStrokeColor());
+            busPen.setStyle(samples_.at(sampleIndex).unknown ? Qt::DashLine : Qt::SolidLine);
+            painter->setPen(busPen);
+            painter->fillRect(blockRect.adjusted(0, 1, 0, -1), busFillColor());
+            painter->drawLine(blockRect.left(), blockRect.top(), blockRect.right(), blockRect.top());
+            painter->drawLine(blockRect.left(), blockRect.bottom(), blockRect.right(), blockRect.bottom());
+            painter->setPen(QColor(QStringLiteral("#27475c")));
+            painter->drawText(blockRect.adjusted(6, 0, -6, 0), Qt::AlignCenter,
+                              painter->fontMetrics().elidedText(
+                                  samples_.at(sampleIndex).unknown
+                                      ? QStringLiteral("X")
+                                      : fieldValueText(samples_.at(sampleIndex), row.field),
+                                  Qt::ElideRight, qMax(0, blockRect.width() - 12)));
+        };
+        const auto drawTransition = [&](const qint64 time) {
+            const int x = timeToX(time, axis, rect);
+            painter->setPen(QPen(busStrokeColor(), 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawLine(x - 4, top, x + 4, bottom);
+            painter->drawLine(x - 4, bottom, x + 4, top);
+        };
+
+        int runSample = first;
+        qint64 runStart = axis.start;
+        bool leftTransition = samples_.at(first).time > axis.start;
+        for (int index = first + 1; index < samples_.size() && samples_.at(index).time <= axis.end; ++index) {
+            if (sameValue(runSample, index)) continue;
+            const qint64 transitionTime = samples_.at(index).time;
+            drawStableSegment(runStart, transitionTime, runSample, leftTransition, true);
+            drawTransition(transitionTime);
+            runSample = index;
+            runStart = transitionTime;
+            leftTransition = true;
+        }
+        drawStableSegment(runStart, axis.end, runSample, leftTransition, false);
+    }
+
+    void drawDigitalField(
+        QPainter* const painter,
+        const QRect& rect,
+        const WaveformProtocolRow& row) const
+    {
+        const WaveformTimeAxis axis = timeAxis();
         const int high = rect.top() + 8;
         const int low = rect.bottom() - 8;
-        const int densitySeed = static_cast<int>(qHash(name) % 7U);
-        const int step = qMax(16, rect.width() / (14 + densitySeed + (seed % 5)));
-        int x = rect.left() + 20;
-        int y = (seed % 2 == 0) ? high : low;
-        path.moveTo(x, y);
-        while (x < rect.right() - 18) {
-            const int nextX = qMin(rect.right() - 18, x + step);
-            path.lineTo(nextX, y);
-            y = (y == high) ? low : high;
-            path.lineTo(nextX, y);
-            x = nextX;
-        }
-        QPen pen(signalWaveColor());
-        pen.setWidthF(1.2);
-        painter->setPen(pen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawPath(path);
-    }
-
-    void drawProtocolActivity(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
-    {
-        const bool mismatch = row.groupId == QStringLiteral("mismatch");
-        const QString normalizedStatus = row.status.trimmed().toLower();
-        const bool mismatchEvent =
-            mismatch &&
-            (normalizedStatus.contains(QStringLiteral("mismatch")) ||
-             normalizedStatus.contains(QStringLiteral("event")) ||
-             normalizedStatus.contains(QStringLiteral("error")) ||
-             normalizedStatus.contains(QStringLiteral("fault")));
-        const QColor fill = mismatchEvent ? mismatchFillColor() : (mismatch ? okFillColor() : protocolFillColor());
-        const QColor stroke = mismatchEvent ? mismatchStrokeColor() : (mismatch ? okColor() : protocolStrokeColor());
-        const QColor text = mismatchEvent ? QColor(QStringLiteral("#a8071a")) :
-            (mismatch ? QColor(QStringLiteral("#166534")) : QColor(QStringLiteral("#ad4e00")));
-        const int blockCount = mismatch ? 2 : qMax(2, qMin(4, rect.width() / 220));
-        const int blockWidth = qMax(78, qMin(150, rect.width() / 9));
-
-        for (int index = 0; index < blockCount; ++index) {
-            const int usableWidth = qMax(1, rect.width() - blockWidth - 42);
-            const int x = rect.left() + 22 + ((index * 137 + row.groupIndex * 31) % usableWidth);
-            const QRect blockRect(x, rect.top(), qMin(blockWidth, rect.right() - x - 4), rect.height());
-            if (blockRect.width() <= 18) {
+        for (int index = firstVisibleSampleIndex(axis.start); index < samples_.size(); ++index) {
+            const qint64 startTime = samples_.at(index).time;
+            const qint64 endTime = index + 1 < samples_.size()
+                ? samples_.at(index + 1).time : axis.end;
+            if (endTime < axis.start || startTime > axis.end) {
+                if (startTime > axis.end) {
+                    break;
+                }
                 continue;
             }
-
-            painter->setPen(stroke);
-            painter->setBrush(fill);
-            painter->drawRoundedRect(blockRect, 2, 2);
-            painter->setPen(text);
-            const QString label = mismatch
-                ? (mismatchEvent ? QStringLiteral("mismatch") : QStringLiteral("no mismatch"))
-                : QStringLiteral("%1 event").arg(displayNameForId(row.groupId));
-            painter->drawText(blockRect.adjusted(6, 0, -6, 0),
-                              Qt::AlignVCenter | Qt::AlignLeft,
-                              painter->fontMetrics().elidedText(label, Qt::ElideRight, blockRect.width() - 12));
+            const bool highValue = fieldValue(samples_.at(index), row.field) != 0U;
+            const int y = samples_.at(index).unknown ? rect.center().y() : (highValue ? high : low);
+            const int x0 = timeToX(qMax(startTime, axis.start), axis, rect);
+            const int x1 = timeToX(qMin(qMax(startTime + 1, endTime), axis.end), axis, rect);
+            const QColor color = row.field.errorSignal && highValue
+                ? mismatchStrokeColor() : signalWaveColor();
+            QPen segmentPen(samples_.at(index).unknown ? unavailableColor() : color,
+                            row.field.errorSignal && highValue ? 2.0 : 1.2);
+            segmentPen.setStyle(samples_.at(index).unknown ? Qt::DashLine : Qt::SolidLine);
+            painter->setPen(segmentPen);
+            painter->drawLine(x0, y, x1, y);
+            if (!samples_.at(index).unknown && index + 1 < samples_.size() &&
+                !samples_.at(index + 1).unknown) {
+                const bool nextHigh = fieldValue(samples_.at(index + 1), row.field) != 0U;
+                if (nextHigh != highValue) {
+                    const QColor edgeColor = row.field.errorSignal && (highValue || nextHigh)
+                        ? mismatchStrokeColor() : signalWaveColor();
+                    painter->setPen(QPen(edgeColor, 1.2));
+                    painter->drawLine(x1, highValue ? high : low, x1, nextHigh ? high : low);
+                }
+            }
         }
+    }
+
+    QRect transactionBlockRect(
+        const QRect& rect,
+        const WaveformProtocolRow& row,
+        const int index) const
+    {
+        if (index < 0 || index >= row.transactions.size()) return QRect();
+        const WaveformTimeAxis axis = timeAxis();
+        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
+        qint64 start = 0;
+        qint64 end = 0;
+        const bool hasTime = parseTransactionRange(row.transactions.at(index), &start, &end);
+        int x = rect.left() + 24 + ((index * 67 + row.groupIndex * 19) % qMax(1, rect.width() - 120));
+        int blockWidth = qMax(64, rect.width() / 8);
+        if (hasTime) {
+            if (end < axis.start || start > axis.end) return QRect();
+            const qint64 clampedStart = qBound(axis.start, start, axis.end);
+            const qint64 clampedEnd = qBound(axis.start, qMax(start + 1, end), axis.end);
+            x = clampedStart >= axis.end
+                ? qMax(rect.left(), rect.right() - 44)
+                : rect.left() + static_cast<int>(
+                      (clampedStart - axis.start) * rect.width() / span);
+            const int availableWidth = rect.right() - x - 4;
+            if (availableWidth <= 4) return QRect();
+            blockWidth = qMin(
+                qMax(44, static_cast<int>(
+                             qMax<qint64>(1, clampedEnd - clampedStart) * rect.width() / span)),
+                availableWidth);
+        }
+        const int lane = index % 2;
+        const QRect blockRect(x, rect.top() + lane * 2, blockWidth, rect.height() - lane * 2);
+        return blockRect.width() > 4 ? blockRect : QRect();
     }
 
     void drawTransactions(QPainter* const painter, const QRect& rect, const WaveformProtocolRow& row) const
     {
-        const WaveformTimeAxis axis = timeAxis();
-        const qint64 span = qMax<qint64>(1, axis.end - axis.start);
-        const int count = qMin(row.transactions.size(), 5);
-        for (int index = 0; index < count; ++index) {
-            qint64 start = 0;
-            qint64 end = 0;
-            const bool hasTime = parseTransactionRange(row.transactions.at(index), &start, &end);
-            int x = rect.left() + 24 + ((index * 67 + row.groupIndex * 19) % qMax(1, rect.width() - 120));
-            int blockWidth = qMax(64, rect.width() / 8);
-            if (hasTime) {
-                const qint64 clampedStart = qBound(axis.start, start, axis.end);
-                const qint64 clampedEnd = qBound(axis.start, qMax(start + 1, end), axis.end);
-                x = rect.left() + static_cast<int>((clampedStart - axis.start) * rect.width() / span);
-                blockWidth = qMin(qMax(56, static_cast<int>((clampedEnd - clampedStart) * rect.width() / span)), rect.right() - x - 4);
-            }
-
-            const QRect blockRect(x, rect.top(), blockWidth, rect.height());
-            if (blockRect.width() <= 16) {
-                continue;
-            }
+        for (int index = 0; index < row.transactions.size(); ++index) {
+            const QRect blockRect = transactionBlockRect(rect, row, index);
+            if (blockRect.isEmpty()) continue;
+            if (firstProtocolEventRect_.isEmpty()) firstProtocolEventRect_ = blockRect;
+            const QString eventText = row.transactions.at(index).toUpper();
             const bool mismatch = row.groupId == QStringLiteral("mismatch") ||
-                row.transactions.at(index).contains(QStringLiteral("mismatch"), Qt::CaseInsensitive);
+                eventText.contains(QStringLiteral("MISMATCH")) ||
+                eventText.contains(QStringLiteral("RESP=ERROR")) ||
+                eventText.contains(QStringLiteral("RESP=RETRY")) ||
+                eventText.contains(QStringLiteral("RESP=SPLIT"));
             painter->setPen(mismatch ? mismatchStrokeColor() : protocolStrokeColor());
             painter->setBrush(mismatch ? mismatchFillColor() : protocolFillColor());
             painter->drawRoundedRect(blockRect, 2, 2);
-            painter->setPen(mismatch ? QColor(QStringLiteral("#a8071a")) : QColor(QStringLiteral("#ad4e00")));
+            painter->setPen(mismatch ? QColor(QStringLiteral("#a8071a")) : QColor(QStringLiteral("#27475c")));
             painter->drawText(blockRect.adjusted(6, 0, -6, 0),
                               Qt::AlignVCenter | Qt::AlignLeft,
                               painter->fontMetrics().elidedText(transactionLabel(row.transactions.at(index)),
                                                                 Qt::ElideRight,
                                                                 blockRect.width() - 12));
+            ++renderedProtocolEvents_;
         }
     }
 
@@ -1012,23 +1293,58 @@ private:
 
     static QString transactionLabel(const QString& text)
     {
+        static const QRegularExpression ahbLabelExpression(
+            QStringLiteral("AHB\\s+(READ|WRITE)\\s+(0x[0-9A-Fa-f]+)"));
+        const QRegularExpressionMatch ahbMatch = ahbLabelExpression.match(text);
+        if (ahbMatch.hasMatch()) {
+            return QStringLiteral("AHB %1 %2")
+                .arg(ahbMatch.captured(1),
+                     QStringLiteral("0x%1").arg(ahbMatch.captured(2).mid(2).toUpper()));
+        }
         const int bracketEnd = text.indexOf(QLatin1Char(']'));
         const QString label = bracketEnd >= 0 ? text.mid(bracketEnd + 1).trimmed() : text.trimmed();
         return label.isEmpty() ? QStringLiteral("event") : label;
     }
 
+    QString transactionDetails(const QString& text) const
+    {
+        qint64 start = 0;
+        qint64 end = 0;
+        parseTransactionRange(text, &start, &end);
+        static const QRegularExpression ahbExpression(QStringLiteral(
+            "AHB\\s+(READ|WRITE)\\s+(0x[0-9A-Fa-f]+)\\s+DATA=(0x[0-9A-Fa-f]+)\\s+RESP=([A-Za-z0-9x]+)"));
+        const QRegularExpressionMatch match = ahbExpression.match(text);
+        if (match.hasMatch()) {
+            const auto formattedHex = [](const QString& value) {
+                return QStringLiteral("0x%1").arg(value.mid(2).toUpper());
+            };
+            QString response = match.captured(4).toUpper();
+            if (response == QStringLiteral("0") || response == QStringLiteral("0X0")) response = QStringLiteral("OKAY");
+            else if (response == QStringLiteral("1") || response == QStringLiteral("0X1")) response = QStringLiteral("ERROR");
+            else if (response == QStringLiteral("2") || response == QStringLiteral("0X2")) response = QStringLiteral("RETRY");
+            else if (response == QStringLiteral("3") || response == QStringLiteral("0X3")) response = QStringLiteral("SPLIT");
+            return QStringLiteral("AHB %1\nADDR=%2\nDATA=%3\nRESP=%4\n时间: %5..%6 %7")
+                .arg(match.captured(1), formattedHex(match.captured(2)), formattedHex(match.captured(3)),
+                     response, QString::number(start), QString::number(end), timeAxis().unit);
+        }
+        return QStringLiteral("%1\n时间: %2..%3 %4")
+            .arg(transactionLabel(text), QString::number(start), QString::number(end), timeAxis().unit);
+    }
+
     void drawRemainingGrid(QPainter* const painter, const int leftWidth, const int rowCount) const
     {
-        const int y = kRulerHeight + rowCount * kRowHeight - verticalOffset_;
-        if (y >= height()) {
+        const int y = kRulerHeight + rowCount * rowHeight_ - verticalOffset_;
+        const int bodyBottom = height() - kHorizontalScrollBarHeight;
+        if (y >= bodyBottom) {
             return;
         }
-        const QRect leftRect(0, qMax(kRulerHeight, y), leftWidth, height() - qMax(kRulerHeight, y));
+        const QRect leftRect(0, qMax(kRulerHeight, y), leftWidth,
+                             bodyBottom - qMax(kRulerHeight, y));
         const QRect waveRect(leftWidth + 1, leftRect.top(), width() - leftWidth - 2, leftRect.height());
         painter->fillRect(leftRect, QColor(QStringLiteral("#fbfcfe")));
         drawGrid(painter, waveRect);
         painter->setPen(QColor(QStringLiteral("#eef2f7")));
-        for (int rowY = leftRect.top(); rowY < height(); rowY += kRowHeight) {
+        for (int rowY = leftRect.top(); rowY < height(); rowY += rowHeight_) {
             painter->drawLine(0, rowY, width(), rowY);
         }
     }
@@ -1042,11 +1358,132 @@ private:
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor(QStringLiteral("#eef2f7")));
         painter->drawRoundedRect(rect, 3, 3);
-        const int contentHeight = rows().size() * kRowHeight;
+        const int contentHeight = rows().size() * rowHeight_;
         const int thumbHeight = qMax(28, rect.height() * rect.height() / qMax(1, contentHeight));
         const int thumbY = rect.top() + (rect.height() - thumbHeight) * verticalOffset_ / maxOffset;
         painter->setBrush(QColor(QStringLiteral("#aeb9c8")));
         painter->drawRoundedRect(QRect(rect.left(), thumbY, rect.width(), thumbHeight), 3, 3);
+    }
+
+    void updateHorizontalScrollBar()
+    {
+        if (horizontalScrollBar_ == nullptr) return;
+        horizontalScrollBar_->setGeometry(
+            leftPaneWidth(), height() - kHorizontalScrollBarHeight,
+            qMax(0, width() - leftPaneWidth() - 8), kHorizontalScrollBarHeight);
+        const WaveformTimeAxis base = baseTimeAxis();
+        const WaveformTimeAxis visible = timeAxis();
+        const qint64 fullSpan = qMax<qint64>(1, base.end - base.start);
+        const qint64 visibleSpan = qBound<qint64>(1, visible.end - visible.start, fullSpan);
+        const qint64 scrollableSpan = qMax<qint64>(0, fullSpan - visibleSpan);
+        constexpr int kNormalizedMaximum = 1000000;
+        const QSignalBlocker blocker(horizontalScrollBar_);
+        horizontalScrollBar_->setRange(0, scrollableSpan > 0 ? kNormalizedMaximum : 0);
+        horizontalScrollBar_->setPageStep(scrollableSpan > 0
+            ? qMax(1, qRound(static_cast<double>(kNormalizedMaximum) * visibleSpan / scrollableSpan))
+            : 1);
+        horizontalScrollBar_->setValue(scrollableSpan > 0
+            ? qRound(static_cast<double>(kNormalizedMaximum) *
+                     static_cast<double>(visible.start - base.start) / scrollableSpan)
+            : 0);
+        horizontalScrollBar_->setEnabled(scrollableSpan > 0);
+        horizontalScrollBar_->show();
+    }
+
+    qint64 timeAtX(const int x) const
+    {
+        const int left = leftPaneWidth();
+        const int waveWidth = qMax(1, width() - left);
+        const WaveformTimeAxis axis = timeAxis();
+        const double ratio = qBound(0.0,
+                                    static_cast<double>(x - left) / static_cast<double>(waveWidth),
+                                    1.0);
+        return axis.start + qRound64(ratio * static_cast<double>(axis.end - axis.start));
+    }
+
+    QString hoverText() const
+    {
+        if (!hoverActive_ || samples_.isEmpty()) return QString();
+        const QVector<WaveformProtocolRow> visibleRows = rows();
+        const int rowIndex = rowIndexAt(hoverPoint_.y());
+        if (rowIndex < 0 || rowIndex >= visibleRows.size()) return QString();
+        const int sampleIndex = firstVisibleSampleIndex(hoverTime_);
+        if (sampleIndex < 0 || sampleIndex >= samples_.size()) return QString();
+
+        const WaveformProtocolRow& row = visibleRows.at(rowIndex);
+        if (row.group && !row.transactions.isEmpty()) {
+            const QRect rowRect(0, kRulerHeight + rowIndex * rowHeight_ - verticalOffset_,
+                                width(), rowHeight_);
+            const QRect trackRect(leftPaneWidth() + 1, rowRect.top(),
+                                  rowRect.width() - leftPaneWidth() - 2, rowRect.height());
+            for (int index = 0; index < row.transactions.size(); ++index) {
+                if (transactionBlockRect(trackRect.adjusted(0, 4, 0, -4), row, index)
+                        .contains(hoverPoint_)) {
+                    return transactionDetails(row.transactions.at(index));
+                }
+            }
+        }
+        const TraceSampleViewItem& sample = samples_.at(sampleIndex);
+        QString signalName = row.name;
+        QString valueText;
+        if (row.child) {
+            valueText = sample.unknown
+                ? QStringLiteral("X")
+                : (row.field.width == 1
+                    ? QString::number(fieldValue(sample, row.field))
+                    : fieldValueText(sample, row.field));
+        } else {
+            const QString compact = sample.valueHex.size() > 16
+                ? QStringLiteral("...%1").arg(sample.valueHex.right(16)) : sample.valueHex;
+            valueText = sample.unknown ? QStringLiteral("X") : QStringLiteral("0x%1").arg(compact);
+            signalName += QStringLiteral(" / 样本低 64 bit");
+        }
+        return QStringLiteral("时间: %1 %2\n信号: %3\n数值: %4")
+            .arg(hoverTime_).arg(timeAxis().unit, signalName, valueText);
+    }
+
+    void updateHover(const QPoint& point)
+    {
+        hoverActive_ = hasLoadedData() && point.x() >= leftPaneWidth() &&
+            point.x() < width() && point.y() >= kRulerHeight &&
+            point.y() < height() - kHorizontalScrollBarHeight;
+        hoverPoint_ = point;
+        if (hoverActive_) hoverTime_ = timeAtX(point.x());
+        setProperty("waveformCursorText", hoverText());
+        updateAccessibleDescription();
+        update();
+    }
+
+    void drawHoverCursor(QPainter* const painter) const
+    {
+        if (painter == nullptr || !hoverActive_ || hoverPoint_.x() < leftPaneWidth()) return;
+        const QString text = hoverText();
+        if (text.isEmpty()) return;
+
+        painter->setPen(QPen(QColor(QStringLiteral("#476b82")), 1.0, Qt::DashLine));
+        painter->drawLine(hoverPoint_.x(), 0, hoverPoint_.x(), height());
+        painter->setBrush(QColor(QStringLiteral("#476b82")));
+        painter->setPen(Qt::NoPen);
+        painter->drawRect(QRect(hoverPoint_.x() - 2, 0, 4, kRulerHeight));
+
+        const QStringList lines = text.split(QLatin1Char('\n'));
+        const QFontMetrics metrics(painter->font());
+        int textWidth = 0;
+        for (const QString& line : lines) textWidth = qMax(textWidth, metrics.horizontalAdvance(line));
+        const QSize boxSize(textWidth + 20, lines.size() * metrics.lineSpacing() + 16);
+        QPoint boxPoint(hoverPoint_.x() + 12, hoverPoint_.y() + 12);
+        if (boxPoint.x() + boxSize.width() > width() - 8) boxPoint.setX(hoverPoint_.x() - boxSize.width() - 12);
+        if (boxPoint.y() + boxSize.height() > height() - 8) boxPoint.setY(hoverPoint_.y() - boxSize.height() - 12);
+        const QRect boxRect(boxPoint, boxSize);
+        painter->setPen(QPen(QColor(QStringLiteral("#9aaaba")), 1));
+        painter->setBrush(QColor(QStringLiteral("#ffffff")));
+        painter->drawRoundedRect(boxRect, 3, 3);
+        painter->setPen(textStrongColor());
+        for (int index = 0; index < lines.size(); ++index) {
+            painter->drawText(boxRect.left() + 10,
+                              boxRect.top() + 9 + metrics.ascent() + index * metrics.lineSpacing(),
+                              lines.at(index));
+        }
     }
 
     int rowIndexAt(const int y) const
@@ -1054,19 +1491,36 @@ private:
         if (y < kRulerHeight) {
             return -1;
         }
-        return (y - kRulerHeight + verticalOffset_) / kRowHeight;
+        return (y - kRulerHeight + verticalOffset_) / rowHeight_;
     }
 
     int maxVerticalOffset() const
     {
-        return qMax(0, rows().size() * kRowHeight - qMax(0, height() - kRulerHeight));
+        return qMax(0, rows().size() * rowHeight_ -
+                         qMax(0, height() - kRulerHeight - kHorizontalScrollBarHeight));
+    }
+
+    void zoomRowsAt(const int delta, const double widgetY)
+    {
+        const int oldHeight = rowHeight_;
+        const int newHeight = qBound(18, oldHeight + delta, 96);
+        if (newHeight == oldHeight) return;
+        const double contentY = qMax(0.0, widgetY - kRulerHeight + verticalOffset_);
+        const double rowPosition = contentY / static_cast<double>(oldHeight);
+        rowHeight_ = newHeight;
+        verticalOffset_ = qBound(0,
+                                 qRound(rowPosition * newHeight - qMax(0.0, widgetY - kRulerHeight)),
+                                 maxVerticalOffset());
+        setProperty("waveformRowHeight", rowHeight_);
+        updateAccessibleDescription();
+        update();
     }
 
     void ensureSelectedVisible()
     {
-        const int bodyHeight = qMax(0, height() - kRulerHeight);
-        const int rowTop = selectedRow_ * kRowHeight;
-        const int rowBottom = rowTop + kRowHeight;
+        const int bodyHeight = qMax(0, height() - kRulerHeight - kHorizontalScrollBarHeight);
+        const int rowTop = selectedRow_ * rowHeight_;
+        const int rowBottom = rowTop + rowHeight_;
         if (rowTop < verticalOffset_) {
             verticalOffset_ = rowTop;
         } else if (rowBottom > verticalOffset_ + bodyHeight) {
@@ -1083,17 +1537,47 @@ private:
             expandedGroups_.insert(groupId);
         }
         verticalOffset_ = qBound(0, verticalOffset_, maxVerticalOffset());
+        updateAccessibleDescription();
         update();
+    }
+
+    void updateAccessibleDescription()
+    {
+        const QString cursor = hoverText();
+        setProperty("waveformZoom", horizontalZoom_);
+        setProperty("waveformRowHeight", rowHeight_);
+        const WaveformTimeAxis visible = timeAxis();
+        setProperty("waveformVisibleStart", visible.start);
+        setProperty("waveformVisibleEnd", visible.end);
+        setProperty("waveformScrollMaximum", horizontalScrollBar_->maximum());
+        setAccessibleDescription(
+            QStringLiteral("9 个协议组，%1 个已展开；缩放 %2x；方向键选择，左右键展开或折叠。%3")
+                .arg(expandedGroups_.size())
+                .arg(horizontalZoom_, 0, 'f', 1)
+                .arg(cursor.isEmpty() ? QString() : QStringLiteral(" 鼠标指针: %1").arg(cursor)));
     }
 
     QString statusText_;
     QString pathText_;
     QString timeRangeText_;
     QVector<TraceGroupViewItem> groups_;
+    QVector<TraceSampleViewItem> samples_;
     QSet<QString> expandedGroups_;
     int selectedRow_;
+    int rowHeight_;
     int verticalOffset_;
     double horizontalZoom_;
+    double timeUnitsPerPixel_;
+    double visibleStartTime_;
+    bool hoverActive_;
+    QPoint hoverPoint_;
+    qint64 hoverTime_;
+    QScrollBar* horizontalScrollBar_;
+    mutable int renderedProtocolEvents_;
+    mutable QRect firstProtocolEventRect_;
+    bool panning_;
+    QPoint panStart_;
+    double panStartOffset_;
 };
 
 QLabel* pageTitle(const QString& text, QWidget* const parent)
@@ -1198,7 +1682,8 @@ MainWindowShell::MainWindowShell(QWidget* const parent)
       waveformStatusText_(),
       waveformPathText_(),
       waveformTimeRangeText_(),
-      waveformGroups_()
+      waveformGroups_(),
+      waveformSamples_()
 {
     qRegisterMetaType<UiActionRequest>("lockstep::ui::UiActionRequest");
     qRegisterMetaType<UiWorkbenchState>("lockstep::ui::UiWorkbenchState");
@@ -1228,6 +1713,13 @@ void MainWindowShell::applyResponsiveScale()
     }
     if (topStatusBar_ != nullptr) {
         topStatusBar_->applyScale(uiScale_);
+    }
+
+    QSplitter* const reportSplit = findChild<QSplitter*>(QStringLiteral("report_main_split"));
+    if (reportSplit != nullptr) {
+        const bool compactReport = width() < 1500;
+        reportSplit->setOrientation(compactReport ? Qt::Vertical : Qt::Horizontal);
+        reportSplit->setMinimumHeight(scaledMetric(compactReport ? 360 : 220, uiScale_));
     }
 
     QFrame* const sidebar = findChild<QFrame*>(QStringLiteral("sidebar"));
@@ -1558,6 +2050,7 @@ void MainWindowShell::setWaveformTraceView(
     const QString& pathText,
     const QString& timeRangeText,
     const QVector<TraceGroupViewItem>& groups,
+    const QVector<TraceSampleViewItem>& samples,
     const QStringList& keyBehaviors,
     const QStringList& diagnostics)
 {
@@ -1572,6 +2065,7 @@ void MainWindowShell::setWaveformTraceView(
     waveformPathText_ = pathText;
     waveformTimeRangeText_ = timeRangeText;
     waveformGroups_ = groups;
+    waveformSamples_ = samples;
 
     if (statusLabel != nullptr) {
         statusLabel->setText(statusText);
@@ -1598,13 +2092,18 @@ void MainWindowShell::setProtocolAnalysisView(
     QPlainTextEdit* const diagnosticsEdit = findChild<QPlainTextEdit*>(QStringLiteral("protocol_diagnostics_edit"));
 
     if (statusLabel != nullptr) {
-        statusLabel->setText(statusText);
+        statusLabel->setText(QStringLiteral("%1 · %2 条协议事件")
+                                 .arg(statusText)
+                                 .arg(keyBehaviors.size()));
     }
     if (analysisEdit != nullptr) {
         analysisEdit->setText(analysisPath);
     }
     if (keyEdit != nullptr) {
-        keyEdit->setPlainText(keyBehaviors.isEmpty() ? QStringLiteral("暂无关键行为。") : keyBehaviors.join(QLatin1Char('\n')));
+        keyEdit->setProperty("protocolEventCount", keyBehaviors.size());
+        keyEdit->setPlainText(keyBehaviors.isEmpty()
+            ? QStringLiteral("采样窗口内未检测到完整协议事务。")
+            : keyBehaviors.join(QLatin1Char('\n')));
     }
     if (diagnosticsEdit != nullptr) {
         diagnosticsEdit->setPlainText(diagnostics.isEmpty() ? QStringLiteral("暂无诊断。") : diagnostics.join(QLatin1Char('\n')));
@@ -1904,7 +2403,8 @@ void MainWindowShell::showWaveformDetached()
 
     detachedWaveformDialog_ = new QDialog(this);
     detachedWaveformDialog_->setAttribute(Qt::WA_DeleteOnClose, true);
-    detachedWaveformDialog_->setWindowTitle(QStringLiteral("波形分析仪"));
+    detachedWaveformDialog_->setWindowTitle(
+        QStringLiteral("波形与协议 - lockstep_ui_preview"));
     detachedWaveformDialog_->setWindowFlag(Qt::WindowMaximizeButtonHint, true);
     detachedWaveformDialog_->setSizeGripEnabled(true);
     detachedWaveformDialog_->setMinimumSize(760, 460);
@@ -2407,11 +2907,15 @@ QWidget* MainWindowShell::createSamplingConfigPage()
     QPushButton* const saveButton =
         createActionButton(UiAction::SaveSamplingConfig, NavigationPage::SamplingConfig, actionPanel, false);
     QPushButton* const sendButton =
-        createActionButton(UiAction::SendSamplingConfig, NavigationPage::SamplingConfig, actionPanel, true);
+        createActionButton(UiAction::SendSamplingConfig, NavigationPage::SamplingConfig, actionPanel, false);
+    QPushButton* const captureButton =
+        createActionButton(UiAction::StartSamplingCapture, NavigationPage::SamplingConfig, actionPanel, true);
     saveButton->setMinimumHeight(38);
     sendButton->setMinimumHeight(38);
+    captureButton->setMinimumHeight(38);
     actionLayout->addWidget(saveButton);
     actionLayout->addWidget(sendButton);
+    actionLayout->addWidget(captureButton);
     layout->addWidget(actionPanel);
     layout->addStretch(1);
     return scrollPage(content);
@@ -2476,8 +2980,14 @@ QWidget* MainWindowShell::createWaveformPage()
     edit->setObjectName(QStringLiteral("waveform_trace_path_edit"));
     edit->setReadOnly(true);
     edit->setPlaceholderText(QStringLiteral("当前任务 waveform/lockstep_trace.vcd"));
+    QPushButton* const importButton =
+        createActionButton(UiAction::BrowseWaveform, NavigationPage::Waveform, inputPanel, true);
+    importButton->setObjectName(QStringLiteral("waveform_import_vcd_button"));
+    importButton->setIcon(style()->standardIcon(QStyle::SP_DialogOpenButton));
+    importButton->setToolTip(QStringLiteral("选择 VCD 并导入当前任务"));
     inputGrid->addWidget(label, 0, 0);
     inputGrid->addWidget(edit, 0, 1);
+    inputGrid->addWidget(importButton, 0, 2);
     inputGrid->setColumnStretch(1, 1);
     header->addWidget(inputPanel, 1);
     layout->addLayout(header);
@@ -2561,20 +3071,164 @@ QWidget* MainWindowShell::createStatsPage()
     QWidget* const content = new QWidget(this);
     content->setObjectName(QStringLiteral("page_report"));
     QVBoxLayout* const layout = new QVBoxLayout(content);
+    layout->setSpacing(10);
+
     QHBoxLayout* const header = new QHBoxLayout();
     header->addWidget(pageTitle(QStringLiteral("测试报告"), content));
+    QLabel* const taskLabel = mutedLabel(QStringLiteral("未选择任务"), content);
+    taskLabel->setObjectName(QStringLiteral("report_task_label"));
+    header->addWidget(taskLabel);
+    QLabel* const lifecycleLabel = mutedLabel(QStringLiteral("未生成"), content);
+    lifecycleLabel->setObjectName(QStringLiteral("report_lifecycle_label"));
+    header->addWidget(lifecycleLabel);
     header->addStretch(1);
+    header->addWidget(createActionButton(UiAction::OpenReportHtml, NavigationPage::Stats, content, false));
+    header->addWidget(createActionButton(UiAction::OpenReportDirectory, NavigationPage::Stats, content, false));
+    header->addWidget(createActionButton(UiAction::CopyReportPath, NavigationPage::Stats, content, false));
     header->addWidget(createActionButton(UiAction::GenerateReport, NavigationPage::Stats, content, true));
     layout->addLayout(header);
-    layout->addWidget(createTodoCard(QStringLiteral("报告依据"),
-                                     QStringLiteral("测试报告综合 PL 允许结果寄存器、结果 JSON、烧写记录、回读校验和运行控制证据；当前先接入结果 JSON 与强制证据，PL 寄存器读取保留接口占位。"),
-                                     content));
-    QGridLayout* const grid = new QGridLayout();
-    grid->addWidget(createMetricCard(QStringLiteral("PL Allow"), QStringLiteral("占位"), QStringLiteral("等待 PL 允许结果寄存器 map"), content), 0, 0);
-    grid->addWidget(createMetricCard(QStringLiteral("Result JSON"), QStringLiteral("待生成"), QStringLiteral("报告生成后读取 report.json 结论"), content), 0, 1);
-    grid->addWidget(createMetricCard(QStringLiteral("Program Evidence"), QStringLiteral("待执行"), QStringLiteral("烧写、回读、运行证据齐全后可通过"), content), 0, 2);
-    grid->addWidget(createMetricCard(QStringLiteral("Conclusion"), QStringLiteral("未生成"), QStringLiteral("点击生成报告后更新任务报告文件"), content), 1, 0);
-    layout->addLayout(grid);
+
+    QFrame* const banner = new QFrame(content);
+    banner->setObjectName(QStringLiteral("report_conclusion_banner"));
+    banner->setAttribute(Qt::WA_StyledBackground, true);
+    QHBoxLayout* const bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(16, 12, 16, 12);
+    QLabel* const conclusionIcon = new QLabel(banner);
+    conclusionIcon->setObjectName(QStringLiteral("report_conclusion_icon"));
+    conclusionIcon->setFixedSize(36, 36);
+    conclusionIcon->setAlignment(Qt::AlignCenter);
+    bannerLayout->addWidget(conclusionIcon);
+    QVBoxLayout* const conclusionLayout = new QVBoxLayout();
+    QLabel* const conclusionLabel = new QLabel(QStringLiteral("无可评估任务"), banner);
+    conclusionLabel->setObjectName(QStringLiteral("report_conclusion_label"));
+    QFont conclusionFont = conclusionLabel->font();
+    conclusionFont.setPointSize(18);
+    conclusionFont.setBold(true);
+    conclusionLabel->setFont(conclusionFont);
+    QLabel* const reasonLabel = mutedLabel(QStringLiteral("请先创建或加载验证任务。"), banner);
+    reasonLabel->setObjectName(QStringLiteral("report_reason_label"));
+    reasonLabel->setWordWrap(true);
+    conclusionLayout->addWidget(conclusionLabel);
+    conclusionLayout->addWidget(reasonLabel);
+    bannerLayout->addLayout(conclusionLayout, 1);
+    QLabel* const countLabel = new QLabel(QStringLiteral("阻断 0  |  警告 0"), banner);
+    countLabel->setObjectName(QStringLiteral("report_count_label"));
+    countLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    bannerLayout->addWidget(countLabel);
+    layout->addWidget(banner);
+
+    const auto configureTable = [](QTableWidget* const table, const QStringList& headers) {
+        table->setColumnCount(headers.size());
+        table->setHorizontalHeaderLabels(headers);
+        table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->verticalHeader()->setVisible(false);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setAlternatingRowColors(true);
+        table->setWordWrap(true);
+    };
+
+    QSplitter* const mainSplit = new QSplitter(Qt::Horizontal, content);
+    mainSplit->setObjectName(QStringLiteral("report_main_split"));
+    mainSplit->setMinimumHeight(220);
+    QGroupBox* const evidencePanel = panelBox(QStringLiteral("强制证据链"), mainSplit);
+    QVBoxLayout* const evidenceLayout = new QVBoxLayout(evidencePanel);
+    QTableWidget* const evidenceTable = new QTableWidget(3, 6, evidencePanel);
+    evidenceTable->setObjectName(QStringLiteral("report_evidence_table"));
+    configureTable(evidenceTable, {QStringLiteral("步骤"), QStringLiteral("状态"), QStringLiteral("摘要"),
+                                   QStringLiteral("记录时间"), QStringLiteral("相对路径"), QStringLiteral("操作")});
+    evidenceTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    evidenceLayout->addWidget(evidenceTable);
+    for (int row = 0; row < 3; ++row) {
+        QWidget* const actions = new QWidget(evidenceTable);
+        QHBoxLayout* const actionLayout = new QHBoxLayout(actions);
+        actionLayout->setContentsMargins(0, 0, 0, 0);
+        actionLayout->setSpacing(2);
+        QToolButton* const openButton = createToolButton(
+            actions, style()->standardIcon(QStyle::SP_DirOpenIcon), QStringLiteral("查看证据文件"));
+        openButton->setObjectName(QStringLiteral("report_evidence_open_%1").arg(row));
+        connect(openButton, &QToolButton::clicked, this, [this, openButton]() {
+            UiActionRequest request;
+            request.action = UiAction::OpenReportArtifact;
+            request.page = NavigationPage::Stats;
+            request.objectName = openButton->objectName();
+            request.parameters.insert(QStringLiteral("relativePath"), openButton->property("relativePath"));
+            emit actionRequested(request);
+        });
+        QToolButton* const navigateButton = createToolButton(
+            actions, style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("转到程序烧录与运行"));
+        connect(navigateButton, &QToolButton::clicked, this, [this, navigateButton]() {
+            emitAction(UiAction::NavigateToReportSource, NavigationPage::Stats, navigateButton->objectName());
+        });
+        actionLayout->addWidget(openButton);
+        actionLayout->addWidget(navigateButton);
+        evidenceTable->setCellWidget(row, 5, actions);
+    }
+    mainSplit->addWidget(evidencePanel);
+
+    QGroupBox* const diagnosticsPanel = panelBox(QStringLiteral("结论依据与问题"), mainSplit);
+    QVBoxLayout* const diagnosticsLayout = new QVBoxLayout(diagnosticsPanel);
+    QTreeWidget* const diagnosticsTree = new QTreeWidget(diagnosticsPanel);
+    diagnosticsTree->setObjectName(QStringLiteral("report_diagnostics_tree"));
+    diagnosticsTree->setHeaderLabels({QStringLiteral("级别"), QStringLiteral("ID/代码"), QStringLiteral("来源"),
+                                      QStringLiteral("消息"), QStringLiteral("建议动作")});
+    diagnosticsTree->setAlternatingRowColors(true);
+    diagnosticsTree->setRootIsDecorated(false);
+    diagnosticsTree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    diagnosticsTree->header()->setSectionResizeMode(3, QHeaderView::Stretch);
+    connect(diagnosticsTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+        UiActionRequest request;
+        request.action = UiAction::NavigateToReportSource;
+        request.page = NavigationPage::Stats;
+        request.objectName = QStringLiteral("report_diagnostic");
+        if (item != nullptr) {
+            request.parameters.insert(QStringLiteral("targetPage"), item->data(0, Qt::UserRole));
+        }
+        emit actionRequested(request);
+    });
+    diagnosticsLayout->addWidget(diagnosticsTree);
+    mainSplit->addWidget(diagnosticsPanel);
+    mainSplit->setStretchFactor(0, 3);
+    mainSplit->setStretchFactor(1, 2);
+    layout->addWidget(mainSplit);
+
+    QGroupBox* const optionalPanel = panelBox(QStringLiteral("补充记录（不影响通过判定）"), content);
+    QVBoxLayout* const optionalLayout = new QVBoxLayout(optionalPanel);
+    QTableWidget* const optionalTable = new QTableWidget(4, 6, optionalPanel);
+    optionalTable->setObjectName(QStringLiteral("report_optional_table"));
+    configureTable(optionalTable, {QStringLiteral("记录项"), QStringLiteral("状态"), QStringLiteral("摘要"),
+                                   QStringLiteral("记录时间"), QStringLiteral("相对路径"), QStringLiteral("操作")});
+    optionalTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    optionalLayout->addWidget(optionalTable);
+    for (int row = 0; row < 4; ++row) {
+        QToolButton* const openButton = createToolButton(
+            optionalTable, style()->standardIcon(QStyle::SP_DirOpenIcon), QStringLiteral("查看补充记录"));
+        openButton->setObjectName(QStringLiteral("report_optional_open_%1").arg(row));
+        connect(openButton, &QToolButton::clicked, this, [this, openButton]() {
+            UiActionRequest request;
+            request.action = UiAction::OpenReportArtifact;
+            request.page = NavigationPage::Stats;
+            request.objectName = openButton->objectName();
+            request.parameters.insert(QStringLiteral("relativePath"), openButton->property("relativePath"));
+            emit actionRequested(request);
+        });
+        optionalTable->setCellWidget(row, 5, openButton);
+    }
+    layout->addWidget(optionalPanel);
+
+    QGroupBox* const archivePanel = panelBox(QStringLiteral("归档与可追溯信息"), content);
+    archivePanel->setCheckable(true);
+    archivePanel->setChecked(false);
+    QVBoxLayout* const archiveLayout = new QVBoxLayout(archivePanel);
+    QPlainTextEdit* const archiveEdit = new QPlainTextEdit(archivePanel);
+    archiveEdit->setObjectName(QStringLiteral("report_archive_edit"));
+    archiveEdit->setReadOnly(true);
+    archiveEdit->setMaximumHeight(130);
+    archiveEdit->setVisible(false);
+    connect(archivePanel, &QGroupBox::toggled, archiveEdit, &QWidget::setVisible);
+    archiveLayout->addWidget(archiveEdit);
+    layout->addWidget(archivePanel);
     layout->addStretch(1);
     return scrollPage(content);
 }
@@ -2934,7 +3588,8 @@ void MainWindowShell::emitAction(const UiAction action, const NavigationPage pag
             serialInput->clear();
         }
     }
-    if ((action == UiAction::SaveSamplingConfig) || (action == UiAction::SendSamplingConfig)) {
+    if ((action == UiAction::SaveSamplingConfig) || (action == UiAction::SendSamplingConfig) ||
+        (action == UiAction::StartSamplingCapture)) {
         QLineEdit* const triggerAddrEdit = findChild<QLineEdit*>(QStringLiteral("sampling_trigger_addr_edit"));
         int mismatchMask = 0;
         for (int bit = 0; bit < kSamplingMismatchBits; ++bit) {
@@ -2953,6 +3608,7 @@ void MainWindowShell::emitAction(const UiAction action, const NavigationPage pag
         request.parameters.insert(QStringLiteral("trigger_count"), kSamplingTriggerCount);
         request.parameters.insert(QStringLiteral("post_after_trigger"), kSamplingPostAfterTrigger);
         request.parameters.insert(QStringLiteral("sample_word_bits"), kSamplingSampleWordBits);
+        request.parameters.insert(QStringLiteral("sample_rate_hz"), kSamplingSampleRateHz);
         request.parameters.insert(QStringLiteral("mismatch_enable"), mismatchMask != 0);
         request.parameters.insert(QStringLiteral("mismatch_mask"), mismatchMask);
         request.parameters.insert(QStringLiteral("mismatch_source"), QStringLiteral("mismatch[4:0]"));
@@ -2971,6 +3627,188 @@ void MainWindowShell::setActionButtonsEnabled(const UiAction action, const bool 
     }
 }
 
+void MainWindowShell::setReportPageState(const ReportPageViewModel& model)
+{
+    QLabel* const taskLabel = findChild<QLabel*>(QStringLiteral("report_task_label"));
+    QLabel* const lifecycleLabel = findChild<QLabel*>(QStringLiteral("report_lifecycle_label"));
+    QLabel* const conclusionLabel = findChild<QLabel*>(QStringLiteral("report_conclusion_label"));
+    QLabel* const reasonLabel = findChild<QLabel*>(QStringLiteral("report_reason_label"));
+    QLabel* const countLabel = findChild<QLabel*>(QStringLiteral("report_count_label"));
+    QLabel* const conclusionIcon = findChild<QLabel*>(QStringLiteral("report_conclusion_icon"));
+    QFrame* const banner = findChild<QFrame*>(QStringLiteral("report_conclusion_banner"));
+    if (taskLabel != nullptr) {
+        taskLabel->setText(model.hasTask
+            ? QStringLiteral("%1  ·  %2  ·  %3").arg(model.taskName, model.taskId, model.modeText)
+            : QStringLiteral("未选择任务"));
+    }
+    if (lifecycleLabel != nullptr) {
+        lifecycleLabel->setText(model.lifecycleText);
+        lifecycleLabel->setToolTip(model.errorMessage);
+    }
+    if (conclusionLabel != nullptr) {
+        conclusionLabel->setText(model.conclusionText);
+    }
+    if (conclusionIcon != nullptr) {
+        QStyle::StandardPixmap pixmap = QStyle::SP_MessageBoxInformation;
+        if (model.conclusion == QStringLiteral("pass")) {
+            pixmap = QStyle::SP_DialogApplyButton;
+        } else if (model.conclusion == QStringLiteral("fail")) {
+            pixmap = QStyle::SP_MessageBoxCritical;
+        } else if (model.conclusion == QStringLiteral("blocked")) {
+            pixmap = QStyle::SP_MessageBoxWarning;
+        }
+        conclusionIcon->setPixmap(style()->standardIcon(pixmap).pixmap(28, 28));
+    }
+    if (reasonLabel != nullptr) {
+        QString reason = model.primaryReason;
+        if (model.hasPersistedReport) {
+            const QString comparison = QStringLiteral("当前预检：%1；落盘快照：%2。 ")
+                .arg(model.conclusionText, model.persistedConclusionText);
+            reason.prepend(model.stale
+                ? QStringLiteral("报告已过期，请重新生成。 ") + comparison
+                : comparison);
+        }
+        if (!model.errorMessage.isEmpty()) {
+            reason.append(QStringLiteral("  操作错误: %1").arg(model.errorMessage));
+        }
+        reasonLabel->setText(reason);
+    }
+    if (countLabel != nullptr) {
+        countLabel->setText(QStringLiteral("阻断 %1  |  警告 %2\n%3")
+                                .arg(model.blockingCount)
+                                .arg(model.warningCount)
+                                .arg(model.generatedAt.isEmpty() ? QStringLiteral("尚未落盘") : model.generatedAt));
+    }
+    if (banner != nullptr) {
+        QString border = QStringLiteral("#1f4b5f");
+        QString background = QStringLiteral("#eef5f7");
+        if (model.conclusion == QStringLiteral("pass")) {
+            border = QStringLiteral("#2f7d4a");
+            background = QStringLiteral("#eef8f1");
+        } else if (model.conclusion == QStringLiteral("fail")) {
+            border = QStringLiteral("#b42318");
+            background = QStringLiteral("#fff1f0");
+        } else if (model.conclusion == QStringLiteral("blocked")) {
+            border = QStringLiteral("#ad6800");
+            background = QStringLiteral("#fff7e6");
+        }
+        banner->setStyleSheet(QStringLiteral(
+            "QFrame#report_conclusion_banner { border-left: 7px solid %1; background: %2; } ")
+                                  .arg(border, background));
+    }
+
+    const QList<QPushButton*> actionButtons = findChildren<QPushButton*>();
+    for (QPushButton* const button : actionButtons) {
+        const UiAction action = static_cast<UiAction>(button->property("uiAction").toInt());
+        if (action == UiAction::GenerateReport) {
+            button->setEnabled(model.hasTask && !model.generating);
+            button->setText(model.generating
+                ? QStringLiteral("正在生成...")
+                : (model.hasPersistedReport ? QStringLiteral("重新生成报告") : QStringLiteral("生成报告")));
+        } else if (action == UiAction::OpenReportHtml || action == UiAction::OpenReportDirectory ||
+                   action == UiAction::CopyReportPath) {
+            button->setEnabled(model.hasPersistedReport && !model.generating);
+        }
+    }
+
+    const auto stateBrush = [](const QString& state) {
+        if (state == QStringLiteral("passed") || state == QStringLiteral("available")) {
+            return QBrush(QColor(QStringLiteral("#2f7d4a")));
+        }
+        if (state == QStringLiteral("failed") || state == QStringLiteral("error") ||
+            state == QStringLiteral("critical")) {
+            return QBrush(QColor(QStringLiteral("#b42318")));
+        }
+        if (state == QStringLiteral("blocked") || state == QStringLiteral("blocking") ||
+            state == QStringLiteral("warning")) {
+            return QBrush(QColor(QStringLiteral("#ad6800")));
+        }
+        return QBrush(QColor(QStringLiteral("#52616b")));
+    };
+    const auto setCell = [](QTableWidget* const table, const int row, const int column, const QString& text) {
+        QTableWidgetItem* item = table->item(row, column);
+        if (item == nullptr) {
+            item = new QTableWidgetItem();
+            table->setItem(row, column, item);
+        }
+        item->setText(text);
+        item->setToolTip(text);
+    };
+
+    QTableWidget* const evidenceTable = findChild<QTableWidget*>(QStringLiteral("report_evidence_table"));
+    if (evidenceTable != nullptr) {
+        for (int row = 0; row < qMin(evidenceTable->rowCount(), model.requiredEvidence.size()); ++row) {
+            const ReportEvidenceViewItem& item = model.requiredEvidence.at(row);
+            setCell(evidenceTable, row, 0, item.displayName);
+            setCell(evidenceTable, row, 1, item.stateText);
+            setCell(evidenceTable, row, 2, item.summary);
+            setCell(evidenceTable, row, 3, item.recordedAt);
+            setCell(evidenceTable, row, 4, item.relativePath);
+            evidenceTable->item(row, 1)->setForeground(stateBrush(item.state));
+            QToolButton* const openButton = findChild<QToolButton*>(
+                QStringLiteral("report_evidence_open_%1").arg(row));
+            if (openButton != nullptr) {
+                openButton->setProperty("relativePath", item.relativePath);
+                openButton->setEnabled(!item.relativePath.isEmpty() && item.state != QStringLiteral("not_run"));
+            }
+        }
+    }
+
+    QTreeWidget* const diagnosticsTree = findChild<QTreeWidget*>(QStringLiteral("report_diagnostics_tree"));
+    if (diagnosticsTree != nullptr) {
+        diagnosticsTree->clear();
+        if (model.diagnostics.isEmpty()) {
+            new QTreeWidgetItem(diagnosticsTree,
+                                {QStringLiteral("信息"), QStringLiteral("无"), QStringLiteral("报告"),
+                                 QStringLiteral("当前没有需要处理的问题"), QString()});
+        } else {
+            for (const ReportDiagnosticViewItem& item : model.diagnostics) {
+                QTreeWidgetItem* const treeItem = new QTreeWidgetItem(
+                    diagnosticsTree,
+                    {item.severity, item.id.isEmpty() ? item.code : item.id, item.source,
+                     item.message, item.suggestion});
+                treeItem->setToolTip(3, item.message);
+                treeItem->setToolTip(4, item.suggestion);
+                treeItem->setData(0, Qt::UserRole, item.targetPage);
+                treeItem->setForeground(0, stateBrush(item.severity));
+            }
+        }
+    }
+
+    QTableWidget* const optionalTable = findChild<QTableWidget*>(QStringLiteral("report_optional_table"));
+    if (optionalTable != nullptr) {
+        for (int row = 0; row < qMin(optionalTable->rowCount(), model.optionalRecords.size()); ++row) {
+            const ReportOptionalViewItem& item = model.optionalRecords.at(row);
+            setCell(optionalTable, row, 0, item.displayName);
+            setCell(optionalTable, row, 1, item.stateText);
+            setCell(optionalTable, row, 2, item.summary);
+            setCell(optionalTable, row, 3, item.recordedAt);
+            setCell(optionalTable, row, 4, item.relativePath);
+            optionalTable->item(row, 1)->setForeground(stateBrush(item.state));
+            QToolButton* const openButton = findChild<QToolButton*>(
+                QStringLiteral("report_optional_open_%1").arg(row));
+            if (openButton != nullptr) {
+                openButton->setProperty("relativePath", item.relativePath);
+                openButton->setEnabled(item.state == QStringLiteral("available") && !item.relativePath.isEmpty());
+            }
+        }
+    }
+    QPlainTextEdit* const archiveEdit = findChild<QPlainTextEdit*>(QStringLiteral("report_archive_edit"));
+    if (archiveEdit != nullptr) {
+        archiveEdit->setPlainText(model.archiveDetails);
+    }
+}
+
+void MainWindowShell::showPage(const NavigationPage page)
+{
+    for (auto it = pageIds_.constBegin(); it != pageIds_.constEnd(); ++it) {
+        if (it.value() == page) {
+            setActivePage(it.key());
+            return;
+        }
+    }
+}
+
 void MainWindowShell::applyWaveformTraceToDisplay(QWidget* const widget) const
 {
     if (widget == nullptr) {
@@ -2978,7 +3816,8 @@ void MainWindowShell::applyWaveformTraceToDisplay(QWidget* const widget) const
     }
 
     WaveformDisplayWidget* const display = static_cast<WaveformDisplayWidget*>(widget);
-    display->setTrace(waveformStatusText_, waveformPathText_, waveformTimeRangeText_, waveformGroups_);
+    display->setTrace(
+        waveformStatusText_, waveformPathText_, waveformTimeRangeText_, waveformGroups_, waveformSamples_);
 }
 
 void MainWindowShell::appendFormattedLog(

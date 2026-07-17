@@ -1,0 +1,57 @@
+<!doctype html>
+<!--
+/**********************************************************
+* 文件名: architecture-map.html
+* 日期: 2026-07-17
+* 版本: v1.0
+* 更新记录: 初版创建上位机架构速查图
+* 描述: 汇总上位机主要层次、目录和阅读入口
+**********************************************************/
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>锁步上位机架构速查</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">REFERENCE 0001</p>
+  <h1>锁步上位机架构速查</h1>
+  <p class="lead">阅读任何功能时，都先判断它位于哪一层，再追踪输入、状态、输出和失败证据。</p>
+  <div class="flow" aria-label="上位机主要调用方向">
+    <span>UI 控件</span><b>→</b><span>UiActionRequest</span><b>→</b><span>WorkbenchController</span>
+  </div>
+  <div class="flow" aria-label="控制器到领域和产物">
+    <span>领域模块</span><b>→</b><span>状态与规则</span><b>→</b><span>任务产物</span>
+  </div>
+
+  <h2>三层职责</h2>
+  <ul>
+    <li><strong>界面层：</strong><code>ui_common/</code>，展示状态、收集输入、发出动作，不直接操作硬件或任务文件。</li>
+    <li><strong>适配层：</strong><code>apps/workbench_controller.*</code>，协调模块、维护当前会话状态、把结果刷新到界面。</li>
+    <li><strong>领域层：</strong><code>workspace/</code> 等模块，执行规则、产生记录和结构化产物。</li>
+  </ul>
+
+  <h2>领域模块</h2>
+  <ul>
+    <li><code>workspace</code>：工作区、任务、输入和产物索引。</li>
+    <li><code>resources</code>：固化资源、板卡 profile 和模式配置。</li>
+    <li><code>workflow</code>：流程状态、阶段 gate 和失败阻断。</li>
+    <li><code>target_control</code>：连接、预检、烧写、回读、运行和停止。</li>
+    <li><code>fault_injection</code> / <code>acquisition</code>：注错与采集。</li>
+    <li><code>protocol_analyzer</code> / <code>waveform_viewer</code>：协议分析与波形展示。</li>
+    <li><code>reporting</code> / <code>error_handling</code>：报告、结论、日志与错误证据。</li>
+  </ul>
+
+  <h2>固定追踪问题</h2>
+  <ol>
+    <li>谁产生输入？输入的数据类型是什么？</li>
+    <li>哪个对象拥有状态？状态转换条件是什么？</li>
+    <li>输出写到 UI、内存还是任务目录？</li>
+    <li>失败如何阻断后续操作并留下证据？</li>
+  </ol>
+</main>
+</body>
+</html>

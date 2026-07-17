@@ -1,21 +1,20 @@
 {
-  "schema_version": "1.0",
-  "decoder_version": "1.0.0.0",
+  "schema_version": "1.1",
+  "decoder_version": "1.1.0.0",
   "implemented": [
+    {"group": "ahb", "behaviors": ["ahb_transfer"]},
+    {"group": "uart", "behaviors": ["uart_frame"]},
+    {"group": "spi", "behaviors": ["spi_transfer"]},
+    {"group": "can", "behaviors": ["can_frame"]},
+    {"group": "i2c", "behaviors": ["i2c_transfer"]},
+    {"group": "eth", "behaviors": ["eth_frame"]},
+    {"group": "usb", "source": "design_gap", "behaviors": []},
+    {"group": "jtag", "behaviors": ["jtag_cycle"]},
     {
       "group": "mismatch",
       "behaviors": ["mismatch_event"],
       "multi_bit_event_policy": "merge_until_all_bits_clear"
     }
   ],
-  "pending": [
-    "ahb",
-    "uart",
-    "spi",
-    "can",
-    "i2c",
-    "eth",
-    "usb",
-    "jtag"
-  ]
+  "pending": []
 }

@@ -1,17 +1,9 @@
 ﻿/*****************************************************************************
-*  @file      target_control.cpp
-*  @brief     目标连接烧写回读运行控制模块实现
-*  Details.   实现目标连接烧写回读运行控制模块的业务逻辑、状态转换和文件访问流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
+* 文件名: target_control.cpp
+* 日期: 2026-07-14
+* 版本: 1.0.0
+* 更新记录: 调试访问改为启动统一产品可执行文件的服务模式
+* 描述: 实现目标连接、烧写、回读和运行控制。
 *****************************************************************************/
 
 #include "target_control.h"
@@ -37,7 +29,7 @@
 namespace lockstep::target_control {
 namespace {
 
-constexpr char kDebugServiceLocalServerName[] = "lockstep_debug_service_local_v1";
+constexpr char kDebugServiceLocalServerName[] = "lockstep_ui_preview_local_v1";
 
 QString requestId(const QString& prefix)
 {
@@ -145,7 +137,7 @@ QString temporaryRoot(const QString& configuredPath)
     }
 
     const QString fallback = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-        .filePath(QStringLiteral("lockstep_host_debug_service"));
+        .filePath(QStringLiteral("lockstep_ui_preview_service"));
     QDir().mkpath(fallback);
     return fallback;
 }

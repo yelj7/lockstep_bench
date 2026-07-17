@@ -12,4 +12,4 @@ set -eu
 LOCKSTEP_ROOT=/opt/lockstep-host
 export QT_PLUGIN_PATH="${LOCKSTEP_ROOT}/plugins"
 
-exec "${LOCKSTEP_ROOT}/bin/lockstep_host" "$@"
+exec "${LOCKSTEP_ROOT}/bin/lockstep_ui_preview" "$@"

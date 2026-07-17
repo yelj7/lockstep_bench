@@ -1,12 +1,12 @@
 # /**********************************************************
 # * 文件名: CollectLinuxRuntime.cmake
-# * 日期: 2026-07-13
-# * 版本: v1.0
-# * 更新记录: 初版创建 Linux 私有运行库收集脚本
-# * 描述: 收集 Qt、hidapi 和 C++ 运行库并复制必要 Qt 插件
+# * 日期: 2026-07-14
+# * 版本: v2.0
+# * 更新记录: 仅收集 lockstep_ui_preview 的运行依赖
+# * 描述: 收集 Qt、hidapi、C++ 运行库和必要 Qt 插件。
 # **********************************************************/
 
-foreach(REQUIRED_VALUE MAIN_EXECUTABLE DEBUG_SERVICE QT_PLUGIN_DIR OUTPUT_ROOT)
+foreach(REQUIRED_VALUE MAIN_EXECUTABLE QT_PLUGIN_DIR OUTPUT_ROOT)
     if(NOT DEFINED ${REQUIRED_VALUE} OR "${${REQUIRED_VALUE}}" STREQUAL "")
         message(FATAL_ERROR "缺少运行库收集参数: ${REQUIRED_VALUE}")
     endif()
@@ -39,7 +39,7 @@ if(NOT EXISTS "${OUTPUT_ROOT}/plugins/platforms/libqxcb.so")
 endif()
 
 file(GET_RUNTIME_DEPENDENCIES
-    EXECUTABLES "${MAIN_EXECUTABLE}" "${DEBUG_SERVICE}"
+    EXECUTABLES "${MAIN_EXECUTABLE}"
     LIBRARIES ${PLUGIN_BINARIES}
     RESOLVED_DEPENDENCIES_VAR RESOLVED_DEPENDENCIES
     UNRESOLVED_DEPENDENCIES_VAR UNRESOLVED_DEPENDENCIES

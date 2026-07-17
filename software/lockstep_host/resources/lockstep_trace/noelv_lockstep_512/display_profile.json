@@ -1,21 +1,21 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "default_groups": ["ahb", "uart", "spi", "can", "i2c", "eth", "usb", "jtag", "mismatch"],
+  "protocol_bundle": {
+    "always_visible": true,
+    "children_collapsed_by_default": true,
+    "shared_time_axis": true
+  },
   "number_format": {
     "bus": "hex_prefix",
     "address": "hex_prefix",
-    "single_bit": "level"
+    "single_bit": "level",
+    "merged_signal_bus": "hex_prefix"
   },
   "indent": {
     "group": 0,
     "field": 1
   },
-  "merge_fields": [
-    {
-      "group": "ahb",
-      "field": "data",
-      "display": "data[127:0]",
-      "format": "hex_prefix"
-    }
-  ]
+  "merge_policy": "fixed_catalog_contiguous_ranges",
+  "mismatch_high_role": "error"
 }

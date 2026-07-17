@@ -14,8 +14,7 @@ install_tree=$1
 app_root="${install_tree}/opt/lockstep-host"
 [[ $(uname -m) == x86_64 ]] || { echo "仅允许在 x86_64 主机审计" >&2; exit 1; }
 command -v lddtree >/dev/null 2>&1 || { echo "缺少 lddtree（pax-utils）" >&2; exit 1; }
-[[ -x "${app_root}/bin/lockstep_host" ]] || { echo "主程序不存在" >&2; exit 1; }
-[[ -x "${app_root}/bin/lockstep_debug_service" ]] || { echo "调试服务不存在" >&2; exit 1; }
+[[ -x "${app_root}/bin/lockstep_ui_preview" ]] || { echo "主程序不存在" >&2; exit 1; }
 [[ -f "${app_root}/plugins/platforms/libqxcb.so" ]] || { echo "Qt xcb 插件不存在" >&2; exit 1; }
 [[ -f "${app_root}/resources/manifest.json" ]] || { echo "资源清单不存在" >&2; exit 1; }
 
@@ -51,37 +50,8 @@ while IFS= read -r -d '' candidate; do
     fi
 done < <(find "${app_root}" -type f -print0)
 
-grep -q '"id": "debug.self_service.executable"' "${app_root}/resources/manifest.json" || {
-    echo "资源清单缺少调试服务" >&2
-    audit_failed=1
-}
-service_status=$(awk '
-    /"id": "debug.self_service.executable"/ { in_service = 1 }
-    in_service && /"status":/ {
-        gsub(/.*"status": "/, ""); gsub(/".*/, ""); print; exit
-    }
-' "${app_root}/resources/manifest.json")
-service_version=$(awk '
-    /"id": "debug.self_service.executable"/ { in_service = 1 }
-    in_service && /"version":/ {
-        gsub(/.*"version": "/, ""); gsub(/".*/, ""); print; exit
-    }
-' "${app_root}/resources/manifest.json")
-if [[ ${service_status} != enabled || -z "${service_version}" || ${service_version} == 0.0.0.0 ]]; then
-    echo "调试服务资源项未启用或版本无效" >&2
-    audit_failed=1
-fi
-expected_service_sha=$(awk '
-    /"id": "debug.self_service.executable"/ { in_service = 1 }
-    in_service && /"sha256":/ {
-        gsub(/.*"sha256": "/, ""); gsub(/".*/, ""); print; exit
-    }
-' "${app_root}/resources/manifest.json")
-actual_service_sha=$(sha256sum \
-    "${app_root}/resources/debug_adapters/self_debug_service/lockstep_debug_service" |
-    awk '{print $1}')
-if [[ -z "${expected_service_sha}" || ${expected_service_sha} != "${actual_service_sha}" ]]; then
-    echo "资源清单中的调试服务摘要不匹配" >&2
+if grep -R -q --include='*.json' 'targetDebugToolPath' "${app_root}/resources"; then
+    echo "资源清单仍引用已删除的独立调试服务" >&2
     audit_failed=1
 fi
 

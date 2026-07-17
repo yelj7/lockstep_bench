@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: waveform_trace_viewer.h
-* 日期: 2026-07-08
-* 版本: v1.0
-* 更新记录: 初版创建固定 trace analysis 读取与展示模型接口
-* 描述: 声明 M11 波形显示模块的任务级加载结果和 UI 展示模型
+* 日期: 2026-07-14
+* 版本: v1.2
+* 更新记录: 汇总全部协议组事务供协议页和波形页共同显示
+* 描述: 声明波形显示模块的九协议束、采样点和任务级加载模型。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_WAVEFORM_VIEWER_WAVEFORM_TRACE_VIEWER_H_
@@ -16,12 +16,26 @@
 
 namespace lockstep::waveform_viewer {
 
+struct WaveformFieldView final {
+    QString name;
+    QString displayName;
+    int lsb = -1;
+    int width = 1;
+    bool errorSignal = false;
+};
+
+struct WaveformSampleView final {
+    qint64 time = 0;
+    QString valueHex;
+    bool unknown = false;
+};
+
 struct WaveformGroupView final {
     QString id;
     QString displayName;
     QString status;
     QString reason;
-    QStringList fields;
+    QList<WaveformFieldView> fields;
     QStringList transactions;
 };
 
@@ -38,6 +52,7 @@ struct WaveformViewModel final {
     QStringList keyBehaviors;
     QStringList diagnostics;
     QList<WaveformGroupView> groups;
+    QList<WaveformSampleView> samples;
     QJsonObject analysis;
 };
 

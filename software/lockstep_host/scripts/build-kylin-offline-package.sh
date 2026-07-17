@@ -80,16 +80,6 @@ while IFS= read -r -d '' elf_file; do
     esac
 done < <(find "${package_tree}/opt/lockstep-host" -type f -print0)
 
-manifest_tool="${build_dir}/src/packaging/lockstep_resource_manifest_tool"
-[[ -x "${manifest_tool}" ]] || { echo "资源清单工具不存在" >&2; exit 1; }
-packaged_resource_service="${build_dir}/packaged-resource-debug-service"
-cp "${package_tree}/opt/lockstep-host/bin/lockstep_debug_service" "${packaged_resource_service}"
-patchelf --set-rpath '$ORIGIN/../../../lib' "${packaged_resource_service}"
-"${manifest_tool}" \
-    --manifest "${package_tree}/opt/lockstep-host/resources/manifest.json" \
-    --debug-service "${packaged_resource_service}" \
-    --version "${version}"
-
 export LOCKSTEP_BUILD_VERSION=${version}
 export LOCKSTEP_QT_VERSION=${qt_version}
 export LOCKSTEP_HIDAPI_VERSION=${hidapi_version}

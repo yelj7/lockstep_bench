@@ -25,8 +25,7 @@ dpkg-query -W -f='${Status}\n' lockstep-host 2>/dev/null | grep -q "install ok i
     failed=1
 }
 
-check_file "${app_root}/bin/lockstep_host"
-check_file "${app_root}/bin/lockstep_debug_service"
+check_file "${app_root}/bin/lockstep_ui_preview"
 check_file "${app_root}/plugins/platforms/libqxcb.so"
 check_file "${app_root}/resources/manifest.json"
 check_file "${app_root}/share/doc/runtime-dependencies.json"
@@ -49,37 +48,9 @@ while IFS= read -r candidate; do
     fi
 done < <(find "${app_root}" -type f -print)
 
-if [ -r "${app_root}/resources/manifest.json" ]; then
-    grep -q '"id": "debug.self_service.executable"' "${app_root}/resources/manifest.json" || failed=1
-    service_status=$(awk '
-        /"id": "debug.self_service.executable"/ { in_service = 1 }
-        in_service && /"status":/ {
-            gsub(/.*"status": "/, ""); gsub(/".*/, ""); print; exit
-        }
-    ' "${app_root}/resources/manifest.json")
-    service_version=$(awk '
-        /"id": "debug.self_service.executable"/ { in_service = 1 }
-        in_service && /"version":/ {
-            gsub(/.*"version": "/, ""); gsub(/".*/, ""); print; exit
-        }
-    ' "${app_root}/resources/manifest.json")
-    if [[ ${service_status} != enabled || -z "${service_version}" || ${service_version} == 0.0.0.0 ]]; then
-        echo "调试服务资源项未启用或版本无效。" >&2
-        failed=1
-    fi
-    expected_service_sha=$(awk '
-        /"id": "debug.self_service.executable"/ { in_service = 1 }
-        in_service && /"sha256":/ {
-            gsub(/.*"sha256": "/, ""); gsub(/".*/, ""); print; exit
-        }
-    ' "${app_root}/resources/manifest.json")
-    actual_service_sha=$(sha256sum \
-        "${app_root}/resources/debug_adapters/self_debug_service/lockstep_debug_service" |
-        awk '{print $1}')
-    if [ -z "${expected_service_sha}" ] || [ "${expected_service_sha}" != "${actual_service_sha}" ]; then
-        echo "调试服务资源摘要不匹配。" >&2
-        failed=1
-    fi
+if grep -R -q --include='*.json' 'targetDebugToolPath' "${app_root}/resources"; then
+    echo "资源清单仍引用已删除的独立调试服务。" >&2
+    failed=1
 fi
 
 if [ "${failed}" -ne 0 ]; then

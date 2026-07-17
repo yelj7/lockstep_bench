@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      ui_contract.cpp
-*  @brief     界面数据合同模块实现
-*  Details.   实现界面数据合同模块的业务逻辑、状态转换和文件访问流程。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: ui_contract.cpp
+* 日期: 2026-07-14
+* 版本: v1.1
+* 更新记录: 增加测试报告文件操作显示文本
+* 描述: 实现界面动作显示文本和默认工作台状态
+**********************************************************/
 
 #include "ui_contract.h"
 
@@ -20,119 +12,56 @@ namespace lockstep::ui {
 
 QString toDisplayText(const UiAction action)
 {
-    QString text;
-
     switch (action) {
-    case UiAction::NewTask:
-        text = QStringLiteral("新建验证任务");
-        break;
-    case UiAction::SaveTask:
-        text = QStringLiteral("保存为验证任务");
-        break;
-    case UiAction::LoadTaskToWorkbench:
-        text = QStringLiteral("加载到工作台");
-        break;
-    case UiAction::DeleteTask:
-        text = QStringLiteral("删除验证任务");
-        break;
-    case UiAction::EditTask:
-        text = QStringLiteral("修改任务");
-        break;
-    case UiAction::SaveTaskEdit:
-        text = QStringLiteral("保存修改");
-        break;
-    case UiAction::CancelTaskEdit:
-        text = QStringLiteral("放弃修改");
-        break;
-    case UiAction::StartDebugService:
-        text = QStringLiteral("启动片上调试器");
-        break;
-    case UiAction::StopDebugService:
-        text = QStringLiteral("停止片上调试器");
-        break;
-    case UiAction::BrowseProgramImage:
-        text = QStringLiteral("选择程序镜像");
-        break;
-    case UiAction::ProgramImage:
-        text = QStringLiteral("程序烧录");
-        break;
-    case UiAction::VerifyReadback:
-        text = QStringLiteral("回读校验");
-        break;
-    case UiAction::RunProgram:
-        text = QStringLiteral("程序运行");
-        break;
-    case UiAction::StopProgram:
-        text = QStringLiteral("程序终止");
-        break;
-    case UiAction::ShowVerifySummary:
-        text = QStringLiteral("回读校验摘要");
-        break;
-    case UiAction::ShowRunSummary:
-        text = QStringLiteral("运行摘要");
-        break;
-    case UiAction::BrowseWaveform:
-        text = QStringLiteral("读取当前任务波形");
-        break;
-    case UiAction::ImportWaveform:
-        text = QStringLiteral("重新解析");
-        break;
-    case UiAction::ClearWaveform:
-        text = QStringLiteral("刷新视图");
-        break;
-    case UiAction::ShowWaveformEmbedded:
-        text = QStringLiteral("嵌入显示");
-        break;
-    case UiAction::ShowWaveformDetached:
-        text = QStringLiteral("独立窗口");
-        break;
-    case UiAction::BrowseProtocolWaveform:
-        text = QStringLiteral("查看解析结果");
-        break;
-    case UiAction::BrowseProtocolOutput:
-        text = QStringLiteral("查看诊断");
-        break;
-    case UiAction::AnalyzeProtocol:
-        text = QStringLiteral("解析当前 VCD");
-        break;
-    case UiAction::RefreshSerialPorts:
-        text = QStringLiteral("刷新串口");
-        break;
-    case UiAction::ToggleSerialMonitor:
-        text = QStringLiteral("打开串口");
-        break;
-    case UiAction::ClearSerialOutput:
-        text = QStringLiteral("清空输出");
-        break;
-    case UiAction::DetachLogWindow:
-        text = QStringLiteral("弹出独立窗口");
-        break;
-    case UiAction::GenerateReport:
-        text = QStringLiteral("生成报告");
-        break;
-    case UiAction::SendSerialData:
-        text = QStringLiteral("发送串口数据");
-        break;
-    case UiAction::SaveSamplingConfig:
-        text = QStringLiteral("保存采样配置");
-        break;
-    case UiAction::SendSamplingConfig:
-        text = QStringLiteral("下发采样配置");
-        break;
-    default:
-        text = QStringLiteral("未知动作");
-        break;
+    case UiAction::NewTask: return QStringLiteral("新建验证任务");
+    case UiAction::SaveTask: return QStringLiteral("保存验证任务");
+    case UiAction::LoadTaskToWorkbench: return QStringLiteral("加载到工作台");
+    case UiAction::DeleteTask: return QStringLiteral("删除验证任务");
+    case UiAction::EditTask: return QStringLiteral("修改任务");
+    case UiAction::SaveTaskEdit: return QStringLiteral("保存修改");
+    case UiAction::CancelTaskEdit: return QStringLiteral("放弃修改");
+    case UiAction::StartDebugService: return QStringLiteral("启动片上调试器");
+    case UiAction::StopDebugService: return QStringLiteral("停止片上调试器");
+    case UiAction::BrowseProgramImage: return QStringLiteral("选择程序镜像");
+    case UiAction::ProgramImage: return QStringLiteral("程序烧录");
+    case UiAction::VerifyReadback: return QStringLiteral("回读校验");
+    case UiAction::RunProgram: return QStringLiteral("程序运行");
+    case UiAction::StopProgram: return QStringLiteral("程序终止");
+    case UiAction::ShowVerifySummary: return QStringLiteral("回读校验摘要");
+    case UiAction::ShowRunSummary: return QStringLiteral("运行摘要");
+    case UiAction::BrowseWaveform: return QStringLiteral("导入 VCD");
+    case UiAction::ImportWaveform: return QStringLiteral("重新解析");
+    case UiAction::ClearWaveform: return QStringLiteral("刷新视图");
+    case UiAction::ShowWaveformEmbedded: return QStringLiteral("嵌入显示");
+    case UiAction::ShowWaveformDetached: return QStringLiteral("独立窗口");
+    case UiAction::BrowseProtocolWaveform: return QStringLiteral("查看解析结果");
+    case UiAction::BrowseProtocolOutput: return QStringLiteral("查看诊断");
+    case UiAction::AnalyzeProtocol: return QStringLiteral("解析当前 VCD");
+    case UiAction::RefreshSerialPorts: return QStringLiteral("刷新串口");
+    case UiAction::ToggleSerialMonitor: return QStringLiteral("打开串口");
+    case UiAction::ClearSerialOutput: return QStringLiteral("清空输出");
+    case UiAction::DetachLogWindow: return QStringLiteral("弹出独立窗口");
+    case UiAction::GenerateReport: return QStringLiteral("生成报告");
+    case UiAction::SendSerialData: return QStringLiteral("发送串口数据");
+    case UiAction::SaveSamplingConfig: return QStringLiteral("保存采样配置");
+    case UiAction::SendSamplingConfig: return QStringLiteral("下发采样配置");
+    case UiAction::StartSamplingCapture: return QStringLiteral("开始采集");
+    case UiAction::OpenReportHtml: return QStringLiteral("打开报告");
+    case UiAction::OpenReportDirectory: return QStringLiteral("打开报告目录");
+    case UiAction::CopyReportPath: return QStringLiteral("复制报告路径");
+    case UiAction::OpenReportArtifact: return QStringLiteral("查看记录");
+    case UiAction::NavigateToReportSource: return QStringLiteral("转到来源页面");
+    case UiAction::LoadProfile: return QStringLiteral("加载资源配置");
+    case UiAction::SaveProfile: return QStringLiteral("保存资源配置");
+    default: return QStringLiteral("未知动作");
     }
-
-    return text;
 }
 
 UiWorkbenchState makeDefaultWorkbenchState(const UiMode mode)
 {
     UiWorkbenchState state;
     state.topStatus = makeDefaultGlobalStatus(mode);
-    state.logText = QStringLiteral("[INFO] UI 预览窗口已启动\n[INFO] 当前为纯 UI 占位，按钮只发出动作请求");
-    state.serialText.clear();
+    state.logText = QStringLiteral("[INFO] UI 预览窗口已启动\n[INFO] 等待加载工作区任务");
     return state;
 }
 

@@ -1,4 +1,4 @@
-﻿/*****************************************************************************
+/*****************************************************************************
 * 文件名: workbench_controller.cpp
 * 日期: 2026-07-13
 * 版本: v1.1
@@ -10,7 +10,9 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QClipboard>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
@@ -19,6 +21,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -31,11 +34,16 @@
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QThread>
+#include <QUrl>
 #include <QVBoxLayout>
+#include <QSysInfo>
+#include <QtEndian>
 
+#include <algorithm>
 #include <memory>
 
 #include "ui_theme.h"
+#include "sampling_capture.h"
 
 namespace lockstep::apps {
 namespace {
@@ -48,10 +56,13 @@ constexpr char kHaltControlRecordName[] = "halt_control_record.json";
 constexpr char kProgramOperationProgressName[] = "program_operation_progress.json";
 constexpr int kSamplingSampleCount = 4096;
 constexpr int kSamplingPretrigger = 2047;
+// 硬件窗口为 2047 pre + 1 trigger + 2048 post；协议字段 posttrigger
+// 表示触发后的总深度，因此包含触发样本本身。
 constexpr int kSamplingPosttrigger = 2049;
 constexpr int kSamplingTriggerCount = 1;
 constexpr int kSamplingPostAfterTrigger = 2048;
-constexpr int kSamplingSampleWordBits = 512;
+constexpr int kSamplingSampleWordBits = 1024;
+constexpr int kSamplingSampleRateHz = 120000000;
 constexpr int kSamplingMismatchMask = 0x1F;
 
 struct WriteWorkerResult final {
@@ -317,6 +328,39 @@ QString serialDisplayName(const QSerialPortInfo& info)
     return portName;
 }
 
+int serialPortNumber(const QString& portName)
+{
+    const QString normalized = portName.trimmed().toUpper();
+    if (!normalized.startsWith(QStringLiteral("COM"))) {
+        return 0;
+    }
+
+    bool ok = false;
+    const int value = normalized.mid(3).toInt(&ok);
+    return ok ? value : 0;
+}
+
+int serialPreferredScore(const QSerialPortInfo& info)
+{
+    const QString text = QStringLiteral("%1 %2 %3 %4")
+        .arg(info.portName(), info.description(), info.manufacturer(), info.serialNumber())
+        .toLower();
+
+    int score = serialPortNumber(info.portName());
+    if (text.contains(QStringLiteral("usb2uart")) || text.contains(QStringLiteral("usb to uart")) ||
+        text.contains(QStringLiteral("cp210")) || text.contains(QStringLiteral("uart"))) {
+        score += 1000;
+    }
+    if (text.contains(QStringLiteral("interface 2")) || text.contains(QStringLiteral("interface_2")) ||
+        text.contains(QStringLiteral("mi_02"))) {
+        score += 2000;
+    }
+    if (text.contains(QStringLiteral("cmsis")) || text.contains(QStringLiteral("dap"))) {
+        score -= 500;
+    }
+    return score;
+}
+
 bool hasExpectedRunOutput(const QString& text)
 {
     const QString normalized = text.toLower();
@@ -412,36 +456,11 @@ bool parseAddressText(const QString& text, quint64* const value)
     return true;
 }
 
-QString executablePathForBaseName(const QString& directoryPath, const QString& baseName)
-{
-    const QDir directory(directoryPath);
-    const QString windowsPath = directory.filePath(baseName + QStringLiteral(".exe"));
-    if (QFileInfo(windowsPath).isExecutable()) {
-        return QFileInfo(windowsPath).absoluteFilePath();
-    }
-
-    const QString plainPath = directory.filePath(baseName);
-    if (QFileInfo(plainPath).isExecutable()) {
-        return QFileInfo(plainPath).absoluteFilePath();
-    }
-    return QString();
-}
-
 QString resolveDebugServicePath(
-    const resources::BoardProfile& profile,
-    const QString& resourceRootPath)
+    const resources::BoardProfile&,
+    const QString&)
 {
-    const QString appDirPath = QCoreApplication::applicationDirPath();
-    const QString siblingPath = executablePathForBaseName(appDirPath, QStringLiteral("lockstep_debug_service"));
-    if (!siblingPath.isEmpty()) {
-        return siblingPath;
-    }
-
-    const QString resourcePath = QDir(resourceRootPath).filePath(profile.targetDebugToolPath);
-    if (QFileInfo(resourcePath).isExecutable()) {
-        return QFileInfo(resourcePath).absoluteFilePath();
-    }
-    return QString();
+    return QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
 }
 
 QJsonArray segmentsToJson(const QList<target_control::ImageSegment>& segments)
@@ -531,7 +550,15 @@ QVector<ui::TraceGroupViewItem> traceGroupsToUi(const QList<waveform_viewer::Wav
         item.displayName = group.displayName;
         item.status = group.status;
         item.reason = group.reason;
-        item.fields = group.fields;
+        for (const waveform_viewer::WaveformFieldView& field : group.fields) {
+            ui::TraceFieldViewItem fieldItem;
+            fieldItem.name = field.name;
+            fieldItem.displayName = field.displayName;
+            fieldItem.lsb = field.lsb;
+            fieldItem.width = field.width;
+            fieldItem.errorSignal = field.errorSignal;
+            item.fields.append(fieldItem);
+        }
         item.transactions = group.transactions;
         items.append(item);
     }
@@ -602,6 +629,54 @@ bool readEvidenceObject(
 
     *object = document.object();
     return true;
+}
+
+QVector<ui::TraceSampleViewItem> traceSamplesToUi(
+    const QList<waveform_viewer::WaveformSampleView>& samples)
+{
+    QVector<ui::TraceSampleViewItem> items;
+    items.reserve(samples.size());
+    for (const waveform_viewer::WaveformSampleView& sample : samples) {
+        ui::TraceSampleViewItem item;
+        item.time = sample.time;
+        item.valueHex = sample.valueHex;
+        item.unknown = sample.unknown;
+        items.append(item);
+    }
+    return items;
+}
+
+QString evidenceStateText(const reporting::EvidenceState state)
+{
+    switch (state) {
+    case reporting::EvidenceState::Passed: return QStringLiteral("通过");
+    case reporting::EvidenceState::Failed: return QStringLiteral("失败");
+    case reporting::EvidenceState::Missing: return QStringLiteral("缺失");
+    case reporting::EvidenceState::NotRun:
+    default: return QStringLiteral("未执行");
+    }
+}
+
+QString optionalStateText(const reporting::OptionalRecordState state)
+{
+    switch (state) {
+    case reporting::OptionalRecordState::Available: return QStringLiteral("可用");
+    case reporting::OptionalRecordState::Failed: return QStringLiteral("失败");
+    case reporting::OptionalRecordState::Skipped: return QStringLiteral("已跳过");
+    case reporting::OptionalRecordState::NotAvailable:
+    default: return QStringLiteral("不可用");
+    }
+}
+
+QString conclusionText(const reporting::ReportConclusion conclusion)
+{
+    switch (conclusion) {
+    case reporting::ReportConclusion::Pass: return QStringLiteral("通过");
+    case reporting::ReportConclusion::Fail: return QStringLiteral("失败");
+    case reporting::ReportConclusion::Blocked: return QStringLiteral("已阻断");
+    case reporting::ReportConclusion::Incomplete:
+    default: return QStringLiteral("未完成");
+    }
 }
 
 bool parseBoolText(const QJsonValue& value)
@@ -742,6 +817,9 @@ WorkbenchController::WorkbenchController(
       runOutputConfirmed_(false),
       serialOpen_(false),
       runSerialCaptureActive_(false),
+      runButtonResetMode_(false),
+      reportGenerationBusy_(false),
+      samplingCaptureBusy_(false),
       hardwareOperation_(target_control::ProgramOperation::Write),
       hardwareOperationName_(),
       currentWriteProgress_(0),
@@ -763,6 +841,8 @@ WorkbenchController::WorkbenchController(
         connect(window_, &ui::MainWindowShell::pageChanged, this, [this](const ui::NavigationPage page) {
             if (page == ui::NavigationPage::Waveform || page == ui::NavigationPage::Protocol) {
                 refreshWaveformViewWithAutoAnalysis();
+            } else if (page == ui::NavigationPage::Stats) {
+                refreshReportView();
             }
         });
         connect(serialPort_.get(), &QSerialPort::readyRead, this, [this]() {
@@ -818,11 +898,16 @@ bool WorkbenchController::initialize(const QString& workspaceRootPath)
             QStringLiteral("调试器: 未配置"));
         window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
     }
+    refreshReportView();
     return true;
 }
 
 void WorkbenchController::handleAction(const ui::UiActionRequest& request)
 {
+    if (samplingCaptureBusy_) {
+        logWarning(QStringLiteral("Sampling"), QStringLiteral("采集正在进行，请等待 CAPTURE_END。"));
+        return;
+    }
     if (hardwareOperationBusy_ && isBlockedByHardwareOperation(request.action)) {
         logWarning(
             QStringLiteral("UI"),
@@ -886,6 +971,9 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
     case ui::UiAction::SendSamplingConfig:
         saveSamplingConfig(request.parameters, true);
         break;
+    case ui::UiAction::StartSamplingCapture:
+        startSamplingCapture(request.parameters);
+        break;
     case ui::UiAction::BrowseProgramImage:
         browseProgramImage();
         break;
@@ -910,7 +998,33 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
     case ui::UiAction::GenerateReport:
         generateReport();
         break;
+    case ui::UiAction::OpenReportHtml:
+        openReportHtml();
+        break;
+    case ui::UiAction::OpenReportDirectory:
+        openReportDirectory();
+        break;
+    case ui::UiAction::CopyReportPath:
+        copyReportPath();
+        break;
+    case ui::UiAction::OpenReportArtifact:
+        openReportArtifact(request.parameters.value(QStringLiteral("relativePath")).toString());
+        break;
+    case ui::UiAction::NavigateToReportSource:
+        if (window_ != nullptr) {
+            const QString pageId = request.parameters.value(QStringLiteral("targetPage")).toString();
+            if (pageId == QStringLiteral("protocol")) {
+                window_->showPage(ui::NavigationPage::Protocol);
+            } else if (pageId == QStringLiteral("waveform")) {
+                window_->showPage(ui::NavigationPage::Waveform);
+            } else {
+                window_->showPage(ui::NavigationPage::RamProgram);
+            }
+        }
+        break;
     case ui::UiAction::BrowseWaveform:
+        importWaveformFile();
+        break;
     case ui::UiAction::ShowWaveformEmbedded:
     case ui::UiAction::ShowWaveformDetached:
     case ui::UiAction::BrowseProtocolWaveform:
@@ -1002,6 +1116,7 @@ bool WorkbenchController::createTask()
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
+    refreshReportView();
     return true;
 }
 
@@ -1034,6 +1149,7 @@ bool WorkbenchController::saveCurrentTask()
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
+    refreshReportView();
     return true;
 }
 
@@ -1084,6 +1200,7 @@ void WorkbenchController::loadTaskToWorkbench(const QString& taskId)
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
+    refreshReportView();
 }
 
 void WorkbenchController::startEditTask(const QString& taskId)
@@ -1197,8 +1314,8 @@ void WorkbenchController::loadResourcePackIfAvailable()
 {
     const QStringList candidates = {
         QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("resources")),
-        QDir(QDir::currentPath()).filePath(QStringLiteral("resources")),
         QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../resources")),
+        QDir(QDir::currentPath()).filePath(QStringLiteral("resources")),
         QDir(QDir::currentPath()).filePath(QStringLiteral("software/lockstep_host/resources"))
     };
 
@@ -1321,9 +1438,11 @@ void WorkbenchController::startDebugService()
 
                 if (hasConnection_) {
                     logInfo(QStringLiteral("Target"), statusText);
+                    refreshSerialPorts();
                 } else {
                     logError(QStringLiteral("Target"), QStringLiteral("目标连接失败: %1").arg(connectionRecord_.errorMessage));
                 }
+                updateProgramActionAvailability();
                 updateTopStatus();
             },
             Qt::QueuedConnection);
@@ -1349,6 +1468,7 @@ void WorkbenchController::stopDebugService()
             window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
         }
         logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
+        updateProgramActionAvailability();
         updateTopStatus();
         return;
     }
@@ -1392,6 +1512,7 @@ void WorkbenchController::stopDebugService()
                 } else {
                     logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
                 }
+                updateProgramActionAvailability();
                 updateTopStatus();
             },
             Qt::QueuedConnection);
@@ -1405,7 +1526,15 @@ void WorkbenchController::refreshSerialPorts()
 {
     serialPorts_.clear();
     QStringList displayNames;
-    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    std::sort(ports.begin(), ports.end(), [](const QSerialPortInfo& lhs, const QSerialPortInfo& rhs) {
+        const int leftScore = serialPreferredScore(lhs);
+        const int rightScore = serialPreferredScore(rhs);
+        if (leftScore != rightScore) {
+            return leftScore > rightScore;
+        }
+        return lhs.portName() < rhs.portName();
+    });
     for (const QSerialPortInfo& info : ports) {
         const QString portName = info.portName().trimmed();
         if (!portName.isEmpty()) {
@@ -1423,6 +1552,43 @@ void WorkbenchController::refreshSerialPorts()
     logInfo(QStringLiteral("Serial"), statusText);
 }
 
+bool WorkbenchController::openSelectedSerialPort()
+{
+    if (serialPort_ == nullptr || window_ == nullptr) {
+        return false;
+    }
+
+    QString portName = window_->selectedSerialPortName();
+    if (portName.isEmpty() || !serialPorts_.contains(portName, Qt::CaseInsensitive)) {
+        window_->setSerialStatus(QStringLiteral("请先刷新串口列表。"), false);
+        logWarning(QStringLiteral("Serial"), QStringLiteral("串口列表未刷新或没有可打开串口。"));
+        return false;
+    }
+
+    serialPort_->setPortName(portName);
+    serialPort_->setBaudRate(window_->selectedSerialBaudRate());
+    serialPort_->setDataBits(QSerialPort::Data8);
+    serialPort_->setParity(QSerialPort::NoParity);
+    serialPort_->setStopBits(QSerialPort::OneStop);
+    serialPort_->setFlowControl(QSerialPort::NoFlowControl);
+
+    if (!serialPort_->open(QIODevice::ReadWrite)) {
+        const QString message = serialPort_->errorString();
+        serialOpen_ = false;
+        window_->setSerialStatus(QStringLiteral("串口打开失败: %1").arg(message), false);
+        logError(QStringLiteral("Serial"), QStringLiteral("串口打开失败: %1").arg(message));
+        return false;
+    }
+
+    serialOpen_ = true;
+    const QString message = QStringLiteral("串口已打开: %1 @ %2")
+        .arg(portName)
+        .arg(serialPort_->baudRate());
+    window_->setSerialStatus(message, true);
+    logInfo(QStringLiteral("Serial"), message);
+    return true;
+}
+
 void WorkbenchController::toggleSerialMonitor()
 {
     if (serialPort_ == nullptr || window_ == nullptr) {
@@ -1438,34 +1604,7 @@ void WorkbenchController::toggleSerialMonitor()
         return;
     }
 
-    QString portName = window_->selectedSerialPortName();
-    if (portName.isEmpty() || !serialPorts_.contains(portName, Qt::CaseInsensitive)) {
-        window_->setSerialStatus(QStringLiteral("请先刷新串口列表。"), false);
-        logWarning(QStringLiteral("Serial"), QStringLiteral("串口列表未刷新或没有可打开串口。"));
-        return;
-    }
-
-    serialPort_->setPortName(portName);
-    serialPort_->setBaudRate(window_->selectedSerialBaudRate());
-    serialPort_->setDataBits(QSerialPort::Data8);
-    serialPort_->setParity(QSerialPort::NoParity);
-    serialPort_->setStopBits(QSerialPort::OneStop);
-    serialPort_->setFlowControl(QSerialPort::NoFlowControl);
-
-    if (!serialPort_->open(QIODevice::ReadWrite)) {
-        const QString message = serialPort_->errorString();
-        serialOpen_ = false;
-        window_->setSerialStatus(QStringLiteral("串口打开失败: %1").arg(message), false);
-        logError(QStringLiteral("Serial"), QStringLiteral("串口打开失败: %1").arg(message));
-        return;
-    }
-
-    serialOpen_ = true;
-    const QString message = QStringLiteral("串口已打开: %1 @ %2")
-        .arg(portName)
-        .arg(serialPort_->baudRate());
-    window_->setSerialStatus(message, true);
-    logInfo(QStringLiteral("Serial"), message);
+    static_cast<void>(openSelectedSerialPort());
 }
 
 void WorkbenchController::clearSerialOutput()
@@ -1506,10 +1645,10 @@ void WorkbenchController::sendSerialData(const QString& text)
     }
 }
 
-void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, const bool requestHardwareSend)
+bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, const bool requestHardwareSend)
 {
     if (!ensureTask()) {
-        return;
+        return false;
     }
 
     const int sampleCount = parameters.value(QStringLiteral("sample_count")).toInt();
@@ -1518,29 +1657,31 @@ void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     const int triggerCount = parameters.value(QStringLiteral("trigger_count")).toInt();
     const int postAfterTrigger = parameters.value(QStringLiteral("post_after_trigger")).toInt();
     const int sampleWordBits = parameters.value(QStringLiteral("sample_word_bits")).toInt();
+    const int sampleRateHz = parameters.value(QStringLiteral("sample_rate_hz")).toInt();
     if (sampleCount != kSamplingSampleCount ||
         pretrigger != kSamplingPretrigger ||
         posttrigger != kSamplingPosttrigger ||
         triggerCount != kSamplingTriggerCount ||
         postAfterTrigger != kSamplingPostAfterTrigger ||
-        sampleWordBits != kSamplingSampleWordBits) {
+        sampleWordBits != kSamplingSampleWordBits || sampleRateHz != kSamplingSampleRateHz) {
         logError(
             QStringLiteral("Sampling"),
-            QStringLiteral("采样窗口参数与当前硬件不匹配: sample_count=%1 pretrigger=%2 posttrigger=%3 trigger_count=%4 post_after_trigger=%5 sample_word_bits=%6")
+            QStringLiteral("采样窗口参数与当前硬件不匹配: sample_count=%1 pretrigger=%2 posttrigger=%3 trigger_count=%4 post_after_trigger=%5 sample_word_bits=%6 sample_rate_hz=%7")
                 .arg(sampleCount)
                 .arg(pretrigger)
                 .arg(posttrigger)
                 .arg(triggerCount)
                 .arg(postAfterTrigger)
-                .arg(sampleWordBits));
-        return;
+                .arg(sampleWordBits)
+                .arg(sampleRateHz));
+        return false;
     }
 
     quint64 triggerAddress = 0U;
     const QString triggerAddressText = parameters.value(QStringLiteral("trigger_addr")).toString().trimmed();
     if (!parseAddressText(triggerAddressText, &triggerAddress)) {
         logError(QStringLiteral("Sampling"), QStringLiteral("触发地址无效: %1").arg(triggerAddressText));
-        return;
+        return false;
     }
 
     const bool mismatchEnable = parameters.value(QStringLiteral("mismatch_enable")).toBool();
@@ -1572,6 +1713,7 @@ void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     root.insert(QStringLiteral("trigger_count"), triggerCount);
     root.insert(QStringLiteral("post_after_trigger"), postAfterTrigger);
     root.insert(QStringLiteral("sample_word_bits"), sampleWordBits);
+    root.insert(QStringLiteral("sample_rate_hz"), sampleRateHz);
     root.insert(QStringLiteral("trigger_logic"), QStringLiteral("valid_ready_addr_or_mismatch_rise"));
     root.insert(QStringLiteral("addr_trigger"), addressTrigger);
     root.insert(QStringLiteral("mismatch_trigger"), mismatchTrigger);
@@ -1581,23 +1723,23 @@ void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     const QString configPath = currentTask_.paths.samplingConfigPath;
     if (!QDir().mkpath(QFileInfo(configPath).absolutePath())) {
         logError(QStringLiteral("Sampling"), QStringLiteral("无法创建采样配置目录: %1").arg(QFileInfo(configPath).absolutePath()));
-        return;
+        return false;
     }
 
     QSaveFile file(configPath);
     if (!file.open(QIODevice::WriteOnly)) {
         logError(QStringLiteral("Sampling"), QStringLiteral("无法写入采样配置: %1").arg(configPath));
-        return;
+        return false;
     }
     const QJsonDocument document(root);
     const QByteArray payload = document.toJson(QJsonDocument::Indented);
     if (file.write(payload) != payload.size()) {
         logError(QStringLiteral("Sampling"), QStringLiteral("采样配置写入不完整: %1").arg(configPath));
-        return;
+        return false;
     }
     if (!file.commit()) {
         logError(QStringLiteral("Sampling"), QStringLiteral("采样配置提交失败: %1").arg(configPath));
-        return;
+        return false;
     }
 
     workspace::TaskInputSet inputs = currentTask_.inputs;
@@ -1613,7 +1755,7 @@ void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     QString error;
     if (!workspace_.saveTaskInputs(workspaceMode(), currentTask_.summary.taskId, inputs, &updated, &error)) {
         logError(QStringLiteral("Sampling"), QStringLiteral("保存采样配置索引失败: %1").arg(error));
-        return;
+        return false;
     }
 
     currentTask_ = updated;
@@ -1625,11 +1767,208 @@ void WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
                  mismatchEnable ? QStringLiteral("true") : QStringLiteral("false"),
                  QString::number(mismatchMask, 16)));
     if (requestHardwareSend) {
-        logWarning(QStringLiteral("Sampling"), QStringLiteral("采样硬件下发通道尚未接入，已保存配置但未写入硬件寄存器。"));
+        acquisition::D3xxRuntime transport;
+        QString transportError;
+        if (!transport.load(&transportError)) {
+            logError(QStringLiteral("Sampling"), transportError);
+            return false;
+        }
+        const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&transportError);
+        if (devices.isEmpty() || !transport.open(devices.first().index, &transportError)) {
+            logError(QStringLiteral("Sampling"), transportError.isEmpty()
+                ? QStringLiteral("未枚举到 FT601 设备") : transportError);
+            return false;
+        }
+        acquisition::SamplingCaptureConfig hardwareConfig;
+        hardwareConfig.sampleRateHz = static_cast<quint32>(sampleRateHz);
+        hardwareConfig.sampleCount = static_cast<quint32>(sampleCount);
+        hardwareConfig.pretriggerCount = static_cast<quint32>(pretrigger);
+        hardwareConfig.posttriggerCount = static_cast<quint32>(posttrigger);
+        hardwareConfig.protocolGroupMask = 0x1ffU;
+        hardwareConfig.triggerMask = static_cast<quint32>(triggerMask);
+        hardwareConfig.triggerValue = static_cast<quint32>(triggerAddress & 0xffffffffULL);
+        hardwareConfig.triggerEdgeRise = mismatchEnable ? 1U : 0U;
+        if (!hardwareConfig.validate(&transportError)) {
+            transport.close();
+            logError(QStringLiteral("Sampling"), transportError);
+            return false;
+        }
+        acquisition::SamplingCaptureSession session;
+        const bool configAccepted = session.configure(&transport, hardwareConfig, &transportError);
+        transport.close();
+        if (!configAccepted) {
+            logError(QStringLiteral("Sampling"), transportError.isEmpty()
+                ? QStringLiteral("CONFIG_CAPTURE 未获得有效确认") : transportError);
+            return false;
+        }
+        logInfo(QStringLiteral("Sampling"), QStringLiteral("FT601 已确认 1024 路采样配置。"));
     }
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
+    refreshReportView();
+    return true;
+}
+
+void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
+{
+    if (samplingCaptureBusy_ || !saveSamplingConfig(parameters, false)) {
+        return;
+    }
+
+    quint64 triggerAddress = 0U;
+    if (!parseAddressText(parameters.value(QStringLiteral("trigger_addr")).toString(), &triggerAddress)) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("采集触发地址无效"));
+        return;
+    }
+    const bool mismatchEnable = parameters.value(QStringLiteral("mismatch_enable")).toBool();
+    const quint32 mismatchMask = static_cast<quint32>(
+        parameters.value(QStringLiteral("mismatch_mask")).toInt() & kSamplingMismatchMask);
+    acquisition::SamplingCaptureConfig config;
+    config.sampleRateHz = static_cast<quint32>(kSamplingSampleRateHz);
+    config.sampleCount = static_cast<quint32>(kSamplingSampleCount);
+    config.pretriggerCount = static_cast<quint32>(kSamplingPretrigger);
+    config.posttriggerCount = static_cast<quint32>(kSamplingPosttrigger);
+    config.protocolGroupMask = 0x1ffU;
+    config.triggerMask = mismatchEnable ? mismatchMask : 0U;
+    config.triggerValue = static_cast<quint32>(triggerAddress & 0xffffffffULL);
+    config.triggerEdgeRise = mismatchEnable ? 1U : 0U;
+
+    QString validationError;
+    if (!config.validate(&validationError)) {
+        logError(QStringLiteral("Sampling"), validationError);
+        return;
+    }
+
+    const QString taskRoot = currentTask_.paths.taskRootPath;
+    const QString taskId = currentTask_.summary.taskId;
+    samplingCaptureBusy_ = true;
+    if (window_ != nullptr) {
+        window_->setActionButtonsEnabled(ui::UiAction::SaveSamplingConfig, false);
+        window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, false);
+        window_->setActionButtonsEnabled(ui::UiAction::StartSamplingCapture, false);
+    }
+    logInfo(QStringLiteral("Sampling"), QStringLiteral("开始 FT601 采集: 120 MHz / 4096 点 / 1024 bit"));
+
+    QThread* const thread = QThread::create([this, config, taskRoot, taskId]() {
+        QString captureError;
+        fault_injection::FaultInjectionResult faultResult;
+        const QString faultConfigPath = QDir(taskRoot).filePath(QStringLiteral("inputs/fault_injection_config.json"));
+        fault_injection::FaultInjectionRequest faultRequest;
+        faultRequest.taskRootPath = taskRoot;
+        faultRequest.configured = QFileInfo::exists(faultConfigPath);
+        const QString resourceScriptDir = QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("resources/error_injection"));
+        faultRequest.allowedScriptDirectory = resourceScriptDir;
+        if (faultRequest.configured) {
+            QFile configFile(faultConfigPath);
+            if (!configFile.open(QIODevice::ReadOnly)) {
+                captureError = QStringLiteral("无法读取错误注入配置: %1").arg(configFile.errorString());
+            } else {
+                QJsonParseError parseError;
+                const QJsonDocument document = QJsonDocument::fromJson(configFile.readAll(), &parseError);
+                const QJsonObject object = document.object();
+                const QString scriptName = object.value(QStringLiteral("script")).toString().trimmed();
+                if (parseError.error != QJsonParseError::NoError || scriptName.isEmpty() ||
+                    QFileInfo(scriptName).fileName() != scriptName) {
+                    captureError = QStringLiteral("错误注入配置无效，必须指定资源目录内脚本文件名");
+                } else {
+                    faultRequest.scriptPath = QDir(resourceScriptDir).filePath(scriptName);
+                    faultRequest.workingDirectory = resourceScriptDir;
+                    faultRequest.timeoutMs = object.value(QStringLiteral("timeout_ms")).toInt(30'000);
+                    const QJsonArray arguments = object.value(QStringLiteral("arguments")).toArray();
+                    for (const QJsonValue& argument : arguments) {
+                        faultRequest.arguments.append(argument.toString());
+                    }
+                }
+            }
+        }
+        faultResult = fault_injection::FaultInjectionOrchestrator().execute(faultRequest);
+        if (faultResult.status == QStringLiteral("failed")) {
+            captureError = captureError.isEmpty()
+                ? QStringLiteral("错误注入失败，已阻断 ARM: %1").arg(faultResult.error)
+                : captureError;
+        }
+        acquisition::D3xxRuntime transport;
+        bool success = captureError.isEmpty() && transport.load(&captureError);
+        if (success) {
+            const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&captureError);
+            success = !devices.isEmpty();
+            if (!success && captureError.isEmpty()) captureError = QStringLiteral("未枚举到 FT601 设备");
+            if (success) success = transport.open(devices.first().index, &captureError);
+        }
+        acquisition::SamplingCaptureRecord record;
+        if (success) {
+            acquisition::SamplingCaptureSession session;
+            success = session.run(&transport, config, taskRoot, 120'000, &record, &captureError);
+        }
+        transport.close();
+
+        QMetaObject::invokeMethod(
+            this,
+            [this, success, captureError, taskRoot, taskId]() {
+                samplingCaptureBusy_ = false;
+                if (window_ != nullptr) {
+                    window_->setActionButtonsEnabled(ui::UiAction::SaveSamplingConfig, true);
+                    window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, true);
+                    window_->setActionButtonsEnabled(ui::UiAction::StartSamplingCapture, true);
+                }
+                if (!success) {
+                    logError(QStringLiteral("Sampling"), captureError.isEmpty()
+                        ? QStringLiteral("FT601 采集失败") : captureError);
+                    refreshReportView();
+                    return;
+                }
+                if (!hasTask_ || currentTask_.summary.taskId != taskId ||
+                    currentTask_.paths.taskRootPath != taskRoot) {
+                    logWarning(QStringLiteral("Sampling"), QStringLiteral("采集已完成，但当前任务已变化。"));
+                    return;
+                }
+
+                QJsonObject schema;
+                schema.insert(QStringLiteral("schema_version"), QStringLiteral("2.0"));
+                schema.insert(QStringLiteral("task_id"), taskId);
+                schema.insert(QStringLiteral("sample_signal"), QStringLiteral("CH0..CH1023"));
+                schema.insert(QStringLiteral("sample_width"), 1024);
+                schema.insert(QStringLiteral("physical_channels"), 1024);
+                schema.insert(QStringLiteral("trace_profile_id"), QStringLiteral("trace.noelv.lockstep_1024"));
+                const QString schemaPath = QDir(taskRoot).filePath(QStringLiteral("waveform/capture_schema.json"));
+                QSaveFile schemaFile(schemaPath);
+                const QByteArray schemaBytes = QJsonDocument(schema).toJson(QJsonDocument::Indented);
+                if (!schemaFile.open(QIODevice::WriteOnly) ||
+                    schemaFile.write(schemaBytes) != schemaBytes.size() || !schemaFile.commit()) {
+                    logError(QStringLiteral("Sampling"), QStringLiteral("采集完成，但通道 schema 写入失败"));
+                    return;
+                }
+
+                analyzeCurrentTrace(false);
+                QJsonArray artifacts;
+                const auto appendArtifact = [&artifacts](const QString& name, const QString& relativePath) {
+                    QJsonObject artifact;
+                    artifact.insert(QStringLiteral("name"), name);
+                    artifact.insert(QStringLiteral("relative_path"), relativePath);
+                    artifacts.append(artifact);
+                };
+                appendArtifact(QStringLiteral("acquisition_raw"), QStringLiteral("evidence/raw_capture.dat"));
+                appendArtifact(QStringLiteral("capture_sidecar"), QStringLiteral("evidence/capture_sidecar.json"));
+                appendArtifact(QStringLiteral("capture_vcd"), QStringLiteral("waveform/capture.vcd"));
+                appendArtifact(QStringLiteral("protocol_analysis"), QStringLiteral("evidence/protocol_analysis.json"));
+                QJsonObject artifactIndex;
+                artifactIndex.insert(QStringLiteral("schema"), QStringLiteral("lockstep-artifacts-v1"));
+                artifactIndex.insert(QStringLiteral("artifacts"), artifacts);
+                QString artifactError;
+                if (!writeEvidenceJson(QStringLiteral("artifacts.json"), artifactIndex, nullptr, &artifactError)) {
+                    logError(QStringLiteral("Sampling"), artifactError);
+                    return;
+                }
+                refreshWaveformView();
+                logInfo(QStringLiteral("Sampling"), QStringLiteral("采集、VCD 与协议解析已完成。"));
+                generateReport();
+            },
+            Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 void WorkbenchController::updateConnectionDiagnostics(const QString& serviceState)
@@ -1704,12 +2043,27 @@ void WorkbenchController::beginHardwareOperation(
     } else if (operation == target_control::ProgramOperation::Halt) {
         currentStopProgress_ = 0;
     }
+    updateProgramActionAvailability();
 }
 
 void WorkbenchController::endHardwareOperation()
 {
     hardwareOperationBusy_ = false;
     hardwareOperationName_.clear();
+    updateProgramActionAvailability();
+}
+
+void WorkbenchController::updateProgramActionAvailability()
+{
+    if (window_ == nullptr) {
+        return;
+    }
+
+    const bool operationIdle = !hardwareOperationBusy_;
+    window_->setActionButtonsEnabled(ui::UiAction::ProgramImage, operationIdle);
+    window_->setActionButtonsEnabled(ui::UiAction::VerifyReadback, operationIdle);
+    window_->setActionButtonsEnabled(ui::UiAction::RunProgram, operationIdle);
+    window_->setActionButtonsEnabled(ui::UiAction::StopProgram, operationIdle && hasConnection_);
 }
 
 void WorkbenchController::updateWriteOperationProgress(
@@ -2046,8 +2400,14 @@ void WorkbenchController::runProgram()
         return;
     }
     if (!serialOpen_) {
-        logError(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出；请先在串口监控中打开板卡 UART 串口。"));
-        return;
+        if (serialPorts_.isEmpty()) {
+            refreshSerialPorts();
+        }
+        logInfo(QStringLiteral("Run"), QStringLiteral("运行前自动打开默认板卡 UART 串口。"));
+        if (!openSelectedSerialPort()) {
+            logError(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出；请先刷新串口并打开板卡 UART 串口。"));
+            return;
+        }
     }
     target_control::DebugAccess* const access = debugAccess();
     if (access == nullptr) {
@@ -2055,14 +2415,14 @@ void WorkbenchController::runProgram()
         return;
     }
 
+    const bool resetBeforeRun = runButtonResetMode_;
     beginHardwareOperation(target_control::ProgramOperation::Run, QStringLiteral("程序运行"));
     target_control::OperationProgress progress =
         target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CheckRunGate);
-    const bool resetBeforeRun = hasHaltRecord_ && haltRecord_.state == target_control::RunState::Halted;
     hasHaltRecord_ = false;
     haltRecord_ = target_control::RunControlRecord();
     runSerialOutput_.clear();
-    latestRunInstruction_ = resetBeforeRun ? QStringLiteral("复位并运行") : QStringLiteral("运行");
+    latestRunInstruction_ = resetBeforeRun ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行");
     runOutputConfirmed_ = false;
     runSerialCaptureActive_ = true;
     currentStopProgress_ = 0;
@@ -2248,6 +2608,7 @@ void WorkbenchController::stopProgram()
                 if (halted) {
                     currentStopProgress_ = 100;
                     runSerialCaptureActive_ = false;
+                    runButtonResetMode_ = true;
                     logInfo(QStringLiteral("Run"), QStringLiteral("程序已终止: %1").arg(debugReturnSummary(haltRecord_.rawReturn)));
                     updateRunButtonText();
                 } else {
@@ -2265,58 +2626,322 @@ void WorkbenchController::stopProgram()
     updateTopStatus();
 }
 
+reporting::ReportDocumentModel WorkbenchController::buildReportModel() const
+{
+    reporting::ReportDocumentModel model;
+    if (!hasTask_) {
+        return model;
+    }
+    model.taskId = currentTask_.summary.taskId;
+    model.taskName = currentTask_.summary.taskName;
+    model.taskDescription = currentTask_.summary.description;
+    model.mode = toModeText(mode_);
+    model.programFileName = !currentTask_.inputs.programFile.originalFileName.isEmpty()
+        ? currentTask_.inputs.programFile.originalFileName
+        : QFileInfo(currentTask_.inputs.programFile.relativePath).fileName();
+    model.programRelativePath = currentTask_.inputs.programFile.relativePath;
+    model.targetSummary = debugProfile_.profileName;
+    model.environment.insert(QStringLiteral("application_version"), QString::fromLatin1(LOCKSTEP_APP_VERSION));
+    model.environment.insert(QStringLiteral("qt_version"), QString::fromLatin1(qVersion()));
+    model.environment.insert(QStringLiteral("os"), QSysInfo::prettyProductName());
+    model.environment.insert(QStringLiteral("cpu_architecture"), QSysInfo::currentCpuArchitecture());
+    model.resourceSnapshot = resourceSnapshotJson();
+
+    QList<error_handling::ErrorRecord> errors;
+    errorRegistry_.loadTaskErrors(currentTask_.paths.taskRootPath, &errors, nullptr);
+    for (const error_handling::ErrorRecord& error : errors) {
+        if (error.status == error_handling::ErrorStatus::Resolved) {
+            continue;
+        }
+        reporting::ReportDiagnostic diagnostic;
+        diagnostic.id = error.errorId;
+        diagnostic.code = error.code;
+        diagnostic.severity = error_handling::toString(error.severity);
+        diagnostic.source = error.source;
+        diagnostic.message = error.message;
+        diagnostic.suggestion = error.resolution.isEmpty()
+            ? QStringLiteral("查看来源记录并处理后重新生成报告") : error.resolution;
+        diagnostic.occurredAt = error.createdAt;
+        if (error.severity == error_handling::ErrorSeverity::Warning) {
+            model.warnings.append(diagnostic);
+        } else if (error.severity == error_handling::ErrorSeverity::Blocking ||
+                   error.severity == error_handling::ErrorSeverity::Critical) {
+            model.blockingErrors.append(diagnostic);
+        }
+    }
+    return reportGenerator_.buildModelFromTask(currentTask_.paths.taskRootPath, model);
+}
+
+void WorkbenchController::refreshReportView(const QString& generationError)
+{
+    if (window_ == nullptr) {
+        return;
+    }
+    ui::ReportPageViewModel view;
+    if (!hasTask_) {
+        view.lifecycle = ui::ReportLifecycleState::NoTask;
+        view.lifecycleText = QStringLiteral("未选择任务");
+        view.conclusionText = QStringLiteral("无可评估任务");
+        view.primaryReason = QStringLiteral("请先创建或加载验证任务。");
+        window_->setReportPageState(view);
+        return;
+    }
+
+    const reporting::ReportDocumentModel live = buildReportModel();
+    QStringList liveReasons;
+    const reporting::ReportConclusion liveConclusion = reportGenerator_.calculateConclusion(live, &liveReasons);
+    const QString liveDigest = reportGenerator_.calculateInputDigest(live);
+    reporting::ReportDocumentModel persisted;
+    reporting::ReportConclusion persistedConclusion = reporting::ReportConclusion::Incomplete;
+    QStringList persistedReasons;
+    QString loadError;
+    const bool reportFileExists = QFileInfo::exists(
+        QDir(currentTask_.paths.reportsPath).filePath(QStringLiteral("report.json")));
+    const bool hasPersisted = reportGenerator_.loadLatestReport(
+        currentTask_.paths.taskRootPath, &persisted, &persistedConclusion, &persistedReasons, &loadError);
+
+    view.hasTask = true;
+    view.taskName = currentTask_.summary.taskName;
+    view.taskId = currentTask_.summary.taskId;
+    view.modeText = toModeText(mode_);
+    view.hasPersistedReport = hasPersisted;
+    view.reportRelativePath = QStringLiteral("reports/report.json");
+    view.htmlRelativePath = QStringLiteral("reports/report.html");
+    view.warningCount = live.warnings.size();
+    view.blockingCount = live.blockingErrors.size();
+    view.generating = reportGenerationBusy_;
+    view.inputDigest = liveDigest;
+    view.stale = hasPersisted && persisted.inputDigest != liveDigest;
+
+    view.conclusion = reporting::toString(liveConclusion);
+    view.conclusionText = conclusionText(liveConclusion);
+    view.primaryReason = liveReasons.isEmpty() ? QStringLiteral("暂无结论依据") : liveReasons.first();
+    if (hasPersisted) {
+        view.persistedConclusion = reporting::toString(persistedConclusion);
+        view.persistedConclusionText = conclusionText(persistedConclusion);
+    }
+    if (reportGenerationBusy_) {
+        view.lifecycle = ui::ReportLifecycleState::Generating;
+        view.lifecycleText = QStringLiteral("正在生成");
+    } else if (!generationError.isEmpty()) {
+        view.lifecycle = ui::ReportLifecycleState::GenerationError;
+        view.lifecycleText = QStringLiteral("生成失败");
+        view.errorMessage = generationError;
+    } else if (!hasPersisted && reportFileExists) {
+        view.lifecycle = ui::ReportLifecycleState::LoadError;
+        view.lifecycleText = QStringLiteral("读取失败");
+        view.errorMessage = loadError;
+    } else if (!hasPersisted) {
+        view.lifecycle = ui::ReportLifecycleState::NotGenerated;
+        view.lifecycleText = QStringLiteral("当前证据预检");
+    } else if (view.stale) {
+        view.lifecycle = ui::ReportLifecycleState::Stale;
+        view.lifecycleText = QStringLiteral("报告已过期");
+    } else {
+        view.lifecycle = ui::ReportLifecycleState::Current;
+        view.lifecycleText = QStringLiteral("报告为最新");
+    }
+    if (hasPersisted) {
+        view.reportId = persisted.reportId;
+        view.generatedAt = persisted.generatedAt;
+        view.schemaVersion = persisted.schemaVersion;
+        view.revision = persisted.revision;
+        view.reportSha256 = fileSha256Text(
+            QDir(currentTask_.paths.reportsPath).filePath(QStringLiteral("report.json")));
+    }
+
+    const auto addEvidence = [&view](
+                                 const QString& id,
+                                 const QString& name,
+                                 const reporting::ReportEvidence& evidence) {
+        ui::ReportEvidenceViewItem item;
+        item.id = id;
+        item.displayName = name;
+        item.state = reporting::toString(evidence.state);
+        item.stateText = evidenceStateText(evidence.state);
+        item.summary = evidence.summary;
+        item.recordedAt = evidence.recordedAt;
+        item.relativePath = evidence.recordPath;
+        item.details = QString::fromUtf8(QJsonDocument(evidence.metrics).toJson(QJsonDocument::Compact));
+        item.errorIds = evidence.errorIds;
+        view.requiredEvidence.append(item);
+    };
+    addEvidence(QStringLiteral("program_write"), QStringLiteral("程序烧写"), live.requiredEvidence.programWrite);
+    addEvidence(QStringLiteral("readback_verify"), QStringLiteral("回读校验"), live.requiredEvidence.readbackVerify);
+    addEvidence(QStringLiteral("run_control"), QStringLiteral("程序运行"), live.requiredEvidence.runControl);
+
+    const auto addOptional = [&view](
+                                 const QString& id,
+                                 const QString& name,
+                                 const reporting::ReportOptionalRecord& record) {
+        ui::ReportOptionalViewItem item;
+        item.id = id;
+        item.displayName = name;
+        item.state = reporting::toString(record.state);
+        item.stateText = optionalStateText(record.state);
+        item.summary = record.summary;
+        item.recordedAt = record.recordedAt;
+        item.relativePath = record.path;
+        view.optionalRecords.append(item);
+    };
+    addOptional(QStringLiteral("vcd_waveform"), QStringLiteral("VCD 波形"), live.optionalRecords.vcdWaveform);
+    addOptional(QStringLiteral("protocol_analysis"), QStringLiteral("协议分析"), live.optionalRecords.protocolAnalysis);
+    addOptional(QStringLiteral("acquisition"), QStringLiteral("采集记录"), live.optionalRecords.acquisition);
+    addOptional(QStringLiteral("fault_injection"), QStringLiteral("故障注入"), live.optionalRecords.faultInjection);
+
+    const auto addDiagnostics = [&view](const QList<reporting::ReportDiagnostic>& values) {
+        for (const reporting::ReportDiagnostic& diagnostic : values) {
+            ui::ReportDiagnosticViewItem item;
+            item.id = diagnostic.id;
+            item.code = diagnostic.code;
+            item.severity = diagnostic.severity;
+            item.source = diagnostic.source;
+            item.message = diagnostic.message;
+            item.suggestion = diagnostic.suggestion;
+            item.occurredAt = diagnostic.occurredAt;
+            const QString source = diagnostic.source.toLower();
+            item.targetPage = source.contains(QStringLiteral("protocol")) ||
+                    source.contains(QStringLiteral("trace")) || source.contains(QStringLiteral("m12"))
+                ? QStringLiteral("protocol")
+                : (source.contains(QStringLiteral("waveform")) || source.contains(QStringLiteral("vcd"))
+                    ? QStringLiteral("waveform") : QStringLiteral("ram_program"));
+            view.diagnostics.append(item);
+        }
+    };
+    addDiagnostics(live.blockingErrors);
+    const auto addEvidenceProblems = [&view](const QStringList& states) {
+        for (const ui::ReportEvidenceViewItem& evidence : view.requiredEvidence) {
+            if (!states.contains(evidence.state)) {
+                continue;
+            }
+            ui::ReportDiagnosticViewItem item;
+            item.id = evidence.id;
+            item.code = QStringLiteral("REQUIRED_EVIDENCE");
+            item.severity = evidence.state == QStringLiteral("failed")
+                ? QStringLiteral("error") : QStringLiteral("incomplete");
+            item.source = evidence.displayName;
+            item.message = evidence.summary.isEmpty() ? evidence.stateText : evidence.summary;
+            item.suggestion = QStringLiteral("转到程序烧录与运行页面完成或检查该步骤");
+            item.targetPage = QStringLiteral("ram_program");
+            view.diagnostics.append(item);
+        }
+    };
+    addEvidenceProblems({QStringLiteral("failed")});
+    addEvidenceProblems({QStringLiteral("missing"), QStringLiteral("not_run")});
+    addDiagnostics(live.warnings);
+    view.archiveDetails = QStringLiteral("schema: %1\nrevision: %2\ninput_digest: %3\nreport_sha256: %4\n资源快照: %5\n产物索引: %6 项")
+        .arg(view.schemaVersion.isEmpty() ? QStringLiteral("2.0") : view.schemaVersion)
+        .arg(view.revision)
+        .arg(view.inputDigest)
+        .arg(view.reportSha256)
+        .arg(QString::fromUtf8(QJsonDocument(live.resourceSnapshot).toJson(QJsonDocument::Compact)))
+        .arg(live.artifacts.size());
+    window_->setReportPageState(view);
+}
+
 void WorkbenchController::generateReport()
+{
+    if (!ensureTask() || reportGenerationBusy_) {
+        return;
+    }
+    reporting::ReportDocumentModel model = buildReportModel();
+    reporting::ReportDocumentModel previous;
+    reporting::ReportConclusion previousConclusion;
+    QStringList previousReasons;
+    model.revision = reportGenerator_.loadLatestReport(
+        currentTask_.paths.taskRootPath, &previous, &previousConclusion, &previousReasons, nullptr)
+        ? previous.revision + 1 : 1;
+    model.reportId = QStringLiteral("report_%1")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz")));
+    reportGenerationBusy_ = true;
+    refreshReportView();
+    const reporting::ReportResult result = reportGenerator_.generateReport(
+        currentTask_.paths.taskRootPath, model);
+    reportGenerationBusy_ = false;
+    if (!result.success) {
+        logError(QStringLiteral("Report"), QStringLiteral("报告生成失败: %1").arg(result.errorMessage));
+        refreshReportView(result.errorMessage);
+        return;
+    }
+
+    const auto attachReport = [this, &model, &result](
+                                  const QString& suffix,
+                                  const QString& name,
+                                  const QString& absolutePath) {
+        workspace::ArtifactRecord artifact;
+        artifact.artifactId = QStringLiteral("%1_%2").arg(model.reportId, suffix);
+        artifact.kind = workspace::ArtifactKind::Report;
+        artifact.relativePath = QStringLiteral("reports/versions/%1/%2").arg(model.reportId, name);
+        artifact.name = name;
+        artifact.sha256 = fileSha256Text(absolutePath);
+        artifact.sizeBytes = QFileInfo(absolutePath).size();
+        artifact.createdAt = currentTimeText();
+        artifact.metadata.insert(QStringLiteral("report_id"), model.reportId);
+        artifact.metadata.insert(QStringLiteral("revision"), model.revision);
+        artifact.metadata.insert(QStringLiteral("conclusion"), reporting::toString(result.conclusion));
+        workspace_.attachArtifact(workspaceMode(), currentTask_.summary.taskId, artifact, nullptr);
+    };
+    attachReport(QStringLiteral("json"), QStringLiteral("report.json"),
+                 QDir(result.versionPath).filePath(QStringLiteral("report.json")));
+    attachReport(QStringLiteral("html"), QStringLiteral("report.html"),
+                 QDir(result.versionPath).filePath(QStringLiteral("report.html")));
+    logInfo(QStringLiteral("Report"), QStringLiteral("报告已生成: %1 / 结论: %2")
+        .arg(result.reportPath, reporting::toString(result.conclusion)));
+    refreshReportView();
+}
+
+void WorkbenchController::openReportHtml()
 {
     if (!ensureTask()) {
         return;
     }
-
-    QList<error_handling::ErrorRecord> errors;
-    QString error;
-    if (!errorRegistry_.loadTaskErrors(currentTask_.paths.taskRootPath, &errors, &error)) {
-        logWarning(QStringLiteral("Report"), QStringLiteral("读取任务错误记录失败: %1").arg(error));
+    const QString path = QDir(currentTask_.paths.reportsPath).filePath(QStringLiteral("report.html"));
+    if (!QFileInfo::exists(path) || !QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+        logWarning(QStringLiteral("Report"), QStringLiteral("无法打开 HTML 报告: %1").arg(path));
     }
+}
 
-    reporting::ReportInput input;
-    input.reportId = QStringLiteral("report_%1").arg(compactTimeText());
-    input.taskId = currentTask_.summary.taskId;
-    input.mode = toModeText(mode_);
-    input.requiredEvidence.programWritePassed = hasWriteRecord_ && writeRecord_.success;
-    input.requiredEvidence.readbackVerifyPassed =
-        hasVerifyRecord_ && (verifyRecord_.state == target_control::VerifyState::Passed);
-    input.requiredEvidence.runControlReturned =
-        hasRunRecord_ && (!runRecord_.rawReturn.isEmpty() || !runRecord_.snapshot.isEmpty());
-    input.requiredEvidence.programWriteRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kProgramWriteRecordName));
-    input.requiredEvidence.readbackVerifyRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kReadbackVerifyRecordName));
-    input.requiredEvidence.runControlRecordPath = QStringLiteral("evidence/%1").arg(QString::fromLatin1(kRunControlRecordName));
-    input.optionalRecords.vcdWaveform =
-        QFileInfo::exists(QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedWaveformRelativePath()))
-        ? reporting::OptionalRecordState::Available
-        : reporting::OptionalRecordState::NotAvailable;
-    input.optionalRecords.protocolAnalysis =
-        QFileInfo::exists(QDir(currentTask_.paths.taskRootPath).filePath(protocol_analyzer::fixedTraceAnalysisRelativePath()))
-        ? reporting::OptionalRecordState::Available
-        : reporting::OptionalRecordState::NotAvailable;
-    input.optionalRecords.faultInjection = reporting::OptionalRecordState::Skipped;
-    input.unresolvedBlockingErrors = errorRegistry_.unresolvedBlockingErrors(errors);
-    input.resourceSnapshot = resourceSnapshotJson();
-
-    const reporting::ReportResult result = reportGenerator_.generateReport(currentTask_.paths.taskRootPath, input);
-    if (!result.success) {
-        logError(QStringLiteral("Report"), QStringLiteral("报告生成失败: %1").arg(result.errorMessage));
+void WorkbenchController::openReportDirectory()
+{
+    if (!ensureTask()) {
         return;
     }
+    if (!QFileInfo::exists(currentTask_.paths.reportsPath) ||
+        !QDesktopServices::openUrl(QUrl::fromLocalFile(currentTask_.paths.reportsPath))) {
+        logWarning(QStringLiteral("Report"), QStringLiteral("报告目录尚不存在。"));
+    }
+}
 
-    workspace::ArtifactRecord artifact;
-    artifact.artifactId = input.reportId;
-    artifact.kind = workspace::ArtifactKind::Report;
-    artifact.relativePath = QStringLiteral("reports/report.json");
-    artifact.name = QStringLiteral("report.json");
-    artifact.createdAt = currentTimeText();
-    workspace_.attachArtifact(workspaceMode(), currentTask_.summary.taskId, artifact, nullptr);
+void WorkbenchController::copyReportPath()
+{
+    if (!ensureTask()) {
+        return;
+    }
+    const QString path = QDir(currentTask_.paths.reportsPath).filePath(QStringLiteral("report.json"));
+    if (QGuiApplication::clipboard() != nullptr) {
+        QGuiApplication::clipboard()->setText(path);
+        logInfo(QStringLiteral("Report"), QStringLiteral("报告路径已复制: %1").arg(path));
+    }
+}
 
-    logInfo(QStringLiteral("Report"), QStringLiteral("报告已生成: %1 / 结论: %2")
-        .arg(result.reportPath, reporting::toString(result.conclusion)));
+void WorkbenchController::openReportArtifact(const QString& relativePath)
+{
+    if (!ensureTask()) {
+        return;
+    }
+    const QString clean = QDir::cleanPath(QDir::fromNativeSeparators(relativePath));
+    const QString root = QDir::fromNativeSeparators(QDir(currentTask_.paths.taskRootPath).absolutePath());
+    const QString absolute = QDir::fromNativeSeparators(
+        QFileInfo(QDir(root).filePath(clean)).absoluteFilePath());
+    const QString rootPrefix = root.endsWith(QLatin1Char('/')) ? root : root + QLatin1Char('/');
+    if (clean.isEmpty() || QDir::isAbsolutePath(clean) || clean.startsWith(QStringLiteral("../")) ||
+        !absolute.startsWith(rootPrefix, Qt::CaseInsensitive) || !QFileInfo::exists(absolute)) {
+        logWarning(QStringLiteral("Report"), QStringLiteral("报告记录路径无效或文件不存在: %1").arg(relativePath));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(absolute))) {
+        logWarning(QStringLiteral("Report"), QStringLiteral("无法打开报告记录: %1").arg(relativePath));
+    }
 }
 
 void WorkbenchController::showVerifySummary()
@@ -2327,6 +2952,73 @@ void WorkbenchController::showVerifySummary()
 void WorkbenchController::showRunSummary()
 {
     setRunSummaryFromCurrentState(QStringLiteral("运行摘要"), currentRunProgress_, currentStopProgress_);
+}
+
+void WorkbenchController::importWaveformFile()
+{
+    if (!ensureTask() || window_ == nullptr) {
+        return;
+    }
+
+    const QString sourcePath = QFileDialog::getOpenFileName(
+        window_, QStringLiteral("导入 VCD 波形"), QString(),
+        QStringLiteral("Value Change Dump (*.vcd);;All Files (*.*)"));
+    if (sourcePath.isEmpty()) {
+        return;
+    }
+
+    const QString targetPath = QDir(currentTask_.paths.taskRootPath)
+        .filePath(QStringLiteral("waveform/capture.vcd"));
+    QDir().mkpath(QFileInfo(targetPath).absolutePath());
+    if (QFileInfo(sourcePath).absoluteFilePath().compare(
+            QFileInfo(targetPath).absoluteFilePath(), Qt::CaseInsensitive) != 0) {
+        QFile source(sourcePath);
+        QSaveFile target(targetPath);
+        if (!source.open(QIODevice::ReadOnly) || !target.open(QIODevice::WriteOnly)) {
+            logError(QStringLiteral("Waveform"), QStringLiteral("无法读取或写入 VCD: %1").arg(sourcePath));
+            return;
+        }
+        while (!source.atEnd()) {
+            const QByteArray block = source.read(256 * 1024);
+            if (block.isEmpty() && source.error() != QFileDevice::NoError) {
+                target.cancelWriting();
+                logError(QStringLiteral("Waveform"), QStringLiteral("读取 VCD 失败: %1").arg(source.errorString()));
+                return;
+            }
+            if (target.write(block) != block.size()) {
+                target.cancelWriting();
+                logError(QStringLiteral("Waveform"), QStringLiteral("写入任务 VCD 失败: %1").arg(target.errorString()));
+                return;
+            }
+        }
+        if (!target.commit()) {
+            logError(QStringLiteral("Waveform"), QStringLiteral("提交任务 VCD 失败: %1").arg(target.errorString()));
+            return;
+        }
+    }
+
+    const QString schemaPath = QDir(currentTask_.paths.taskRootPath)
+        .filePath(protocol_analyzer::fixedTraceSchemaRelativePath());
+    QJsonObject schema;
+    schema.insert(QStringLiteral("schema_version"), QStringLiteral("1.0"));
+    schema.insert(QStringLiteral("task_id"), currentTask_.summary.taskId);
+    schema.insert(QStringLiteral("sample_signal"), QStringLiteral("CH0..CH1023"));
+    schema.insert(QStringLiteral("sample_width"), 1024);
+    schema.insert(QStringLiteral("physical_channels"), 1024);
+    schema.insert(QStringLiteral("trace_profile_id"), QStringLiteral("trace.noelv.lockstep_1024"));
+    QSaveFile schemaFile(schemaPath);
+    const QByteArray schemaPayload = QJsonDocument(schema).toJson(QJsonDocument::Indented);
+    if (!schemaFile.open(QIODevice::WriteOnly) ||
+        schemaFile.write(schemaPayload) != schemaPayload.size() ||
+        !schemaFile.commit()) {
+        logError(QStringLiteral("Waveform"), QStringLiteral("写入 VCD schema 失败: %1").arg(schemaPath));
+        return;
+    }
+
+    QFile::remove(QDir(currentTask_.paths.taskRootPath)
+        .filePath(protocol_analyzer::fixedTraceAnalysisRelativePath()));
+    logInfo(QStringLiteral("Waveform"), QStringLiteral("已导入 VCD，开始自动解析: %1").arg(sourcePath));
+    analyzeCurrentTrace();
 }
 
 void WorkbenchController::refreshWaveformView()
@@ -2345,6 +3037,7 @@ void WorkbenchController::refreshWaveformView()
             model.vcdPath,
             model.timeRangeText,
             traceGroupsToUi(model.groups),
+            traceSamplesToUi(model.samples),
             model.keyBehaviors,
             model.diagnostics);
         window_->setProtocolAnalysisView(
@@ -2582,10 +3275,9 @@ void WorkbenchController::updateRunButtonText()
         return;
     }
 
-    const bool stopped = hasHaltRecord_ && haltRecord_.state == target_control::RunState::Halted;
     window_->setActionButtonText(
         ui::UiAction::RunProgram,
-        stopped ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行"));
+        runButtonResetMode_ ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行"));
 }
 
 void WorkbenchController::refreshRunSummary(
@@ -2639,11 +3331,13 @@ void WorkbenchController::resetExecutionState()
     latestRunInstruction_.clear();
     runOutputConfirmed_ = false;
     runSerialCaptureActive_ = false;
+    runButtonResetMode_ = false;
     if (window_ != nullptr) {
         window_->setRamSummary(QStringLiteral("尚未选择程序镜像。"), 0, 0);
         window_->setRunSummary(QStringLiteral("程序运行控制摘要将在这里显示。"), 0, 0);
     }
     updateRunButtonText();
+    updateProgramActionAvailability();
 }
 
 bool WorkbenchController::saveProgramInputForCurrentTask(workspace::TaskInputSet* const inputs)
@@ -2732,8 +3426,10 @@ void WorkbenchController::restoreExecutionEvidenceForCurrentTask()
         hasHaltRecord_ = haltRecord_.state != target_control::RunState::NotAllowed ||
             !haltRecord_.rawReturn.isEmpty() ||
             !haltRecord_.snapshot.isEmpty();
+        runButtonResetMode_ = hasHaltRecord_ && haltRecord_.state == target_control::RunState::Halted;
     }
     updateRunButtonText();
+    updateProgramActionAvailability();
 }
 
 void WorkbenchController::logInfo(const QString& source, const QString& message) const
@@ -2857,7 +3553,7 @@ bool WorkbenchController::configureDebugServiceAccess(
     debugConfig_.debugServicePath = servicePath;
     debugConfig_.interfaceConfigPath = QDir(resourceRootPath).filePath(profile.interfaceConfigPath);
     debugConfig_.targetConfigPath = QDir(resourceRootPath).filePath(profile.targetConfigPath);
-    debugConfig_.temporaryDirectoryPath = QDir(workspaceRootPath_).filePath(QStringLiteral(".debug_service_tmp"));
+    debugConfig_.temporaryDirectoryPath = QDir(workspaceRootPath_).filePath(QStringLiteral(".lockstep_ui_preview_tmp"));
     debugConfig_.adapterSpeedKhz = profile.jtagKhz;
     debugConfig_.timeoutMs = 300000;
     debugAccess_ = std::make_unique<target_control::DebugServiceAccess>(debugConfig_);
@@ -2883,7 +3579,6 @@ QJsonObject WorkbenchController::resourceSnapshotJson() const
     object.insert(QStringLiteral("resource_pack_version"), QStringLiteral("0"));
     object.insert(QStringLiteral("profile_id"), debugProfile_.profileId);
     object.insert(QStringLiteral("profile_sha256"), QString());
-    object.insert(QStringLiteral("pl_allow_result"), QStringLiteral("placeholder"));
     object.insert(QStringLiteral("protocol_rule_status"), QStringLiteral("placeholder"));
     return object;
 }

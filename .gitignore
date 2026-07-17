@@ -43,6 +43,7 @@ build.ninja
 # Local runtime output
 /logs/
 /tmp/
+/.codex-tasks/
 /software/lockstep_host/logs/
 /software/lockstep_host/tmp/
 
@@ -51,3 +52,17 @@ build.ninja
 /software/lockstep_host/offline-build-env/
 /software/lockstep_host/dist/
 /software/lockstep_host/build-environment.lock.json
+
+# Vivado/XSim local work products
+/.Xil/
+/xsim.dir/
+/vivado*.jou
+/vivado*.log
+/xvlog.log
+/xvlog.pb
+.codex-tasks/**/.Xil/
+.codex-tasks/**/xsim.dir/
+
+# Local dependency download cache; installed tools are kept separately
+/.tools/downloads/
+/.tools/

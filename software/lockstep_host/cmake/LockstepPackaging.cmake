@@ -1,9 +1,9 @@
 # /**********************************************************
 # * 文件名: LockstepPackaging.cmake
-# * 日期: 2026-07-13
-# * 版本: v1.0
-# * 更新记录: 初版创建银河麒麟安装与 CPack 配置
-# * 描述: 定义上位机 Linux 安装树、私有运行库和 DEB 元数据
+# * 日期: 2026-07-14
+# * 版本: v2.0
+# * 更新记录: 安装目标收敛为 lockstep_ui_preview
+# * 描述: 定义 Linux 安装树、私有运行库和 DEB 元数据。
 # **********************************************************/
 
 if(NOT UNIX OR APPLE)
@@ -17,7 +17,7 @@ endif()
 set(LOCKSTEP_INSTALL_ROOT "opt/lockstep-host")
 set(LOCKSTEP_RUNTIME_ROOT "${CMAKE_BINARY_DIR}/linux-runtime")
 
-set_target_properties(lockstep_host lockstep_debug_service PROPERTIES
+set_target_properties(lockstep_ui_preview PROPERTIES
     INSTALL_RPATH "\$ORIGIN/../lib"
     BUILD_WITH_INSTALL_RPATH FALSE
 )
@@ -36,19 +36,18 @@ endif()
 add_custom_command(
     OUTPUT "${LOCKSTEP_RUNTIME_ROOT}/runtime-collected.stamp"
     COMMAND ${CMAKE_COMMAND}
-        -DMAIN_EXECUTABLE=$<TARGET_FILE:lockstep_host>
-        -DDEBUG_SERVICE=$<TARGET_FILE:lockstep_debug_service>
+        -DMAIN_EXECUTABLE=$<TARGET_FILE:lockstep_ui_preview>
         -DQT_PLUGIN_DIR=${LOCKSTEP_QT_PLUGIN_DIR}
         -DOUTPUT_ROOT=${LOCKSTEP_RUNTIME_ROOT}
         -P "${CMAKE_SOURCE_DIR}/cmake/CollectLinuxRuntime.cmake"
-    DEPENDS lockstep_host lockstep_debug_service
+    DEPENDS lockstep_ui_preview
     COMMENT "Collect private Linux runtime dependencies"
     VERBATIM
 )
 add_custom_target(lockstep_collect_linux_runtime ALL
     DEPENDS "${LOCKSTEP_RUNTIME_ROOT}/runtime-collected.stamp")
 
-install(TARGETS lockstep_host lockstep_debug_service
+install(TARGETS lockstep_ui_preview
     RUNTIME DESTINATION "${LOCKSTEP_INSTALL_ROOT}/bin"
 )
 install(DIRECTORY "${LOCKSTEP_PACKAGED_RESOURCES_DIR}/"

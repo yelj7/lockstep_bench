@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: protocol_analysis.h
-* 日期: 2026-07-08
-* 版本: v1.0
-* 更新记录: 初版创建固定 trace VCD 协议解析接口
-* 描述: 声明 M12 协议解析模块的任务级输入、解析结果和分析入口
+* 日期: 2026-07-14
+* 版本: v1.1
+* 更新记录: 增加九协议束字段目录和聚合总线定义
+* 描述: 声明固定 trace 协议目录、任务级输入、解析结果和分析入口。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_PROTOCOL_ANALYZER_PROTOCOL_ANALYSIS_H_
@@ -24,6 +24,20 @@ struct ProtocolDiagnostic final {
     QString detail;
     QString errorId;
     QJsonObject context;
+};
+
+struct ProtocolFieldDefinition final {
+    QString name;
+    QString displayName;
+    int lsb = -1;
+    int width = 1;
+    bool errorSignal = false;
+};
+
+struct ProtocolGroupDefinition final {
+    QString id;
+    QString displayName;
+    QList<ProtocolFieldDefinition> fields;
 };
 
 struct ProtocolAnalysisRequest final {
@@ -51,6 +65,7 @@ public:
 QString fixedWaveformRelativePath();
 QString fixedTraceSchemaRelativePath();
 QString fixedTraceAnalysisRelativePath();
+QList<ProtocolGroupDefinition> fixedProtocolGroups();
 
 }  // namespace lockstep::protocol_analyzer
 

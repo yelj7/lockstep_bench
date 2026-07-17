@@ -1,12 +1,14 @@
 /**********************************************************
 * 文件名: waveform_trace_viewer.cpp
-* 日期: 2026-07-08
-* 版本: v1.0
-* 更新记录: 初版实现固定 trace analysis 读取与 UI 展示模型生成
-* 描述: 实现 M11 波形显示模块的任务级固定产物检测、analysis 读取和摘要整理
+* 日期: 2026-07-14
+* 版本: v1.2
+* 更新记录: 将各协议组事务汇总到统一关键行为列表
+* 描述: 实现任务波形产物检测、协议束视图和采样模型生成。
 **********************************************************/
 
 #include "waveform_trace_viewer.h"
+
+#include "protocol_analysis.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -19,9 +21,8 @@ namespace lockstep::waveform_viewer {
 namespace {
 
 constexpr char kWaveformDirName[] = "waveform";
-constexpr char kTraceVcdName[] = "lockstep_trace.vcd";
-constexpr char kTraceSchemaName[] = "lockstep_trace_schema.json";
-constexpr char kTraceAnalysisName[] = "lockstep_trace_analysis.json";
+constexpr char kTraceVcdName[] = "capture.vcd";
+constexpr char kTraceSchemaName[] = "capture_schema.json";
 
 QString waveformFilePath(const QString& taskRootPath, const QString& fileName)
 {
@@ -95,17 +96,39 @@ QString diagnosticSummary(const QJsonObject& object)
         : QStringLiteral("%1 %2: %3 (%4)").arg(severity, code, message, errorId);
 }
 
-QString fieldSummary(const QJsonObject& object)
+WaveformFieldView fieldFromJson(const QJsonObject& object)
 {
-    const QString displayName = object.value(QStringLiteral("display_name")).toString();
-    const QString name = object.value(QStringLiteral("name")).toString();
-    const QString format = object.value(QStringLiteral("format")).toString();
-    const int sampleBit = object.value(QStringLiteral("sample_bit")).toInt(-1);
-    const QString label = displayName.isEmpty() ? name : displayName;
-    if (sampleBit >= 0) {
-        return QStringLiteral("%1 bit=%2 %3").arg(label).arg(sampleBit).arg(format);
+    WaveformFieldView field;
+    field.name = object.value(QStringLiteral("name")).toString();
+    field.displayName = object.value(QStringLiteral("display_name")).toString(field.name);
+    field.lsb = object.value(QStringLiteral("sample_bit")).toInt(-1);
+    field.width = qMax(1, object.value(QStringLiteral("width")).toInt(1));
+    field.errorSignal = object.value(QStringLiteral("error_signal")).toBool(false);
+    return field;
+}
+
+QList<WaveformGroupView> defaultGroups()
+{
+    QList<WaveformGroupView> groups;
+    for (const protocol_analyzer::ProtocolGroupDefinition& definition :
+         protocol_analyzer::fixedProtocolGroups()) {
+        WaveformGroupView group;
+        group.id = definition.id;
+        group.displayName = definition.displayName;
+        group.status = QStringLiteral("not_available");
+        group.reason = QStringLiteral("尚未导入 VCD");
+        for (const protocol_analyzer::ProtocolFieldDefinition& definitionField : definition.fields) {
+            WaveformFieldView field;
+            field.name = definitionField.name;
+            field.displayName = definitionField.displayName;
+            field.lsb = definitionField.lsb;
+            field.width = definitionField.width;
+            field.errorSignal = definitionField.errorSignal;
+            group.fields.append(field);
+        }
+        groups.append(group);
     }
-    return label;
+    return groups;
 }
 
 QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
@@ -121,7 +144,7 @@ QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
 
         const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
         for (const QJsonValue& field : fields) {
-            group.fields.append(fieldSummary(field.toObject()));
+            group.fields.append(fieldFromJson(field.toObject()));
         }
 
         const QJsonArray transactions = object.value(QStringLiteral("transactions")).toArray();
@@ -134,21 +157,38 @@ QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
     return groups;
 }
 
+QList<WaveformSampleView> samplesFromAnalysis(const QJsonArray& array)
+{
+    QList<WaveformSampleView> samples;
+    samples.reserve(array.size());
+    for (const QJsonValue& value : array) {
+        const QJsonObject object = value.toObject();
+        WaveformSampleView sample;
+        sample.time = jsonInt64(object.value(QStringLiteral("time")));
+        sample.valueHex = object.value(QStringLiteral("value_hex")).toString();
+        sample.unknown = object.value(QStringLiteral("unknown")).toBool(false);
+        if (!sample.valueHex.isEmpty()) {
+            samples.append(sample);
+        }
+    }
+    return samples;
+}
+
 }  // namespace
 
 QString fixedWaveformRelativePath()
 {
-    return QStringLiteral("waveform/lockstep_trace.vcd");
+    return QStringLiteral("waveform/capture.vcd");
 }
 
 QString fixedTraceSchemaRelativePath()
 {
-    return QStringLiteral("waveform/lockstep_trace_schema.json");
+    return QStringLiteral("waveform/capture_schema.json");
 }
 
 QString fixedTraceAnalysisRelativePath()
 {
-    return QStringLiteral("waveform/lockstep_trace_analysis.json");
+    return QStringLiteral("evidence/protocol_analysis.json");
 }
 
 WaveformViewModel WaveformTraceViewer::loadTask(const QString& taskRootPath) const
@@ -157,19 +197,32 @@ WaveformViewModel WaveformTraceViewer::loadTask(const QString& taskRootPath) con
     const QString taskRoot = QDir::cleanPath(taskRootPath);
     model.vcdPath = waveformFilePath(taskRoot, QString::fromLatin1(kTraceVcdName));
     model.schemaPath = waveformFilePath(taskRoot, QString::fromLatin1(kTraceSchemaName));
-    model.analysisPath = waveformFilePath(taskRoot, QString::fromLatin1(kTraceAnalysisName));
+    model.analysisPath = QDir(taskRoot).filePath(fixedTraceAnalysisRelativePath());
+    if (!QFileInfo::exists(model.vcdPath)) {
+        const QString legacy = waveformFilePath(taskRoot, QStringLiteral("lockstep_trace.vcd"));
+        if (QFileInfo::exists(legacy)) model.vcdPath = legacy;
+    }
+    if (!QFileInfo::exists(model.schemaPath)) {
+        const QString legacy = waveformFilePath(taskRoot, QStringLiteral("lockstep_trace_schema.json"));
+        if (QFileInfo::exists(legacy)) model.schemaPath = legacy;
+    }
+    if (!QFileInfo::exists(model.analysisPath)) {
+        const QString legacy = waveformFilePath(taskRoot, QStringLiteral("lockstep_trace_analysis.json"));
+        if (QFileInfo::exists(legacy)) model.analysisPath = legacy;
+    }
     model.hasVcd = QFileInfo::exists(model.vcdPath);
     model.hasSchema = QFileInfo::exists(model.schemaPath);
     model.hasAnalysis = QFileInfo::exists(model.analysisPath);
+    model.groups = defaultGroups();
 
     if (!model.hasVcd) {
         model.status = QStringLiteral("not_available");
-        model.diagnostics.append(QStringLiteral("当前任务未生成 waveform/lockstep_trace.vcd"));
+        model.diagnostics.append(QStringLiteral("当前任务未生成 waveform/capture.vcd"));
         return model;
     }
     if (!model.hasAnalysis) {
         model.status = QStringLiteral("analysis_missing");
-        model.diagnostics.append(QStringLiteral("缺少 waveform/lockstep_trace_analysis.json"));
+        model.diagnostics.append(QStringLiteral("缺少 evidence/protocol_analysis.json"));
         return model;
     }
 
@@ -197,11 +250,26 @@ WaveformViewModel WaveformTraceViewer::loadTask(const QString& taskRootPath) con
         .arg(jsonInt64(timeBase.value(QStringLiteral("end_time"))))
         .arg(timeBase.value(QStringLiteral("unit")).toString());
 
-    model.groups = groupsFromAnalysis(analysis.value(QStringLiteral("groups")).toArray());
+    const QList<WaveformGroupView> analysisGroups =
+        groupsFromAnalysis(analysis.value(QStringLiteral("groups")).toArray());
+    if (!analysisGroups.isEmpty()) {
+        model.groups = analysisGroups;
+    }
+    if (model.status != QStringLiteral("failed")) {
+        model.samples = samplesFromAnalysis(analysis.value(QStringLiteral("samples")).toArray());
+    } else {
+        model.diagnostics.append(QStringLiteral("协议解析失败，拒绝显示截断或无效采样"));
+    }
 
+    for (const WaveformGroupView& group : model.groups) {
+        for (const QString& transaction : group.transactions) {
+            if (!model.keyBehaviors.contains(transaction)) model.keyBehaviors.append(transaction);
+        }
+    }
     const QJsonArray keyBehaviors = analysis.value(QStringLiteral("key_behaviors")).toArray();
     for (const QJsonValue& value : keyBehaviors) {
-        model.keyBehaviors.append(eventSummary(value.toObject()));
+        const QString summary = eventSummary(value.toObject());
+        if (!model.keyBehaviors.contains(summary)) model.keyBehaviors.append(summary);
     }
 
     const QJsonArray diagnostics = analysis.value(QStringLiteral("diagnostic_summary")).toArray();

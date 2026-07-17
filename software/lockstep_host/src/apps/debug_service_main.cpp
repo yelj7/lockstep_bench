@@ -2,9 +2,11 @@
 * 文件名: debug_service_main.cpp
 * 日期: 2026-07-09
 * 版本: 1.0.0.1
-* 更新记录: 初版创建自研片上调试服务入口
-* 描述: 解析上位机调试请求，执行自研板卡传输层并生成标准响应。
+* 更新记录: 合并为 lockstep_ui_preview 的调试服务模式
+* 描述: 解析统一产品程序的调试请求并执行自研板卡传输层。
 **********************************************************/
+
+#include "debug_service_entry.h"
 
 #include <QByteArray>
 #include <QCommandLineOption>
@@ -35,7 +37,7 @@ namespace {
 
 constexpr char kRequestSchema[] = "lockstep-debug-service-request-v1";
 constexpr char kResponseSchema[] = "lockstep-debug-service-response-v1";
-constexpr char kLocalServerName[] = "lockstep_debug_service_local_v1";
+constexpr char kLocalServerName[] = "lockstep_ui_preview_local_v1";
 
 constexpr unsigned short kDefaultCmsisDapVendorId = 0x0D28U;
 constexpr unsigned short kDefaultCmsisDapProductId = 0x0204U;
@@ -96,6 +98,7 @@ constexpr quint32 kDmSbData0 = 0x3CU;
 constexpr quint32 kDmSbData1 = 0x3DU;
 
 constexpr quint32 kDmControlDmActive = 0x00000001U;
+constexpr quint32 kDmControlSetResetHaltReq = 0x00000008U;
 constexpr quint32 kDmControlHaltReq = 0x80000000U;
 constexpr quint32 kDmControlResumeReq = 0x40000000U;
 constexpr quint32 kDmControlAckHaveReset = 0x10000000U;
@@ -120,6 +123,9 @@ constexpr quint32 kAbstractCommandTransfer = 0x00020000U;
 constexpr quint32 kAbstractCommandWrite = 0x00010000U;
 constexpr quint32 kAbstractCommandAarSize32 = 0x00200000U;
 constexpr quint32 kAbstractCommandAarSize64 = 0x00300000U;
+constexpr quint32 kRiscvCsrMepc = 0x0341U;
+constexpr quint32 kRiscvCsrMcause = 0x0342U;
+constexpr quint32 kRiscvCsrMtval = 0x0343U;
 constexpr quint32 kRiscvCsrDpc = 0x07B1U;
 
 constexpr quint32 kSbCsBusyError = 0x00400000U;
@@ -1297,7 +1303,23 @@ public:
         if (!device_.expectStatusOk(request, QStringLiteral("目标复位"), errorMessage)) {
             return false;
         }
-        return tapReset(errorMessage);
+        const bool ok = tapReset(errorMessage);
+        if (ok) {
+            debugModuleReady_ = false;
+            currentIr_ = std::numeric_limits<quint32>::max();
+        }
+        return ok;
+    }
+
+    bool setHaltOnReset(QString* const errorMessage)
+    {
+        if (!initializeDebugModule(errorMessage)) {
+            return false;
+        }
+        return dmiWrite(
+            kDmControl,
+            baseDmControl() | kDmControlSetResetHaltReq,
+            errorMessage);
     }
 
     bool disconnect(QString* const errorMessage)
@@ -1354,6 +1376,9 @@ public:
         object.insert(QStringLiteral("length"), QString::number(request.length));
         object.insert(QStringLiteral("segment_count"), request.segments.size());
         object.insert(QStringLiteral("segment_total_length"), QString::number(segmentTotalLength));
+        if (!lastCsrSnapshot_.isEmpty()) {
+            object.insert(QStringLiteral("csr_snapshot"), lastCsrSnapshot_);
+        }
         return object;
     }
 
@@ -1573,7 +1598,11 @@ public:
         if (!initializeDebugModule(errorMessage)) {
             return false;
         }
-        return haltHart(errorMessage);
+        if (!haltHart(errorMessage)) {
+            return false;
+        }
+        captureCsrSnapshot();
+        return true;
     }
 
 private:
@@ -2250,6 +2279,76 @@ private:
         return waitAbstractCommandReady(errorMessage);
     }
 
+    bool readCsr(const quint32 csr, quint64* const value, QString* const errorMessage)
+    {
+        if (value == nullptr) {
+            setError(errorMessage, QStringLiteral("CSR read output is null."));
+            return false;
+        }
+        if (!clearAbstractCommandError(errorMessage)) {
+            return false;
+        }
+        if (!waitAbstractCommandReady(errorMessage)) {
+            return false;
+        }
+
+        quint32 command = kAbstractCommandAccessRegister | kAbstractCommandTransfer | csr;
+        if (targetConfig_.xlen == 64) {
+            command |= kAbstractCommandAarSize64;
+        } else {
+            command |= kAbstractCommandAarSize32;
+        }
+
+        if (!dmiWrite(kDmCommand, command, errorMessage)) {
+            return false;
+        }
+        if (!waitAbstractCommandReady(errorMessage)) {
+            return false;
+        }
+
+        quint32 low = 0U;
+        if (!dmiRead(kDmData0, &low, errorMessage)) {
+            return false;
+        }
+        quint64 parsed = low;
+        if (targetConfig_.xlen == 64) {
+            quint32 high = 0U;
+            if (!dmiRead(kDmData1, &high, errorMessage)) {
+                return false;
+            }
+            parsed |= (static_cast<quint64>(high) << 32U);
+        }
+
+        *value = parsed;
+        return true;
+    }
+
+    void captureCsrSnapshot()
+    {
+        lastCsrSnapshot_ = QJsonObject();
+        const struct {
+            const char* name;
+            quint32 csr;
+        } items[] = {
+            {"dpc", kRiscvCsrDpc},
+            {"mepc", kRiscvCsrMepc},
+            {"mcause", kRiscvCsrMcause},
+            {"mtval", kRiscvCsrMtval},
+        };
+
+        for (const auto& item : items) {
+            quint64 value = 0U;
+            QString error;
+            if (readCsr(item.csr, &value, &error)) {
+                lastCsrSnapshot_.insert(QString::fromLatin1(item.name), hexAddress(value));
+            } else {
+                lastCsrSnapshot_.insert(
+                    QStringLiteral("%1_error").arg(QString::fromLatin1(item.name)),
+                    error);
+            }
+        }
+    }
+
     quint32 supportedFlagForBytes(const int byteCount) const
     {
         quint32 flag = 0U;
@@ -2725,6 +2824,7 @@ private:
     quint32 lastDmStatus_ = 0U;
     quint32 lastSbCs_ = 0U;
     QString lastDmiError_;
+    QJsonObject lastCsrSnapshot_;
 };
 
 bool parseRequest(
@@ -3071,6 +3171,36 @@ public:
             session_.reset();
             return result;
         }
+        const QString resetStrategy = request.strategy.isEmpty()
+            ? request.profile.value(QStringLiteral("reset_strategy")).toString().trimmed().toLower()
+            : request.strategy.trimmed().toLower();
+        if (resetStrategy == QStringLiteral("reset halt")) {
+            if (!session->setHaltOnReset(&error)) {
+                TransportResult result = hardwareFailure(QStringLiteral("RESET_HALT_REQUEST_FAILED"), error, request);
+                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                session_.reset();
+                return result;
+            }
+            if (!session->resetTarget(&error)) {
+                TransportResult result = hardwareFailure(QStringLiteral("RESET_FAILED"), error, request);
+                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                session_.reset();
+                return result;
+            }
+            if (!session->haltTarget(&error)) {
+                TransportResult result = hardwareFailure(QStringLiteral("RESET_HALT_FAILED"), error, request);
+                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
+                session_.reset();
+                return result;
+            }
+
+            TransportResult result;
+            result.success = true;
+            result.errorCode = QStringLiteral("OK");
+            result.snapshot = session->snapshot(request, QStringLiteral("halted"));
+            return result;
+        }
+
         if (!session->resetTarget(&error)) {
             TransportResult result = hardwareFailure(QStringLiteral("RESET_FAILED"), error, request);
             result.snapshot = session->snapshot(request, QStringLiteral("connected"));
@@ -3273,6 +3403,10 @@ bool processRequestFile(
         setError(errorMessage, error);
         return false;
     }
+    if (!response.value(QStringLiteral("success")).toBool(false)) {
+        setError(errorMessage, response.value(QStringLiteral("error_message")).toString());
+        return false;
+    }
     return true;
 }
 
@@ -3361,10 +3495,10 @@ int runLocalServerLoop(BoardDebugTransport* const transport)
 
 }  // namespace
 
-int main(int argc, char* argv[])
+int runDebugServiceMode(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("lockstep_debug_service"));
+    QCoreApplication::setApplicationName(QStringLiteral("lockstep_ui_preview"));
     QCoreApplication::setApplicationVersion(QString::fromLatin1(LOCKSTEP_APP_VERSION));
 
     QCommandLineParser parser;

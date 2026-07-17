@@ -9,6 +9,5 @@
   "resetStrategy": "reset halt",
   "runAfterDownload": true,
   "targetConfigPath": "debug_adapters/self_debug_service/target_noelv_riscv.json",
-  "targetDebugToolPath": "debug_adapters/self_debug_service/lockstep_debug_service",
   "tclPort": 6666
 }

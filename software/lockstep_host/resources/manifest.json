@@ -7,7 +7,7 @@
     "test_profile_id": "noelv_zcu102_cmsis_dap",
     "research_report_template_id": "report_template_default",
     "test_report_template_id": "report_template_default",
-    "lockstep_trace_profile_id": "trace.noelv.lockstep_512"
+    "lockstep_trace_profile_id": "trace.noelv.lockstep_1024"
   },
   "board_profiles": [
     {
@@ -22,16 +22,6 @@
     }
   ],
   "debug_adapters": [
-    {
-      "id": "debug.self_service.executable",
-      "name": "Lockstep Self Debug Service",
-      "version": "0.0.0.0",
-      "mode": "test",
-      "modes": ["research", "test"],
-      "relative_path": "debug_adapters/self_debug_service/lockstep_debug_service",
-      "sha256": "",
-      "status": "placeholder"
-    },
     {
       "id": "debug.self_service.cmsis_dap_cfg",
       "name": "CMSIS-DAP Interface Config",
@@ -66,6 +56,16 @@
     }
   ],
   "lockstep_trace_profiles": [
+    {
+      "id": "trace.noelv.lockstep_1024",
+      "name": "NOEL-V Lockstep 1024-bit Scalar Trace Profile",
+      "version": "2.0.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "lockstep_trace/noelv_lockstep_1024/trace_profile.json",
+      "sha256": "",
+      "status": "enabled"
+    },
     {
       "id": "trace.noelv.lockstep_512",
       "name": "NOEL-V Lockstep 512-bit Trace Profile",

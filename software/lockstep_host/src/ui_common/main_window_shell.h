@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      main_window_shell.h
-*  @brief     主窗口框架组件接口
-*  Details.   声明主窗口框架组件的公共类型、数据结构和调用接口。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: main_window_shell.h
+* 日期: 2026-07-14
+* 版本: v1.2
+* 更新记录: 增加协议束字段和真实波形采样视图模型
+* 描述: 声明上位机主窗口框架、报告和协议波形组件。
+**********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_UI_COMMON_MAIN_WINDOW_SHELL_H_
 #define LOCKSTEP_HOST_SRC_UI_COMMON_MAIN_WINDOW_SHELL_H_
@@ -50,12 +42,26 @@ struct ProjectTaskViewItem final {
     QString basicInfo;
 };
 
+struct TraceFieldViewItem final {
+    QString name;
+    QString displayName;
+    int lsb = -1;
+    int width = 1;
+    bool errorSignal = false;
+};
+
+struct TraceSampleViewItem final {
+    qint64 time = 0;
+    QString valueHex;
+    bool unknown = false;
+};
+
 struct TraceGroupViewItem final {
     QString id;
     QString displayName;
     QString status;
     QString reason;
-    QStringList fields;
+    QVector<TraceFieldViewItem> fields;
     QStringList transactions;
 };
 
@@ -85,11 +91,15 @@ public:
     void setRamSummary(const QString& text, int writeProgressPercent, int readbackProgressPercent);
     void setRunSummary(const QString& text, int runProgressPercent, int stopProgressPercent);
     void setActionButtonText(UiAction action, const QString& text);
+    void setActionButtonsEnabled(UiAction action, bool enabled);
+    void setReportPageState(const ReportPageViewModel& model);
+    void showPage(NavigationPage page);
     void setWaveformTraceView(
         const QString& statusText,
         const QString& pathText,
         const QString& timeRangeText,
         const QVector<TraceGroupViewItem>& groups,
+        const QVector<TraceSampleViewItem>& samples,
         const QStringList& keyBehaviors,
         const QStringList& diagnostics);
     void setProtocolAnalysisView(
@@ -164,7 +174,6 @@ private:
     void addWorkbenchPage(const QString& pageId, NavigationPage page, QWidget* pageWidget);
     void setActivePage(const QString& pageId);
     void emitAction(UiAction action, NavigationPage page, const QString& objectName);
-    void setActionButtonsEnabled(UiAction action, bool enabled);
     void setProgramSummaryPage(bool runSummary);
     void applyWaveformTraceToDisplay(QWidget* widget) const;
     void appendFormattedLog(QPlainTextEdit* view, LogLevel level, const QString& source, const QString& message);
@@ -195,6 +204,7 @@ private:
     QString waveformPathText_;
     QString waveformTimeRangeText_;
     QVector<TraceGroupViewItem> waveformGroups_;
+    QVector<TraceSampleViewItem> waveformSamples_;
 };
 
 }  // namespace lockstep::ui

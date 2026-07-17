@@ -26,8 +26,8 @@ for command_name in file readelf ldd sha256sum dpkg-query; do
     }
 done
 
-[[ -x "${app_root}/bin/lockstep_host" ]] || {
-    echo "安装树缺少 lockstep_host" >&2
+[[ -x "${app_root}/bin/lockstep_ui_preview" ]] || {
+    echo "安装树缺少 lockstep_ui_preview" >&2
     exit 1
 }
 

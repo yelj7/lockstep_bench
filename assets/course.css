@@ -1,0 +1,77 @@
+/**********************************************************
+* 文件名: course.css
+* 日期: 2026-07-17
+* 版本: v1.1
+* 更新记录: 增加课程表格和前后课导航样式
+* 描述: 为上位机设计课程和速查资料提供统一排版
+**********************************************************/
+
+:root {
+  color-scheme: light;
+  --ink: #17202a;
+  --muted: #56616b;
+  --paper: #ffffff;
+  --canvas: #eef1f3;
+  --accent: #006b5f;
+  --accent-soft: #dcefeb;
+  --warn: #a33b20;
+  --line: #cbd2d7;
+  --code: #f4f6f7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  line-height: 1.72;
+}
+
+main {
+  width: min(920px, calc(100% - 32px));
+  margin: 24px auto;
+  padding: clamp(24px, 5vw, 56px);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+h1, h2, h3 { line-height: 1.3; letter-spacing: 0; }
+h1 { margin-top: 0; font-size: 2rem; }
+h2 { margin-top: 2.3rem; padding-top: 0.4rem; border-top: 1px solid var(--line); }
+a { color: var(--accent); }
+code, pre { font-family: Consolas, "Cascadia Mono", monospace; }
+code { background: var(--code); padding: 0.1em 0.3em; border-radius: 3px; }
+pre { overflow-x: auto; padding: 16px; background: var(--code); border-left: 4px solid var(--accent); }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: var(--code); }
+
+.eyebrow { color: var(--accent); font-weight: 700; }
+.lead { font-size: 1.08rem; color: var(--muted); }
+.callout { padding: 14px 16px; background: var(--accent-soft); border-left: 4px solid var(--accent); }
+.flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: center; }
+.flow span { padding: 10px 8px; text-align: center; background: var(--code); border: 1px solid var(--line); }
+.flow b { text-align: center; color: var(--accent); }
+.checklist li { margin: 0.7rem 0; }
+.quiz { margin-top: 2rem; padding: 18px; border: 1px solid var(--line); border-radius: 6px; }
+.quiz-options { display: flex; flex-wrap: wrap; gap: 8px; }
+button { min-height: 40px; padding: 8px 14px; border: 1px solid var(--accent); border-radius: 4px; background: white; color: var(--accent); cursor: pointer; }
+button:hover, button:focus-visible { background: var(--accent-soft); }
+.feedback { min-height: 1.8em; font-weight: 700; }
+.feedback[data-state="wrong"] { color: var(--warn); }
+.feedback[data-state="right"] { color: var(--accent); }
+.lesson-nav { display: flex; justify-content: space-between; gap: 16px; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+
+@media (max-width: 700px) {
+  .flow { grid-template-columns: 1fr; }
+  .flow b { transform: rotate(90deg); }
+}
+
+@media print {
+  body { background: white; }
+  main { width: 100%; margin: 0; border: 0; }
+  button { display: none; }
+}

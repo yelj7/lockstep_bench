@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "target_os": "Desktop-V10-SP1-General-Release",
+  "architecture": "x86_64",
+  "requirements_sha256": "cc91a572913c28f921ab429305953e13d5877c0c1cbf3710c237ee6e11565a50",
+  "cmake_version": "3.16.0",
+  "qt_version": "5.15.2",
+  "hidapi_version": "0.14.0",
+  "generator": "make",
+  "compiler": "gcc (GCC) 10.3.0",
+  "generated_at_utc": "2026-07-13T10:43:09Z"
+}
