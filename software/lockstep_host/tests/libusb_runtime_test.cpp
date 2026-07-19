@@ -26,6 +26,7 @@ struct libusb_device {
     QByteArray ports;
     QByteArray serial;
     QByteArray product;
+    bool hasControlInterface = true;
     bool hasCaptureInterface = true;
 };
 struct libusb_device_handle { libusb_device* device = nullptr; };
@@ -39,9 +40,12 @@ bool reverseOrder = false;
 int claimedInterfaces = 0;
 int releasedInterfaces = 0;
 int lastClaimedInterface = -1;
+QList<int> claimedInterfaceNumbers;
 QByteArray lastWrite;
+int lastWriteEndpoint = -1;
 QByteArray claimedSerial;
 enum class ReadMode { Data, Timeout, PartialTimeout } readMode = ReadMode::Data;
+enum class StreamingInitMode { Success, ShortWrite, Error } streamingInitMode = StreamingInitMode::Success;
 
 void initializeDevices()
 {
@@ -60,6 +64,7 @@ void initializeDevices()
     deviceB.serial = "FT601-B";
     unrelatedDevice.descriptor.idVendor = 0x1234;
     unrelatedDevice.descriptor.idProduct = 0x5678;
+    claimedInterfaceNumbers.clear();
 }
 
 bool expect(const bool condition, const char* message)
@@ -121,7 +126,7 @@ int LIBUSB_CALL libusb_get_active_config_descriptor(libusb_device* device,
     static libusb_interface interfaces[2] = {};
     static libusb_config_descriptor descriptor = {};
 
-    controlEndpoints[0].bEndpointAddress = 0x01;
+    controlEndpoints[0].bEndpointAddress = device->hasControlInterface ? 0x01 : 0x03;
     controlEndpoints[0].bmAttributes = LIBUSB_TRANSFER_TYPE_BULK;
     controlEndpoints[1].bEndpointAddress = 0x81;
     controlEndpoints[1].bmAttributes = LIBUSB_TRANSFER_TYPE_INTERRUPT;
@@ -183,6 +188,7 @@ int LIBUSB_CALL libusb_claim_interface(libusb_device_handle* handle, int interfa
     ++claimedInterfaces;
     claimedSerial = handle->device->serial;
     lastClaimedInterface = interfaceNumber;
+    claimedInterfaceNumbers.append(interfaceNumber);
     return LIBUSB_SUCCESS;
 }
 
@@ -198,6 +204,15 @@ int LIBUSB_CALL libusb_bulk_transfer(libusb_device_handle*, unsigned char endpoi
 {
     if ((endpoint & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT) {
         lastWrite = QByteArray(reinterpret_cast<const char*>(data), length);
+        lastWriteEndpoint = endpoint;
+        if (endpoint == 0x01 && streamingInitMode == StreamingInitMode::Error) {
+            *transferred = 0;
+            return LIBUSB_ERROR_IO;
+        }
+        if (endpoint == 0x01 && streamingInitMode == StreamingInitMode::ShortWrite) {
+            *transferred = std::max(0, length - 1);
+            return LIBUSB_SUCCESS;
+        }
         *transferred = length;
         return LIBUSB_SUCCESS;
     }
@@ -232,13 +247,17 @@ int main(int argc, char** argv)
                     devices.first().outEndpoint == 0x02 && devices.first().inEndpoint == 0x82 &&
                     devices.first().usbSpeed == QStringLiteral("high-speed"),
                 "enumeration discovers the FT601 capture interface and endpoints") ||
-        !expect(runtime.open(0, &error) && claimedInterfaces == 1 && claimedSerial == "FT601-A" &&
-                    lastClaimedInterface == 1,
-                "open claims the selected FT601 interface")) return 1;
+        !expect(runtime.open(0, &error) && claimedInterfaces == 2 && claimedSerial == "FT601-A" &&
+                    claimedInterfaceNumbers == QList<int>({0, 1}),
+                "open claims the FT601 control and capture interfaces") ||
+        !expect(lastWriteEndpoint == 0x01 &&
+                    lastWrite == QByteArray::fromHex(
+                        "0000000082020000000000400000000000000000"),
+                "open sends the FT601 streaming-mode request on control endpoint 0x01")) return 1;
 
     int transferred = 0;
     if (!expect(runtime.writePipe(0x02, QByteArray("command"), &transferred, &error) &&
-                    transferred == 7 && lastWrite == "command",
+                    transferred == 7 && lastWriteEndpoint == 0x02 && lastWrite == "command",
                 "bulk OUT transfers the complete command")) return 1;
     readMode = ReadMode::Data;
     if (!expect(runtime.readPipeDetailed(0x82, 64).data == "data", "bulk IN returns data")) return 1;
@@ -254,10 +273,11 @@ int main(int argc, char** argv)
     reverseOrder = true;
     if (!expect(runtime.reopen(&error) && claimedSerial == "FT601-A",
                 "reopen follows stable serial when enumeration order changes") ||
-        !expect(lastClaimedInterface == 1, "reopen rediscovers the capture interface") ||
-        !expect(releasedInterfaces == 1, "reopen releases the previous interface")) return 1;
+        !expect(lastClaimedInterface == 1 && lastWriteEndpoint == 0x01,
+                "reopen rediscovers both interfaces and restores streaming mode") ||
+        !expect(releasedInterfaces == 2, "reopen releases both previous interfaces")) return 1;
     runtime.close();
-    if (!expect(releasedInterfaces == 2, "close releases the reopened interface")) return 1;
+    if (!expect(releasedInterfaces == 4, "close releases both reopened interfaces")) return 1;
 
     reverseOrder = false;
     deviceA.hasCaptureInterface = false;
@@ -266,5 +286,24 @@ int main(int argc, char** argv)
                 "enumeration reports a missing capture endpoint contract") ||
         !expect(!runtime.open(0, &error) && error.contains(QStringLiteral("0x02/0x82")),
                 "open rejects a device without the capture endpoint contract")) return 1;
+
+    deviceA.hasCaptureInterface = true;
+    deviceA.hasControlInterface = false;
+    error.clear();
+    const auto missingControlDevices = runtime.enumerate(&error);
+    if (!expect(!missingControlDevices.first().captureInterfaceAvailable,
+                "enumeration reports a missing FT601 control endpoint") ||
+        !expect(!runtime.open(0, &error) && error.contains(QStringLiteral("0x01")),
+                "open rejects a device without the streaming control endpoint")) return 1;
+
+    deviceA.hasControlInterface = true;
+    streamingInitMode = StreamingInitMode::ShortWrite;
+    error.clear();
+    if (!expect(!runtime.open(0, &error) && error.contains(QStringLiteral("streaming")),
+                "open rejects a short FT601 streaming-mode write")) return 1;
+    streamingInitMode = StreamingInitMode::Error;
+    error.clear();
+    if (!expect(!runtime.open(0, &error) && error.contains(QStringLiteral("streaming")),
+                "open reports an FT601 streaming-mode transfer error")) return 1;
     return 0;
 }

@@ -1,0 +1,23 @@
+# lockstep capture RTL source manifest
+capture/lockstep_wide_capture_window_cdc.v
+capture/lockstep_wide_capture_frame_source.v
+source/lockstep_protocol_probe_pack.v
+common/lockstep_crc32_word.v
+ft601/lockstep_ft601_be_polarity.v
+ft601/lockstep_ft601_245_adapter.v
+frame/lockstep_rx_command_parser.v
+control/lockstep_command_state_machine.v
+frame/lockstep_frame_request_arbiter.v
+frame/lockstep_capture_stream_arbiter.v
+frame/lockstep_tx_frame_generator.v
+event/lockstep_event_record_builder.v
+event/lockstep_event_fifo.v
+event/lockstep_event_round_robin_arbiter.v
+event/lockstep_event_capture_core.v
+event/lockstep_event_async_fifo.v
+event/lockstep_event_capture_controller.v
+event/lockstep_global_timestamp.v
+event/lockstep_protocol_event_encoder.v
+event/lockstep_event_frame_source.v
+top/lockstep_capture_protocol_stream_core.v
+top/lockstep_ft601_external_sample_top.v

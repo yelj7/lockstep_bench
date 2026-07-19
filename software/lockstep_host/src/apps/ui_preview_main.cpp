@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_preview_main.cpp
 * 日期: 2026-07-13
-* 版本: v2.3
-* 更新记录: 将 FT601 实时采集与诊断入口迁移为 libusb
+* 版本: v2.4
+* 更新记录: ARM 后并行执行 run 请求与 FT601 采集，避免事件 FIFO 积压。
 * 描述: 按参数启动界面、调试服务、离线回放或实时采集模式。
 **********************************************************/
 
@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QProcess>
 #include <QSaveFile>
 #include <QStringList>
 #include <QTextStream>
@@ -135,6 +136,11 @@ int finalizeCaptureTask(const QString& taskRoot, const QString& taskId)
     reportContext.taskName = taskId.isEmpty() ? QStringLiteral("sampling_capture") : taskId;
     reportContext.mode = QStringLiteral("test");
     reportContext.targetSummary = QStringLiteral("NOEL-V ZCU102 1024-bit FT601 C++ capture");
+    const QString versionsDir = QDir(taskRoot).filePath(QStringLiteral("reports/versions"));
+    reportContext.reportId = QStringLiteral("report");
+    for (int suffix = 1; QFileInfo::exists(QDir(versionsDir).filePath(reportContext.reportId)); ++suffix) {
+        reportContext.reportId = QStringLiteral("report-%1").arg(suffix);
+    }
     lockstep::reporting::ReportGenerator reportGenerator;
     const lockstep::reporting::ReportDocumentModel reportModel =
         reportGenerator.buildModelFromTask(taskRoot, reportContext);
@@ -148,21 +154,28 @@ int runOfflineCapture(int argc, char* argv[])
     const QString inputPath = argumentValue(arguments, QStringLiteral("--offline-capture"));
     const QString taskRoot = argumentValue(arguments, QStringLiteral("--task-root"));
     const QString taskId = argumentValue(arguments, QStringLiteral("--task-id"));
-    if (inputPath.isEmpty() || taskRoot.isEmpty()) return 2;
+    bool argumentsValid = true;
+    const quint32 eventEnableMask = unsignedArgument(
+        arguments, QStringLiteral("--event-enable-mask"), 0x19fU, &argumentsValid);
+    if (inputPath.isEmpty() || taskRoot.isEmpty() || !argumentsValid ||
+        (eventEnableMask & ~0x19fU) != 0U) return 2;
     QFile input(inputPath);
     if (!input.open(QIODevice::ReadOnly)) return 3;
     const QByteArray raw = input.readAll();
     lockstep::acquisition::CaptureFrameCodec codec;
     const lockstep::acquisition::CaptureDecodeResult decoded = codec.feed(raw);
     if (!decoded.success) return 4;
-    lockstep::acquisition::SamplingCaptureAssembler assembler;
+    lockstep::acquisition::SamplingCaptureAssembler assembler(eventEnableMask);
     QString error;
     bool captureStarted = false;
     for (const lockstep::acquisition::CaptureFrame& frame : decoded.frames) {
-        if (frame.header.type == lockstep::acquisition::CaptureFrameType::CaptureMeta) captureStarted = true;
+        if (frame.header.type == lockstep::acquisition::CaptureFrameType::CaptureMeta ||
+            frame.header.type == lockstep::acquisition::CaptureFrameType::EventMeta) {
+            captureStarted = true;
+        }
         if (assembler.complete()) {
             if (frame.header.type == lockstep::acquisition::CaptureFrameType::ErrorResponse) return 12;
-            break;
+            return 5;
         }
         if (captureStarted && !assembler.append(frame, &error)) return 5;
     }
@@ -184,6 +197,7 @@ int runLiveCapture(int argc, char* argv[])
     const QStringList arguments = application.arguments();
     const QString taskRoot = argumentValue(arguments, QStringLiteral("--task-root"));
     const QString taskId = argumentValue(arguments, QStringLiteral("--task-id"));
+    const QString runRequest = argumentValue(arguments, QStringLiteral("--run-request"));
     if (taskRoot.isEmpty()) return 20;
     bool argumentsValid = true;
     lockstep::acquisition::SamplingCaptureConfig config;
@@ -234,13 +248,68 @@ int runLiveCapture(int argc, char* argv[])
     }
     lockstep::acquisition::SamplingCaptureRecord record;
     lockstep::acquisition::SamplingCaptureSession session;
+    QProcess runRequestProcess;
+    bool runRequestStarted = false;
+    std::function<bool(quint32, QString*)> afterArm;
+    if (!runRequest.isEmpty()) {
+        afterArm = [&](const quint32 captureId, QString* callbackError) {
+            runRequestProcess.setProgram(QCoreApplication::applicationFilePath());
+            runRequestProcess.setArguments({QStringLiteral("--request"), runRequest});
+            runRequestProcess.setWorkingDirectory(QDir::currentPath());
+            runRequestProcess.setStandardOutputFile(
+                QDir(taskRoot).filePath(QStringLiteral("run_request_stdout.txt")));
+            runRequestProcess.setStandardErrorFile(
+                QDir(taskRoot).filePath(QStringLiteral("run_request_stderr.txt")));
+            runRequestProcess.start();
+            if (!runRequestProcess.waitForStarted(5'000)) {
+                if (callbackError != nullptr) {
+                    *callbackError = QStringLiteral(
+                        "ARM 后运行请求启动失败: capture_id=%1, error=%2")
+                                         .arg(captureId).arg(runRequestProcess.errorString());
+                }
+                return false;
+            }
+            runRequestStarted = true;
+            return true;
+        };
+    }
     const lockstep::acquisition::CaptureSessionResult captureResult =
-        session.runDetailed(&transport, config, taskRoot, 120000, &record);
+        session.runDetailed(&transport, config, taskRoot, 120000, &record, afterArm);
+    if (!captureResult.success && runRequestProcess.state() != QProcess::NotRunning) {
+        runRequestProcess.terminate();
+        if (!runRequestProcess.waitForFinished(5'000)) {
+            runRequestProcess.kill();
+            runRequestProcess.waitForFinished(5'000);
+        }
+    }
+    QString runRequestError;
+    if (captureResult.success && runRequestStarted) {
+        const bool finished = runRequestProcess.state() == QProcess::NotRunning ||
+                              runRequestProcess.waitForFinished(60'000);
+        if (!finished || runRequestProcess.exitStatus() != QProcess::NormalExit ||
+            runRequestProcess.exitCode() != 0) {
+            runRequestError = QStringLiteral("板上运行请求失败: exit_code=%1, error=%2")
+                                  .arg(runRequestProcess.exitCode())
+                                  .arg(runRequestProcess.errorString());
+            if (runRequestProcess.state() != QProcess::NotRunning) {
+                runRequestProcess.terminate();
+                if (!runRequestProcess.waitForFinished(5'000)) {
+                    runRequestProcess.kill();
+                    runRequestProcess.waitForFinished(5'000);
+                }
+            }
+        }
+    }
     transport.close();
     if (!captureResult.success) {
         writeLiveCaptureFailure(taskRoot, captureResult.phase, captureResult.message, 25);
         QTextStream(stderr) << QStringLiteral("FT601 实时采集失败: ")
                             << captureResult.message << Qt::endl;
+        return 25;
+    }
+    if (!runRequestError.isEmpty()) {
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("after_arm_run"), runRequestError, 25);
+        QTextStream(stderr) << runRequestError << Qt::endl;
         return 25;
     }
     return finalizeCaptureTask(taskRoot, taskId);

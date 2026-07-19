@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.h
 * 日期: 2026-07-14
-* 版本: v2.1
-* 更新记录: 将 FT601 传输迁移为 libusb。
-* 描述: 声明帧编解码、采集会话、libusb 枚举和标量 VCD 产物导出。
+* 版本: v3.0
+* 更新记录: 增加 v3 事件帧、START_EVENT_STREAM 和稀疏事件记录合同。
+* 描述: 声明帧编解码、采集会话、libusb 传输及 VCD/事件产物导出。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_ACQUISITION_SAMPLING_CAPTURE_H_
@@ -15,10 +15,13 @@
 #include <QSharedPointer>
 #include <QString>
 
+#include <functional>
+
 namespace lockstep::acquisition {
 
 constexpr quint32 kCaptureFrameMagic = 0x3243534cU;
 constexpr quint16 kCaptureProtocolVersion = 2U;
+constexpr quint16 kCaptureProtocolVersionV3 = 3U;
 constexpr quint32 kCaptureFrameHeaderBytes = 32U;
 constexpr quint32 kCaptureSampleWordBits = 1024U;
 constexpr quint32 kCapturePhysicalChannels = 1024U;
@@ -31,10 +34,15 @@ enum class CaptureFrameType : quint16 {
     ArmCapture = 0x0003,
     StopCapture = 0x0004,
     GetStatus = 0x0005,
+    ConfigEvents = 0x0006,
+    StartEventStream = 0x0007,
     StatusResponse = 0x8005,
     CaptureMeta = 0x8100,
     SampleData = 0x8101,
     CaptureEnd = 0x8102,
+    EventMeta = 0x8103,
+    EventData = 0x8104,
+    EventEnd = 0x8105,
     ErrorResponse = 0x80ff
 };
 
@@ -75,7 +83,8 @@ struct CapturePipeReadResult final {
 class CaptureFrameCodec final {
 public:
     QByteArray encode(CaptureFrameType type, const QByteArray& payload, quint32 sequence,
-                      quint32 captureId = 0, quint32 flags = 0) const;
+                      quint32 captureId = 0, quint32 flags = 0,
+                      quint16 version = kCaptureProtocolVersion) const;
     CaptureDecodeResult feed(const QByteArray& bytes);
     void reset();
 
@@ -96,9 +105,14 @@ struct SamplingCaptureConfig final {
     quint32 triggerEdgeFall = 0U;
     quint32 mode = 0U;
     quint32 triggerTimeoutSamples = 1'200'000'000U;
+    quint32 eventEnableMask = 0x19fU;
+    quint32 eventLimit = 0U;
+    quint32 eventWatchdogTicks = 12'000'000U;
+    quint32 eventHardTimeoutTicks = 240'000'000U;
 
     bool validate(QString* error) const;
     QByteArray toPayload() const;
+    QByteArray toEventPayload() const;
 };
 
 struct CaptureStatusV2 final {
@@ -139,10 +153,32 @@ struct SamplingCaptureRecord final {
     quint32 stopReason = 0;
     quint32 deviceStatusFlags = 0;
     QList<QByteArray> samples;
+    struct ProtocolEvent final {
+        quint64 timestampTicks = 0;
+        quint32 captureId = 0;
+        quint32 localSequence = 0;
+        quint8 protocolId = 0;
+        quint8 eventType = 0;
+        quint8 sourceKind = 0;
+        quint8 flags = 0;
+        quint32 eventReasonMask = 0;
+        QByteArray payload;
+    };
+    QList<ProtocolEvent> protocolEvents;
+    quint32 eventTimebaseHz = 0;
+    quint32 implementedSourceMask = 0;
+    quint32 enabledSourceMask = 0;
+    quint32 designGapMask = 0;
+    quint32 eventEndReason = 0;
+    quint32 eventOverflowMask = 0;
+    quint32 eventAcceptedTotal = 0;
+    quint32 eventEmittedTotal = 0;
+    quint32 eventDroppedTotal = 0;
 };
 
 class SamplingCaptureAssembler final {
 public:
+    explicit SamplingCaptureAssembler(quint32 expectedEnabledSourceMask = 0x19fU);
     bool append(const CaptureFrame& frame, QString* error);
     bool complete() const;
     SamplingCaptureRecord record() const;
@@ -152,8 +188,15 @@ private:
     QByteArray sampleBytes_;
     quint32 expectedSequence_ = 0;
     quint32 payloadBytes_ = 0;
+    bool hasAnyFrame_ = false;
     bool hasMeta_ = false;
     bool hasEnd_ = false;
+    bool hasEventMeta_ = false;
+    bool hasEventEnd_ = false;
+    bool eventSequenceGap_ = false;
+    quint32 expectedEnabledSourceMask_ = 0x19fU;
+    quint32 nextEventSequence_[9] = {};
+    bool hasEventSequence_[9] = {};
 };
 
 struct LibusbDeviceInfo final {
@@ -226,12 +269,14 @@ public:
     bool armAndWaitAccepted(CaptureTransport* transport, quint32 commandSequence,
                             quint32* captureId, QString* error) const;
     bool collect(CaptureTransport* transport, const QString& taskRootPath, int timeoutMs,
-                 SamplingCaptureRecord* record, QString* error) const;
+                 SamplingCaptureRecord* record, QString* error,
+                 quint32 expectedEnabledSourceMask = 0x19fU) const;
     bool queryStatus(CaptureTransport* transport, CaptureStatusV2* status, QString* error) const;
     bool stopAndRecover(CaptureTransport* transport, CaptureStatusV2* status, QString* error) const;
     CaptureSessionResult runDetailed(CaptureTransport* transport, const SamplingCaptureConfig& config,
                                      const QString& taskRootPath, int timeoutMs,
-                                     SamplingCaptureRecord* record) const;
+                                     SamplingCaptureRecord* record,
+                                     const std::function<bool(quint32, QString*)>& afterArm = {}) const;
     bool run(CaptureTransport* transport, const SamplingCaptureConfig& config,
              const QString& taskRootPath, int timeoutMs, SamplingCaptureRecord* record,
              QString* error) const;

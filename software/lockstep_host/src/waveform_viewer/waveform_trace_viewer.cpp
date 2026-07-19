@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: waveform_trace_viewer.cpp
-* 日期: 2026-07-14
-* 版本: v1.2
-* 更新记录: 将各协议组事务汇总到统一关键行为列表
+* 日期: 2026-07-19
+* 版本: v1.3
+* 更新记录: ps 波形在 UI 模型中统一截断为 ns，并保持事件与样本时间对齐
 * 描述: 实现任务波形产物检测、协议束视图和采样模型生成。
 **********************************************************/
 
@@ -73,12 +73,19 @@ qint64 jsonInt64(const QJsonValue& value)
     return ok ? parsed : 0;
 }
 
-QString eventSummary(const QJsonObject& object)
+qint64 displayTime(const qint64 time, const qint64 divisor)
+{
+    return divisor > 1 ? time / divisor : time;
+}
+
+QString eventSummary(const QJsonObject& object, const qint64 timeDivisor)
 {
     const QString type = object.value(QStringLiteral("type")).toString();
     const QString summary = object.value(QStringLiteral("summary")).toString();
-    const qint64 startTime = jsonInt64(object.value(QStringLiteral("start_time")));
-    const qint64 endTime = jsonInt64(object.value(QStringLiteral("end_time")));
+    const qint64 startTime = displayTime(
+        jsonInt64(object.value(QStringLiteral("start_time"))), timeDivisor);
+    const qint64 endTime = displayTime(
+        jsonInt64(object.value(QStringLiteral("end_time"))), timeDivisor);
     if (!summary.isEmpty()) {
         return QStringLiteral("[%1..%2] %3: %4").arg(startTime).arg(endTime).arg(type, summary);
     }
@@ -131,7 +138,7 @@ QList<WaveformGroupView> defaultGroups()
     return groups;
 }
 
-QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
+QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array, const qint64 timeDivisor)
 {
     QList<WaveformGroupView> groups;
     for (const QJsonValue& value : array) {
@@ -149,7 +156,7 @@ QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
 
         const QJsonArray transactions = object.value(QStringLiteral("transactions")).toArray();
         for (const QJsonValue& transaction : transactions) {
-            group.transactions.append(eventSummary(transaction.toObject()));
+            group.transactions.append(eventSummary(transaction.toObject(), timeDivisor));
         }
 
         groups.append(group);
@@ -157,14 +164,14 @@ QList<WaveformGroupView> groupsFromAnalysis(const QJsonArray& array)
     return groups;
 }
 
-QList<WaveformSampleView> samplesFromAnalysis(const QJsonArray& array)
+QList<WaveformSampleView> samplesFromAnalysis(const QJsonArray& array, const qint64 timeDivisor)
 {
     QList<WaveformSampleView> samples;
     samples.reserve(array.size());
     for (const QJsonValue& value : array) {
         const QJsonObject object = value.toObject();
         WaveformSampleView sample;
-        sample.time = jsonInt64(object.value(QStringLiteral("time")));
+        sample.time = displayTime(jsonInt64(object.value(QStringLiteral("time"))), timeDivisor);
         sample.valueHex = object.value(QStringLiteral("value_hex")).toString();
         sample.unknown = object.value(QStringLiteral("unknown")).toBool(false);
         if (!sample.valueHex.isEmpty()) {
@@ -245,18 +252,23 @@ WaveformViewModel WaveformTraceViewer::loadTask(const QString& taskRootPath) con
     }
 
     const QJsonObject timeBase = analysis.value(QStringLiteral("time_base")).toObject();
+    const QString sourceTimeUnit = timeBase.value(QStringLiteral("unit")).toString();
+    const qint64 timeDivisor = sourceTimeUnit.compare(QStringLiteral("ps"), Qt::CaseInsensitive) == 0
+        ? 1000 : 1;
+    const QString displayTimeUnit = timeDivisor == 1000 ? QStringLiteral("ns") : sourceTimeUnit;
     model.timeRangeText = QStringLiteral("%1 .. %2 %3")
-        .arg(jsonInt64(timeBase.value(QStringLiteral("start_time"))))
-        .arg(jsonInt64(timeBase.value(QStringLiteral("end_time"))))
-        .arg(timeBase.value(QStringLiteral("unit")).toString());
+        .arg(displayTime(jsonInt64(timeBase.value(QStringLiteral("start_time"))), timeDivisor))
+        .arg(displayTime(jsonInt64(timeBase.value(QStringLiteral("end_time"))), timeDivisor))
+        .arg(displayTimeUnit);
 
     const QList<WaveformGroupView> analysisGroups =
-        groupsFromAnalysis(analysis.value(QStringLiteral("groups")).toArray());
+        groupsFromAnalysis(analysis.value(QStringLiteral("groups")).toArray(), timeDivisor);
     if (!analysisGroups.isEmpty()) {
         model.groups = analysisGroups;
     }
     if (model.status != QStringLiteral("failed")) {
-        model.samples = samplesFromAnalysis(analysis.value(QStringLiteral("samples")).toArray());
+        model.samples = samplesFromAnalysis(
+            analysis.value(QStringLiteral("samples")).toArray(), timeDivisor);
     } else {
         model.diagnostics.append(QStringLiteral("协议解析失败，拒绝显示截断或无效采样"));
     }
@@ -268,7 +280,7 @@ WaveformViewModel WaveformTraceViewer::loadTask(const QString& taskRootPath) con
     }
     const QJsonArray keyBehaviors = analysis.value(QStringLiteral("key_behaviors")).toArray();
     for (const QJsonValue& value : keyBehaviors) {
-        const QString summary = eventSummary(value.toObject());
+        const QString summary = eventSummary(value.toObject(), timeDivisor);
         if (!model.keyBehaviors.contains(summary)) model.keyBehaviors.append(summary);
     }
 

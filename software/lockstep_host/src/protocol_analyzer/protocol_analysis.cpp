@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: protocol_analysis.cpp
-* 日期: 2026-07-14
-* 版本: v2.1
-* 更新记录: 增加原始 AHB/SPI/I2C/JTAG 解码及统一协议事件索引
-* 描述: 实现 1024 路 VCD 校验、协议字段聚合、事件解析和分析输出。
+* 日期: 2026-07-19
+* 版本: v3.0
+* 更新记录: 合并 v3 稀疏事件归档，并由 design_gap mask 约束来源状态。
+* 描述: 实现 1024 路 VCD 与稀疏事件的统一时间轴、协议解析和分析输出。
 **********************************************************/
 
 #include "protocol_analysis.h"
@@ -79,6 +79,7 @@ struct ProtocolEvent final {
     QString severity;
     qint64 startTime = 0;
     qint64 endTime = 0;
+    QJsonObject fields;
 };
 
 struct MismatchState final {
@@ -370,6 +371,61 @@ QString ahbResponseText(const quint64 response)
     }
 }
 
+enum class TapState {
+    TestLogicReset, RunTestIdle, SelectDrScan, CaptureDr, ShiftDr, Exit1Dr,
+    PauseDr, Exit2Dr, UpdateDr, SelectIrScan, CaptureIr, ShiftIr, Exit1Ir,
+    PauseIr, Exit2Ir, UpdateIr
+};
+
+TapState nextTapState(const TapState state, const bool tms)
+{
+    switch (state) {
+    case TapState::TestLogicReset: return tms ? TapState::TestLogicReset : TapState::RunTestIdle;
+    case TapState::RunTestIdle: return tms ? TapState::SelectDrScan : TapState::RunTestIdle;
+    case TapState::SelectDrScan: return tms ? TapState::SelectIrScan : TapState::CaptureDr;
+    case TapState::CaptureDr: return tms ? TapState::Exit1Dr : TapState::ShiftDr;
+    case TapState::ShiftDr: return tms ? TapState::Exit1Dr : TapState::ShiftDr;
+    case TapState::Exit1Dr: return tms ? TapState::UpdateDr : TapState::PauseDr;
+    case TapState::PauseDr: return tms ? TapState::Exit2Dr : TapState::PauseDr;
+    case TapState::Exit2Dr: return tms ? TapState::UpdateDr : TapState::ShiftDr;
+    case TapState::UpdateDr: return tms ? TapState::SelectDrScan : TapState::RunTestIdle;
+    case TapState::SelectIrScan: return tms ? TapState::TestLogicReset : TapState::CaptureIr;
+    case TapState::CaptureIr: return tms ? TapState::Exit1Ir : TapState::ShiftIr;
+    case TapState::ShiftIr: return tms ? TapState::Exit1Ir : TapState::ShiftIr;
+    case TapState::Exit1Ir: return tms ? TapState::UpdateIr : TapState::PauseIr;
+    case TapState::PauseIr: return tms ? TapState::Exit2Ir : TapState::PauseIr;
+    case TapState::Exit2Ir: return tms ? TapState::UpdateIr : TapState::ShiftIr;
+    case TapState::UpdateIr: return tms ? TapState::SelectDrScan : TapState::RunTestIdle;
+    }
+    return TapState::TestLogicReset;
+}
+
+QString tapStateName(const TapState state)
+{
+    static const QStringList names = {
+        QStringLiteral("TEST-LOGIC-RESET"), QStringLiteral("RUN-TEST/IDLE"),
+        QStringLiteral("SELECT-DR-SCAN"), QStringLiteral("CAPTURE-DR"),
+        QStringLiteral("SHIFT-DR"), QStringLiteral("EXIT1-DR"), QStringLiteral("PAUSE-DR"),
+        QStringLiteral("EXIT2-DR"), QStringLiteral("UPDATE-DR"),
+        QStringLiteral("SELECT-IR-SCAN"), QStringLiteral("CAPTURE-IR"),
+        QStringLiteral("SHIFT-IR"), QStringLiteral("EXIT1-IR"), QStringLiteral("PAUSE-IR"),
+        QStringLiteral("EXIT2-IR"), QStringLiteral("UPDATE-IR")
+    };
+    return names.at(static_cast<int>(state));
+}
+
+qint64 timeUnitToPs(const QString& unit)
+{
+    const QString normalized = unit.toLower();
+    if (normalized == QStringLiteral("s")) return 1'000'000'000'000LL;
+    if (normalized == QStringLiteral("ms")) return 1'000'000'000LL;
+    if (normalized == QStringLiteral("us")) return 1'000'000LL;
+    if (normalized == QStringLiteral("ns")) return 1'000LL;
+    if (normalized == QStringLiteral("ps")) return 1;
+    if (normalized == QStringLiteral("fs")) return 0;
+    return 1;
+}
+
 VcdParseResult parseVcd(const QString& path)
 {
     VcdParseResult result;
@@ -410,8 +466,8 @@ VcdParseResult parseVcd(const QString& path)
             scalarChannels.insert(scalarIdentifiers.at(channel), channel);
         }
     };
+    bool scalarSeenTime = false;
     const auto appendScalarSample = [&]() {
-        if (!scalarDirty) return;
         QString binary(kTraceWidth, QLatin1Char('0'));
         bool currentHasUnknown = false;
         for (int channel = 0; channel < kTraceWidth; ++channel) {
@@ -502,7 +558,7 @@ VcdParseResult parseVcd(const QString& path)
 
         if (line.startsWith(QLatin1Char('#'))) {
             finalizeScalarChannels();
-            if (scalarChannels.size() == kTraceWidth) appendScalarSample();
+            if (scalarChannels.size() == kTraceWidth && scalarSeenTime) appendScalarSample();
             bool ok = false;
             const qint64 parsedTime = line.mid(1).toLongLong(&ok);
             if (!ok) {
@@ -510,6 +566,7 @@ VcdParseResult parseVcd(const QString& path)
                 return result;
             }
             currentTime = parsedTime;
+            scalarSeenTime = true;
             continue;
         }
 
@@ -554,7 +611,7 @@ VcdParseResult parseVcd(const QString& path)
     }
 
     finalizeScalarChannels();
-    if (scalarChannels.size() == kTraceWidth) {
+    if (scalarChannels.size() == kTraceWidth && scalarSeenTime) {
         appendScalarSample();
         foundTrace = true;
         sampleIdentifier = QStringLiteral("CH0..CH1023");
@@ -726,7 +783,9 @@ QList<MismatchEvent> extractMismatchEvents(const QList<VcdSample>& samples)
     return events;
 }
 
-QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
+QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
+                                          const quint32 sampleRateHz,
+                                          const qint64 timeUnitPs)
 {
     QList<ProtocolEvent> events;
     if (samples.isEmpty()) {
@@ -735,7 +794,8 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
 
     const auto append = [&events](const QString& groupId, const QString& type,
                                   const qint64 start, const qint64 end,
-                                  const QString& summary, const QString& severity = QString()) {
+                                  const QString& summary, const QString& severity = QString(),
+                                  const QJsonObject& fields = QJsonObject()) {
         ProtocolEvent event;
         event.groupId = groupId;
         event.type = type;
@@ -743,11 +803,13 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
         event.endTime = qMax(start + 1, end);
         event.summary = summary;
         event.severity = severity;
+        event.fields = fields;
         events.append(event);
     };
 
     bool ahbOpen = false;
     VcdSample ahbStart;
+    int ahbStallSamples = 0;
     bool spiOpen = false;
     VcdSample spiStart;
     int spiBitCount = 0;
@@ -761,10 +823,17 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
     int i2cBitCount = 0;
     quint64 i2cByte = 0U;
     QList<quint64> i2cBytes;
+    QList<bool> i2cAcks;
     bool ethOpen = false;
     VcdSample ethStart;
     bool usbOpen = false;
     VcdSample usbStart;
+    TapState tapState = TapState::TestLogicReset;
+    bool jtagScanOpen = false;
+    bool jtagScanIsIr = false;
+    qint64 jtagScanStart = 0;
+    QString jtagTdiBits;
+    QString jtagTdoBits;
     VcdSample previous = samples.first();
 
     const bool wide = samples.first().packedHex.size() > (kLegacyTraceWidth / 4);
@@ -774,10 +843,22 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
     const bool canReal = !wide || sampleBit(samples.first(), 770);
     const bool i2cReal = !wide || sampleBit(samples.first(), 782);
     const bool ethReal = !wide || sampleBit(samples.first(), 773);
-    const bool usbReal = false;  // 当前两个 profile 都没有可验收的真实 USB PHY source。
+    const bool usbReal = !wide || sampleBit(samples.first(), 775);
     const bool jtagReal = !wide || sampleBit(samples.first(), 776);
+    const bool uartHintDataAvailable = std::any_of(samples.cbegin(), samples.cend(), [p](const VcdSample& value) {
+        return sampleValue(value, p(118, 520), 8) != 0U || sampleValue(value, p(126, 528), 8) != 0U;
+    });
+    const qint64 samplePeriodPs = samples.size() > 1
+        ? (samples.at(1).time - samples.at(0).time) * timeUnitPs : 0;
+    const qint64 uartBitSamples = sampleRateHz > 0U && samplePeriodPs > 0
+        ? qMax<qint64>(1, qRound64(static_cast<double>(sampleRateHz) / 115200.0)) : 0;
+    qint64 uartNextTx = 0;
+    qint64 uartNextRx = 0;
+    const bool uartRawMode = uartReal && !uartHintDataAvailable && uartBitSamples > 1 &&
+        samplePeriodPs > 0 && samplePeriodPs * uartBitSamples > 0;
 
-    for (const VcdSample& sample : samples) {
+    for (int sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex) {
+        const VcdSample& sample = samples.at(sampleIndex);
         const bool ahbKnown =
             !sampleRangeUnknown(sample, p(0, 32), 32) &&
             !sampleRangeUnknown(sample, p(32, 417), 2) &&
@@ -787,22 +868,37 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             !sampleRangeUnknown(sample, p(76, 192), 32);
         const bool ahbActive = ahbKnown &&
             (sampleValue(sample, p(32, 417), 2) & 0x2U) != 0U;
+        if (ahbOpen && ahbKnown && !sampleBit(sample, p(41, 429))) {
+            ++ahbStallSamples;
+        }
         if (ahbOpen && ahbKnown && sampleBit(sample, p(41, 429))) {
             const bool write = sampleBit(ahbStart, p(34, 416));
             const quint64 address = sampleValue(ahbStart, p(0, 32), 32);
             const quint64 data = sampleValue(sample, write ? p(44, 64) : p(76, 192), 32);
             const quint64 response = sampleValue(sample, p(42, 430), 2);
+            const quint64 size = sampleValue(ahbStart, p(35, 419), 3);
+            const quint64 burst = sampleValue(ahbStart, p(38, 422), 3);
+            QJsonObject fields;
+            fields.insert(QStringLiteral("operation"), write ? QStringLiteral("write") : QStringLiteral("read"));
+            fields.insert(QStringLiteral("address"), hexValue(address, 32));
+            fields.insert(QStringLiteral("data"), hexValue(data, 32));
+            fields.insert(QStringLiteral("size_code"), static_cast<qint64>(size));
+            fields.insert(QStringLiteral("burst_code"), static_cast<qint64>(burst));
+            fields.insert(QStringLiteral("stall_samples"), ahbStallSamples);
+            fields.insert(QStringLiteral("response"), ahbResponseText(response));
             append(QStringLiteral("ahb"), QStringLiteral("ahb_transfer"),
                    ahbStart.time, sample.time,
-                   QStringLiteral("AHB %1 %2 DATA=%3 RESP=%4")
+                   QStringLiteral("AHB %1 %2 DATA=%3 SIZE=%4 BURST=%5 STALL=%6 RESP=%7")
                        .arg(write ? QStringLiteral("WRITE") : QStringLiteral("READ"),
-                            hexValue(address, 32), hexValue(data, 32), ahbResponseText(response)),
-                   response == 0U ? QString() : QStringLiteral("error"));
+                            hexValue(address, 32), hexValue(data, 32))
+                       .arg(size).arg(burst).arg(ahbStallSamples).arg(ahbResponseText(response)),
+                   response == 0U ? QString() : QStringLiteral("error"), fields);
             ahbOpen = false;
         }
         if (ahbActive && !ahbOpen) {
             ahbOpen = true;
             ahbStart = sample;
+            ahbStallSamples = sampleBit(sample, p(41, 429)) ? 0 : 1;
         }
 
         const bool uartKnown = !sampleRangeUnknown(sample, p(112, 512), 32) &&
@@ -811,10 +907,46 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             !sampleBit(previous, p(142, 518))) {
             const bool tx = sampleBit(sample, p(114, 516)) || !sampleBit(sample, p(115, 517));
             const quint64 data = sampleValue(sample, tx ? p(118, 520) : p(126, 528), 8);
+            QJsonObject fields;
+            fields.insert(QStringLiteral("direction"), tx ? QStringLiteral("TX") : QStringLiteral("RX"));
+            fields.insert(QStringLiteral("data"), hexValue(data, 8));
+            fields.insert(QStringLiteral("source"), QStringLiteral("rtl_frame_hint"));
+            fields.insert(QStringLiteral("frame_error_available"), false);
             append(QStringLiteral("uart"), QStringLiteral("uart_frame"),
                    previous.time, sample.time,
                    QStringLiteral("UART %1 %2").arg(tx ? QStringLiteral("TX") : QStringLiteral("RX"),
-                                                     hexValue(data, 8)));
+                                                     hexValue(data, 8)), QString(), fields);
+        }
+        if (uartRawMode && sample.time >= qMin(uartNextTx, uartNextRx)) {
+            const auto decodeUartLine = [&](const int lineBit, const QString& direction, qint64* const nextAllowed) {
+                if (!sampleBit(previous, lineBit) || sampleBit(sample, lineBit) ||
+                    nextAllowed == nullptr || sample.time < *nextAllowed) return;
+                const qint64 stopIndex = sampleIndex + uartBitSamples * 10;
+                if (stopIndex >= samples.size()) return;
+                quint64 data = 0U;
+                for (int bit = 0; bit < 8; ++bit) {
+                    const qint64 index = sampleIndex + uartBitSamples + uartBitSamples / 2 + bit * uartBitSamples;
+                    if (index < samples.size() && sampleBit(samples.at(static_cast<int>(index)), lineBit)) {
+                        data |= quint64(1) << bit;
+                    }
+                }
+                const qint64 stopSample = sampleIndex + uartBitSamples * 9 + uartBitSamples / 2;
+                const bool stopHigh = stopSample < samples.size() &&
+                    sampleBit(samples.at(static_cast<int>(stopSample)), lineBit);
+                QJsonObject rawFields;
+                rawFields.insert(QStringLiteral("direction"), direction);
+                rawFields.insert(QStringLiteral("data"), hexValue(data, 8));
+                rawFields.insert(QStringLiteral("baud"), 115200);
+                rawFields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
+                rawFields.insert(QStringLiteral("frame_error"), !stopHigh);
+                append(QStringLiteral("uart"), QStringLiteral("uart_frame"), sample.time,
+                       samples.at(static_cast<int>(stopIndex)).time,
+                       QStringLiteral("UART %1 %2").arg(direction, hexValue(data, 8)),
+                       stopHigh ? QString() : QStringLiteral("error"), rawFields);
+                *nextAllowed = samples.at(static_cast<int>(stopIndex)).time;
+            };
+            decodeUartLine(p(112, 512), QStringLiteral("TX"), &uartNextTx);
+            decodeUartLine(p(113, 513), QStringLiteral("RX"), &uartNextRx);
         }
 
         const bool spiCs = sampleBit(sample, p(147, 547));
@@ -843,10 +975,18 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
                          sample.time > spiStart.time))) {
             const quint64 tx = spiBitCount > 0 ? spiTx : sampleValue(sample, p(152, 552), 8);
             const quint64 rx = spiBitCount > 0 ? spiRx : sampleValue(sample, p(160, 560), 8);
+            const quint64 mode = sampleValue(spiStart, p(150, 550), 2);
+            QJsonObject fields;
+            fields.insert(QStringLiteral("tx"), hexValue(tx, qMax(8, spiBitCount)));
+            fields.insert(QStringLiteral("rx"), hexValue(rx, qMax(8, spiBitCount)));
+            fields.insert(QStringLiteral("bit_count"), spiBitCount > 0 ? spiBitCount : 8);
+            fields.insert(QStringLiteral("mode"), static_cast<qint64>(mode));
+            fields.insert(QStringLiteral("cs_frame"), true);
             append(QStringLiteral("spi"), QStringLiteral("spi_transfer"), spiStart.time, sample.time,
                    QStringLiteral("SPI %1 bits TX=%2 RX=%3")
                        .arg(spiBitCount > 0 ? spiBitCount : 8)
-                       .arg(hexValue(tx, qMax(8, spiBitCount)), hexValue(rx, qMax(8, spiBitCount))));
+                       .arg(hexValue(tx, qMax(8, spiBitCount)), hexValue(rx, qMax(8, spiBitCount))),
+                   QString(), fields);
             spiOpen = false;
         }
 
@@ -858,12 +998,32 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             canStart = sample;
         }
         if (canOpen && canKnown && sampleBit(sample, p(179, 579))) {
+            const quint64 id = sampleValue(canStart, p(184, 584), 11);
+            const quint64 dataNibble = sampleValue(sample, p(195, 595), 4);
+            const bool ack = sampleBit(sample, p(206, 606));
+            QJsonObject fields;
+            fields.insert(QStringLiteral("id"), hexValue(id, 11));
+            fields.insert(QStringLiteral("data_nibble"), hexValue(dataNibble, 4));
+            fields.insert(QStringLiteral("ide_available"), false);
+            fields.insert(QStringLiteral("rtr_available"), false);
+            fields.insert(QStringLiteral("ack"), ack);
+            fields.insert(QStringLiteral("crc_ok_available"), false);
             append(QStringLiteral("can"), QStringLiteral("can_frame"), canStart.time, sample.time,
                    QStringLiteral("CAN ID=%1 DATA=%2")
-                       .arg(hexValue(sampleValue(canStart, p(184, 584), 11), 11),
-                            hexValue(sampleValue(sample, p(195, 595), 4), 4)),
-                   sampleBit(sample, p(183, 583)) ? QStringLiteral("error") : QString());
+                       .arg(hexValue(id, 11), hexValue(dataNibble, 4)),
+                   sampleBit(sample, p(183, 583)) ? QStringLiteral("error") : QString(), fields);
             canOpen = false;
+        }
+        const bool canActivity = sampleBit(sample, p(207, 607));
+        const bool previousCanActivity = sampleBit(previous, p(207, 607));
+        if (canReal && canKnown && canActivity && !previousCanActivity && !canOpen) {
+            QJsonObject fields;
+            fields.insert(QStringLiteral("source"), QStringLiteral("raw_can_line_activity"));
+            fields.insert(QStringLiteral("frame_decode_available"), false);
+            fields.insert(QStringLiteral("reason"), QStringLiteral("bitrate_and_bit_timing_not_in_trace"));
+            append(QStringLiteral("can"), QStringLiteral("can_activity"), previous.time, sample.time,
+                   QStringLiteral("CAN ACTIVITY (limited: bitrate metadata required)"),
+                   QStringLiteral("warning"), fields);
         }
 
         const bool i2cScl = sampleBit(sample, p(208, 608));
@@ -890,12 +1050,21 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             i2cBitCount = 0;
             i2cByte = 0U;
             i2cBytes.clear();
+            i2cAcks.clear();
         }
         if (i2cOpen && i2cKnown && i2cScl && !previousI2cScl && !i2cStartCondition) {
             if ((i2cBitCount % 9) < 8) {
                 i2cByte = (i2cByte << 1U) | (i2cSda ? 1U : 0U);
             } else {
                 i2cBytes.append(i2cByte);
+                const bool ack = sampleBit(sample, p(212, 612));
+                i2cAcks.append(ack);
+                QJsonObject ackFields;
+                ackFields.insert(QStringLiteral("ack"), ack);
+                ackFields.insert(QStringLiteral("byte_index"), i2cAcks.size() - 1);
+                append(QStringLiteral("i2c"), QStringLiteral("i2c_ack"), previous.time, sample.time,
+                       ack ? QStringLiteral("I2C ACK") : QStringLiteral("I2C NACK"),
+                       ack ? QString() : QStringLiteral("error"), ackFields);
                 i2cByte = 0U;
             }
             ++i2cBitCount;
@@ -907,11 +1076,22 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             const bool read = (addressByte & 1U) != 0U;
             const quint64 data = i2cBytes.size() > 1
                 ? i2cBytes.at(1) : sampleValue(sample, p(223, 623), 8);
+            QStringList dataBytes;
+            for (int index = 1; index < i2cBytes.size(); ++index) {
+                dataBytes.append(hexValue(i2cBytes.at(index), 8));
+            }
+            if (dataBytes.isEmpty()) dataBytes.append(hexValue(data, 8));
+            QJsonObject fields;
+            fields.insert(QStringLiteral("address"), hexValue(addressByte >> 1U, 7));
+            fields.insert(QStringLiteral("operation"), read ? QStringLiteral("read") : QStringLiteral("write"));
+            fields.insert(QStringLiteral("data"), dataBytes.join(QStringLiteral(",")));
+            fields.insert(QStringLiteral("ack_count"), i2cAcks.size());
             append(QStringLiteral("i2c"), QStringLiteral("i2c_transfer"), i2cStart.time, sample.time,
-                   QStringLiteral("I2C %1 ADDR=%2 DATA=%3")
+                   QStringLiteral("I2C %1 ADDR=%2 DATA=%3 ACKS=%4")
                        .arg(read ? QStringLiteral("READ") : QStringLiteral("WRITE"),
-                            hexValue(addressByte >> 1U, 7), hexValue(data, 8)),
-                   sampleBit(sample, p(239, 639)) ? QStringLiteral("error") : QString());
+                            hexValue(addressByte >> 1U, 7), dataBytes.join(QStringLiteral(",")))
+                       .arg(i2cAcks.size()),
+                   sampleBit(sample, p(239, 639)) ? QStringLiteral("error") : QString(), fields);
             i2cOpen = false;
         }
 
@@ -923,43 +1103,122 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples)
             ethStart = sample;
         }
         if (ethOpen && ethKnown && sampleBit(sample, p(247, 647))) {
+            const bool tx = sampleBit(sample, p(240, 640));
+            const bool rx = sampleBit(sample, p(242, 642));
+            const quint64 ethertype = sampleValue(sample, p(288, 688), 16);
+            const quint64 byteIndex = sampleValue(sample, p(264, 664), 8);
+            QJsonObject fields;
+            fields.insert(QStringLiteral("direction"), tx ? QStringLiteral("TX") : (rx ? QStringLiteral("RX") : QStringLiteral("unknown")));
+            fields.insert(QStringLiteral("ethertype"), hexValue(ethertype, 16));
+            fields.insert(QStringLiteral("byte_index"), static_cast<qint64>(byteIndex));
+            fields.insert(QStringLiteral("payload_summary_available"), byteIndex != 0U);
             append(QStringLiteral("eth"), QStringLiteral("eth_frame"), ethStart.time, sample.time,
                    QStringLiteral("ETH FRAME TYPE=%1")
-                       .arg(hexValue(sampleValue(sample, p(288, 688), 16), 16)),
+                       .arg(hexValue(ethertype, 16)),
                    (sampleBit(sample, p(241, 641)) || sampleBit(sample, p(243, 643)))
-                       ? QStringLiteral("error") : QString());
+                       ? QStringLiteral("error") : QString(), fields);
             ethOpen = false;
         }
 
         const bool usbKnown = !sampleRangeUnknown(sample, p(304, 704), 32) &&
             !sampleRangeUnknown(previous, p(304, 704), 32);
+        if (usbReal && usbKnown && sampleBit(sample, p(335, 735)) &&
+            !sampleBit(previous, p(335, 735))) {
+            QJsonObject resetFields;
+            resetFields.insert(QStringLiteral("reset"), true);
+            append(QStringLiteral("usb"), QStringLiteral("usb_reset"), previous.time, sample.time,
+                   QStringLiteral("USB RESET"), QStringLiteral("warning"), resetFields);
+        }
         if (usbReal && usbKnown && sampleBit(sample, p(309, 709)) &&
             !sampleBit(previous, p(309, 709))) {
             usbOpen = true;
             usbStart = sample;
         }
         if (usbOpen && usbKnown && sampleBit(sample, p(310, 710))) {
+            const quint64 pid = sampleValue(usbStart, p(312, 712), 4);
+            const quint64 endpoint = sampleValue(sample, p(316, 716), 4);
+            const quint64 data = sampleValue(sample, p(320, 720), 8);
+            QJsonObject fields;
+            fields.insert(QStringLiteral("pid"), hexValue(pid, 4));
+            fields.insert(QStringLiteral("endpoint"), static_cast<qint64>(endpoint));
+            fields.insert(QStringLiteral("data"), hexValue(data, 8));
             append(QStringLiteral("usb"), QStringLiteral("usb_packet"), usbStart.time, sample.time,
                    QStringLiteral("USB PID=%1 EP=%2 DATA=%3")
-                       .arg(hexValue(sampleValue(usbStart, p(312, 712), 4), 4),
-                            QString::number(sampleValue(sample, p(316, 716), 4)),
-                            hexValue(sampleValue(sample, p(320, 720), 8), 8)));
+                       .arg(hexValue(pid, 4), QString::number(endpoint), hexValue(data, 8)),
+                   QString(), fields);
             usbOpen = false;
         }
 
-        const bool tckRising = sampleBit(sample, p(336, 736)) && !sampleBit(previous, p(336, 736));
+        const bool primaryTckRising = sampleBit(sample, p(336, 736)) && !sampleBit(previous, p(336, 736));
+        const bool rvTckRising = sampleBit(sample, p(340, 740)) && !sampleBit(previous, p(340, 740));
+        const bool useRvJtag = !primaryTckRising && rvTckRising;
+        const bool tckRising = primaryTckRising || rvTckRising;
         const bool jtagKnown = !sampleRangeUnknown(sample, p(336, 736), 32) &&
             !sampleRangeUnknown(previous, p(336, 736), 32);
         if (jtagReal && jtagKnown && tckRising) {
+            const int tmsBit = useRvJtag ? p(341, 741) : p(337, 737);
+            const int tdiBit = useRvJtag ? p(342, 742) : p(338, 738);
+            const int tdoBit = useRvJtag ? p(343, 743) : p(339, 739);
+            const TapState nextState = nextTapState(tapState, sampleBit(sample, tmsBit));
+            const bool nextIsShift = nextState == TapState::ShiftDr || nextState == TapState::ShiftIr;
+            if (jtagScanOpen && !nextIsShift) {
+                QJsonObject scanFields;
+                scanFields.insert(QStringLiteral("register"), jtagScanIsIr ? QStringLiteral("ir") : QStringLiteral("dr"));
+                scanFields.insert(QStringLiteral("tdi_bits"), jtagTdiBits);
+                scanFields.insert(QStringLiteral("tdo_bits"), jtagTdoBits);
+                scanFields.insert(QStringLiteral("bit_count"), jtagTdiBits.size());
+                append(QStringLiteral("jtag"), QStringLiteral("jtag_scan"), jtagScanStart, sample.time,
+                       QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
+                           .arg(jtagScanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
+                           .arg(jtagTdiBits.size()).arg(jtagTdiBits, jtagTdoBits),
+                       QString(), scanFields);
+                jtagScanOpen = false;
+                jtagTdiBits.clear();
+                jtagTdoBits.clear();
+            }
+            if (nextIsShift) {
+                if (!jtagScanOpen) {
+                    jtagScanOpen = true;
+                    jtagScanIsIr = nextState == TapState::ShiftIr;
+                    jtagScanStart = previous.time;
+                }
+                jtagTdiBits.append(sampleBit(sample, tdiBit) ? QLatin1Char('1') : QLatin1Char('0'));
+                jtagTdoBits.append(sampleBit(sample, tdoBit) ? QLatin1Char('1') : QLatin1Char('0'));
+            }
+            tapState = nextState;
+            QJsonObject cycleFields;
+            cycleFields.insert(QStringLiteral("state"), tapStateName(tapState));
+            cycleFields.insert(QStringLiteral("tms"), sampleBit(sample, tmsBit));
+            cycleFields.insert(QStringLiteral("tdi"), sampleBit(sample, tdiBit));
+            cycleFields.insert(QStringLiteral("tdo"), sampleBit(sample, tdoBit));
             append(QStringLiteral("jtag"), QStringLiteral("jtag_cycle"), previous.time, sample.time,
                    QStringLiteral("JTAG STATE=%1 TMS=%2 TDI=%3 TDO=%4")
-                       .arg(hexValue(sampleValue(sample, p(363, 760), 5), 5),
-                            sampleBit(sample, p(337, 737)) ? QStringLiteral("1") : QStringLiteral("0"),
-                            sampleBit(sample, p(338, 738)) ? QStringLiteral("1") : QStringLiteral("0"),
-                            sampleBit(sample, p(339, 739)) ? QStringLiteral("1") : QStringLiteral("0")));
+                       .arg(tapStateName(tapState),
+                            sampleBit(sample, tmsBit) ? QStringLiteral("1") : QStringLiteral("0"),
+                            sampleBit(sample, tdiBit) ? QStringLiteral("1") : QStringLiteral("0"),
+                            sampleBit(sample, tdoBit) ? QStringLiteral("1") : QStringLiteral("0")),
+                   QString(), cycleFields);
         }
         previous = sample;
     }
+    if (jtagScanOpen && !jtagTdiBits.isEmpty()) {
+        QJsonObject fields;
+        fields.insert(QStringLiteral("register"), jtagScanIsIr ? QStringLiteral("ir") : QStringLiteral("dr"));
+        fields.insert(QStringLiteral("tdi_bits"), jtagTdiBits);
+        fields.insert(QStringLiteral("tdo_bits"), jtagTdoBits);
+        fields.insert(QStringLiteral("bit_count"), jtagTdiBits.size());
+        append(QStringLiteral("jtag"), QStringLiteral("jtag_scan"), jtagScanStart,
+               samples.last().time,
+               QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
+                   .arg(jtagScanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
+                   .arg(jtagTdiBits.size()).arg(jtagTdiBits, jtagTdoBits),
+                   QString(), fields);
+    }
+    std::sort(events.begin(), events.end(), [](const ProtocolEvent& left, const ProtocolEvent& right) {
+        if (left.startTime != right.startTime) return left.startTime < right.startTime;
+        if (left.endTime != right.endTime) return left.endTime < right.endTime;
+        return left.groupId < right.groupId;
+    });
     return events;
 }
 
@@ -975,6 +1234,7 @@ QJsonObject protocolEventToJson(const ProtocolEvent& event)
     if (!event.severity.isEmpty()) {
         object.insert(QStringLiteral("severity"), event.severity);
     }
+    object.insert(QStringLiteral("fields"), event.fields);
     return object;
 }
 
@@ -983,6 +1243,89 @@ QJsonArray protocolEventsToJson(const QList<ProtocolEvent>& events)
     QJsonArray array;
     for (const ProtocolEvent& event : events) array.append(protocolEventToJson(event));
     return array;
+}
+
+QList<ProtocolEvent> loadSparseProtocolEvents(
+    const QString& taskRootPath,
+    const QJsonObject& captureSidecar,
+    const qint64 vcdTimeUnitPs,
+    quint32* const designGapMask,
+    bool* const archiveValid,
+    QList<ProtocolDiagnostic>* const diagnostics)
+{
+    QList<ProtocolEvent> result;
+    if (designGapMask != nullptr) *designGapMask = 0U;
+    if (archiveValid != nullptr) *archiveValid = true;
+    const QString relativePath = captureSidecar.value(QStringLiteral("protocol_events")).toString();
+    if (relativePath.isEmpty()) return result;
+
+    QJsonObject archive;
+    QString error;
+    const QString archivePath = QDir(taskRootPath).filePath(relativePath);
+    if (!readJsonObject(archivePath, &archive, &error) ||
+        archive.value(QStringLiteral("schema")).toString() !=
+            QStringLiteral("lockstep-protocol-events-v3")) {
+        addDiagnostic(
+            diagnostics, QStringLiteral("TRACE_EVENT_ARCHIVE_ERROR"), QStringLiteral("error"),
+            QStringLiteral("稀疏协议事件归档无效"), error.isEmpty() ? archivePath : error);
+        if (archiveValid != nullptr) *archiveValid = false;
+        return result;
+    }
+
+    const quint32 mask = static_cast<quint32>(
+        archive.value(QStringLiteral("design_gap_mask")).toInteger());
+    if (designGapMask != nullptr) *designGapMask = mask & 0x1ffU;
+    const quint64 timebaseHz = static_cast<quint64>(
+        archive.value(QStringLiteral("timebase_hz")).toInteger());
+    const quint32 windowStart = static_cast<quint32>(
+        captureSidecar.value(QStringLiteral("window_start_index")).toInteger());
+    if (timebaseHz == 0U || vcdTimeUnitPs <= 0) {
+        addDiagnostic(
+            diagnostics, QStringLiteral("TRACE_EVENT_TIMEBASE_ERROR"), QStringLiteral("error"),
+            QStringLiteral("稀疏协议事件缺少有效时间基准"), archivePath);
+        if (archiveValid != nullptr) *archiveValid = false;
+        return result;
+    }
+
+    const QList<ProtocolGroupDefinition> definitions = fixedProtocolGroups();
+    const QJsonArray events = archive.value(QStringLiteral("events")).toArray();
+    for (const QJsonValue& value : events) {
+        const QJsonObject item = value.toObject();
+        bool timestampOk = false;
+        const quint64 timestamp = item.value(QStringLiteral("timestamp_ticks")).toString()
+                                      .toULongLong(&timestampOk);
+        const int protocolId = item.value(QStringLiteral("protocol_id")).toInt(-1);
+        if (!timestampOk || protocolId < 0 || protocolId >= definitions.size()) {
+            addDiagnostic(
+                diagnostics, QStringLiteral("TRACE_EVENT_RECORD_ERROR"), QStringLiteral("error"),
+                QStringLiteral("稀疏协议事件字段无效"), QString::fromUtf8(
+                    QJsonDocument(item).toJson(QJsonDocument::Compact)));
+            if (archiveValid != nullptr) *archiveValid = false;
+            continue;
+        }
+
+        const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
+        const qint64 eventTime = static_cast<qint64>(
+            (static_cast<long double>(relativeTicks) * 1.0e12L) /
+            (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        const int sourceKind = item.value(QStringLiteral("source_kind")).toInt();
+        ProtocolEvent event;
+        event.groupId = definitions.at(protocolId).id;
+        event.type = sourceKind == 2 ? QStringLiteral("bus_transfer") :
+                     sourceKind == 3 ? QStringLiteral("mismatch_event") :
+                     sourceKind == 1 ? QStringLiteral("decoded_hint") :
+                                       QStringLiteral("raw_line_event");
+        event.startTime = eventTime;
+        event.endTime = eventTime + 1;
+        event.summary = QStringLiteral("%1 稀疏事件 seq=%2 source_kind=%3")
+                            .arg(definitions.at(protocolId).displayName)
+                            .arg(item.value(QStringLiteral("local_sequence")).toInteger())
+                            .arg(sourceKind);
+        event.fields = item;
+        event.fields.insert(QStringLiteral("evidence"), relativePath);
+        result.append(event);
+    }
+    return result;
 }
 
 QJsonObject makeProtocolGroup(
@@ -1012,7 +1355,8 @@ QJsonObject makeProtocolGroup(
     return group;
 }
 
-QJsonObject makeMismatchGroup(const QList<MismatchEvent>& events)
+QJsonObject makeMismatchGroup(const QList<MismatchEvent>& events,
+                              const QList<ProtocolEvent>& protocolEvents)
 {
     const ProtocolGroupDefinition definition = fixedProtocolGroups().last();
     QJsonObject group = makeProtocolGroup(
@@ -1024,6 +1368,15 @@ QJsonObject makeMismatchGroup(const QList<MismatchEvent>& events)
     for (const MismatchEvent& event : events) {
         transactions.append(mismatchEventToJson(event));
     }
+    for (const ProtocolEvent& event : protocolEvents) {
+        if (event.groupId == QStringLiteral("mismatch")) {
+            transactions.append(protocolEventToJson(event));
+        }
+    }
+    if (!transactions.isEmpty()) {
+        group.insert(QStringLiteral("status"), QStringLiteral("event_detected"));
+        group.insert(QStringLiteral("reason"), QStringLiteral("检测到 mismatch 事件"));
+    }
     group.insert(QStringLiteral("transactions"), transactions);
 
     return group;
@@ -1032,7 +1385,8 @@ QJsonObject makeMismatchGroup(const QList<MismatchEvent>& events)
 QJsonArray defaultGroups(
     const QList<ProtocolEvent>& protocolEvents,
     const QList<MismatchEvent>& mismatchEvents,
-    const QList<VcdSample>& samples)
+    const QList<VcdSample>& samples,
+    const quint32 designGapMask)
 {
     QJsonArray groups;
     const QList<ProtocolGroupDefinition> definitions = fixedProtocolGroups();
@@ -1049,11 +1403,12 @@ QJsonArray defaultGroups(
         if (wide && id == QStringLiteral("can")) realSource = sampleBit(samples.first(), 770);
         if (wide && id == QStringLiteral("i2c")) realSource = sampleBit(samples.first(), 782);
         if (wide && id == QStringLiteral("eth")) realSource = sampleBit(samples.first(), 773);
-        if (id == QStringLiteral("usb")) realSource = false;
+        if (id == QStringLiteral("usb")) realSource = !wide || sampleBit(samples.first(), 775);
         if (wide && id == QStringLiteral("jtag")) realSource = sampleBit(samples.first(), 776);
+        if ((designGapMask & (1U << index)) != 0U) realSource = false;
         if (!realSource) {
             group.insert(QStringLiteral("status"), QStringLiteral("unavailable"));
-            group.insert(QStringLiteral("reason"), QStringLiteral("design_gap: 当前位图仅提供 synthetic/loopback source"));
+            group.insert(QStringLiteral("reason"), QStringLiteral("unavailable/design_gap: 无真实协议源"));
             groups.append(group);
             continue;
         }
@@ -1069,7 +1424,7 @@ QJsonArray defaultGroups(
         }
         groups.append(group);
     }
-    groups.append(makeMismatchGroup(mismatchEvents));
+    groups.append(makeMismatchGroup(mismatchEvents, protocolEvents));
     return groups;
 }
 
@@ -1086,12 +1441,25 @@ QJsonArray samplesToJson(const QList<VcdSample>& samples)
     return array;
 }
 
-QJsonArray eventsToJson(const QList<MismatchEvent>& events)
+QJsonArray keyBehaviorsToJson(const QList<ProtocolEvent>& protocolEvents,
+                              const QList<MismatchEvent>& mismatchEvents)
 {
-    QJsonArray array;
-    for (const MismatchEvent& event : events) {
-        array.append(mismatchEventToJson(event));
+    QList<QJsonObject> objects;
+    for (const ProtocolEvent& event : protocolEvents) {
+        objects.append(protocolEventToJson(event));
     }
+    for (const MismatchEvent& event : mismatchEvents) {
+        objects.append(mismatchEventToJson(event));
+    }
+    std::sort(objects.begin(), objects.end(), [](const QJsonObject& left, const QJsonObject& right) {
+        const qint64 leftStart = left.value(QStringLiteral("start_time")).toInteger();
+        const qint64 rightStart = right.value(QStringLiteral("start_time")).toInteger();
+        if (leftStart != rightStart) return leftStart < rightStart;
+        return left.value(QStringLiteral("end_time")).toInteger() <
+            right.value(QStringLiteral("end_time")).toInteger();
+    });
+    QJsonArray array;
+    for (const QJsonObject& object : objects) array.append(object);
     return array;
 }
 
@@ -1184,7 +1552,8 @@ QJsonObject buildAnalysisObject(
     const VcdParseResult& parseResult,
     const QList<ProtocolEvent>& protocolEvents,
     const QList<MismatchEvent>& mismatchEvents,
-    const QList<ProtocolDiagnostic>& diagnostics)
+    const QList<ProtocolDiagnostic>& diagnostics,
+    const quint32 designGapMask = 0U)
 {
     QJsonObject input;
     input.insert(QStringLiteral("vcd_file"), fixedWaveformRelativePath());
@@ -1205,10 +1574,11 @@ QJsonObject buildAnalysisObject(
     analysis.insert(QStringLiteral("input"), input);
     analysis.insert(QStringLiteral("status"), QStringLiteral("complete"));
     analysis.insert(QStringLiteral("time_base"), timeBase);
-    analysis.insert(QStringLiteral("groups"), defaultGroups(protocolEvents, mismatchEvents, parseResult.samples));
+    analysis.insert(QStringLiteral("groups"),
+                    defaultGroups(protocolEvents, mismatchEvents, parseResult.samples, designGapMask));
     analysis.insert(QStringLiteral("protocol_events"), protocolEventsToJson(protocolEvents));
     analysis.insert(QStringLiteral("samples"), samplesToJson(parseResult.samples));
-    analysis.insert(QStringLiteral("key_behaviors"), eventsToJson(mismatchEvents));
+    analysis.insert(QStringLiteral("key_behaviors"), keyBehaviorsToJson(protocolEvents, mismatchEvents));
     analysis.insert(QStringLiteral("diagnostic_summary"), diagnosticsToJson(diagnostics));
     analysis.insert(QStringLiteral("diagnostic_details"), diagnosticsToJson(diagnostics));
     return analysis;
@@ -1403,7 +1773,34 @@ ProtocolAnalysisResult ProtocolAnalyzer::analyzeTask(const ProtocolAnalysisReque
         return result;
     }
 
-    const QList<ProtocolEvent> protocolEvents = decodeProtocolEvents(parseResult.samples);
+    quint32 sampleRateHz = 0U;
+    QJsonObject captureSidecar;
+    const QString captureSidecarPath = QDir(taskRootPath).filePath(
+        QStringLiteral("evidence/capture_sidecar.json"));
+    if (QFileInfo::exists(captureSidecarPath) &&
+        readJsonObject(captureSidecarPath, &captureSidecar, nullptr)) {
+        const qint64 rate = captureSidecar.value(QStringLiteral("sample_rate_hz")).toInteger();
+        if (rate > 0 && rate <= std::numeric_limits<quint32>::max()) {
+            sampleRateHz = static_cast<quint32>(rate);
+        }
+    }
+    QList<ProtocolEvent> protocolEvents = decodeProtocolEvents(
+        parseResult.samples, sampleRateHz,
+        parseResult.timescaleMultiplier * timeUnitToPs(parseResult.timescaleUnit));
+    quint32 designGapMask = 0U;
+    bool sparseArchiveValid = true;
+    protocolEvents.append(loadSparseProtocolEvents(
+        taskRootPath,
+        captureSidecar,
+        parseResult.timescaleMultiplier * timeUnitToPs(parseResult.timescaleUnit),
+        &designGapMask,
+        &sparseArchiveValid,
+        &result.diagnostics));
+    std::sort(protocolEvents.begin(), protocolEvents.end(), [](const ProtocolEvent& left,
+                                                               const ProtocolEvent& right) {
+        if (left.startTime != right.startTime) return left.startTime < right.startTime;
+        return left.groupId < right.groupId;
+    });
     const QList<MismatchEvent> mismatchEvents = extractMismatchEvents(parseResult.samples);
     if (parseResult.hasUnknownValues) {
         addDiagnostic(
@@ -1434,11 +1831,22 @@ ProtocolAnalysisResult ProtocolAnalyzer::analyzeTask(const ProtocolAnalysisReque
         parseResult,
         protocolEvents,
         mismatchEvents,
-        result.diagnostics);
+        result.diagnostics,
+        designGapMask);
+    if (!sparseArchiveValid) {
+        result.analysis.insert(QStringLiteral("status"), QStringLiteral("failed"));
+    }
     QString writeError;
     if (!writeJsonObject(analysisPath, result.analysis, &writeError)) {
         result.status = QStringLiteral("failed");
         result.errorMessage = writeError;
+        return result;
+    }
+
+    if (!sparseArchiveValid) {
+        result.status = QStringLiteral("failed");
+        result.errorMessage = QStringLiteral("稀疏协议事件证据无效");
+        result.wroteAnalysis = true;
         return result;
     }
 

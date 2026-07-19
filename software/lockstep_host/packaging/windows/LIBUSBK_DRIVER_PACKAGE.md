@@ -2,8 +2,8 @@
 /**********************************************************
 * 文件名: LIBUSBK_DRIVER_PACKAGE.md
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新增 Windows libusbK 正式驱动包输入与门禁。
+* 版本: 1.1
+* 更新记录: 增加已验证的受控部署 ZIP，并保留组织签名发布边界。
 * 描述: 约束一次性自动部署所需的签名、匹配范围和验收证据。
 **********************************************************/
 -->
@@ -18,8 +18,10 @@
 
 1. 首次安装仅触发一次 UAC，签名和发布者可验证。
 2. 重启、重插和更换 USB 口后保持绑定。
-3. `--usb-status` 能 claim interface 1 并报告 `0x02/0x82`。
+3. `--usb-status` 能 claim 控制 interface 0 和采集 interface 1，并报告 `0x02/0x82`。
 4. 卸载只移除目标驱动包，不影响 JTAG、CMSIS-DAP 或其他 FTDI 设备。
 5. STOP 和重连不执行 USB port reset/cycle。
 
-在这些输入和证据齐备前，产品只输出驱动诊断和安装指引，不得声称 Windows 自动绑定已经完成。
+当前受控部署包为 `software/lockstep_host/dist/lockstep-ft601-libusbk-windows-1.2.zip`，包含已实测安装助手、验证脚本、官方签名 Zadig、开源许可与源码归档。该包适合研发、实验室和用户确认 UAC 的安装流程。
+
+组织发布者、集中静默分发、attestation/WHQL 或严格 Secure Boot 环境仍需独立完成固定 INF/CAT 的正式签名，不得把本机 Driver Store 中的 OEM INF 直接作为通用发布包。

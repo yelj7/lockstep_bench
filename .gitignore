@@ -12,6 +12,8 @@ build-*/
 cmake-build-*/
 out/
 software/lockstep_host/build-*/
+!/hardware/noelv_zcu102_overlay/build/
+!/hardware/noelv_zcu102_overlay/build/**
 
 # CMake generated files outside dedicated build dirs
 CMakeFiles/

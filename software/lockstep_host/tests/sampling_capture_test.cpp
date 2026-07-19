@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture_test.cpp
 * 日期: 2026-07-16
-* 版本: 2.0
-* 更新记录: 增加 libusb 初始化、无效设备打开和传输错误分类回归。
-* 描述: 验证协议 v2、libusb 传输合同、恢复门槛、采集结束和 1024-bit VCD 导出。
+* 版本: 3.0
+* 更新记录: 增加 v3 事件流释放、早到事件帧和事件归档回归。
+* 描述: 验证 v2/v3、libusb、恢复门槛、1024-bit VCD 和稀疏事件合同。
 **********************************************************/
 
 #include <QCoreApplication>
@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -25,6 +26,18 @@ void append32(QByteArray* bytes, quint32 value)
 {
     const quint32 little = qToLittleEndian(value);
     bytes->append(reinterpret_cast<const char*>(&little), sizeof(little));
+}
+
+void append64(QByteArray* bytes, quint64 value)
+{
+    const quint64 little = qToLittleEndian(value);
+    bytes->append(reinterpret_cast<const char*>(&little), sizeof(little));
+}
+
+void overwrite32(QByteArray* bytes, const int offset, const quint32 value)
+{
+    const quint32 little = qToLittleEndian(value);
+    bytes->replace(offset, sizeof(little), reinterpret_cast<const char*>(&little), sizeof(little));
 }
 
 bool expect(bool condition, const char* message)
@@ -52,8 +65,9 @@ public:
             for (int index = 0; index < 5; ++index) append32(&payload, 0U);
             pending_ += responseCodec_.encode(
                 lockstep::acquisition::CaptureFrameType::HelloResponse, payload,
-                request.header.sequence + responseSequenceDelta);
+                request.header.sequence + responseSequenceDelta, 0U, 0U, responseFrameVersion);
         } else if (request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture ||
+                   request.header.type == lockstep::acquisition::CaptureFrameType::ConfigEvents ||
                    request.header.type == lockstep::acquisition::CaptureFrameType::GetStatus ||
                    request.header.type == lockstep::acquisition::CaptureFrameType::ArmCapture) {
             if (request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture) {
@@ -68,12 +82,13 @@ public:
             append32(&payload, 0U);
             append32(&payload, lastError);
             for (int index = 0; index < 9; ++index) append32(&payload, 0U);
+            payload.append(QByteArray(statusExtraBytes, '\0'));
             pending_ += responseCodec_.encode(
                 lockstep::acquisition::CaptureFrameType::StatusResponse, payload,
                 request.header.sequence + responseSequenceDelta +
                     ((request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture)
-                         ? configResponseSequenceGap
-                          : 0U));
+                          ? configResponseSequenceGap
+                          : 0U), 0U, 0U, responseFrameVersion);
         } else if (request.header.type == lockstep::acquisition::CaptureFrameType::StopCapture) {
             currentState = configuredState;
             for (int index = 0; index < 8; ++index) append32(&payload, index == 3 ? 2U : 0U);
@@ -120,8 +135,12 @@ public:
 
     bool isOpen() const override { return true; }
 
+    void queueIncoming(const QByteArray& bytes) { pending_ += bytes; }
+
     QList<lockstep::acquisition::CaptureFrameType> commands;
     quint32 protocolVersion = lockstep::acquisition::kCaptureProtocolVersion;
+    quint16 responseFrameVersion = lockstep::acquisition::kCaptureProtocolVersion;
+    int statusExtraBytes = 0;
     quint32 responseSequenceDelta = 0U;
     quint32 configResponseSequenceGap = 0U;
     quint32 configuredState = 2U;
@@ -159,15 +178,17 @@ int main(int argc, char** argv)
     usbTransport.close();
     if (!expect(config.validate(&error), "default 1024 capture config is valid") ||
         !expect(config.sampleRateHz == 120'000'000U, "default config matches live 120 MHz hardware") ||
-        !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract")) return 1;
+        !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract") ||
+        !expect(config.toEventPayload().size() == 16, "event config uses explicit v3 16-byte wire contract")) return 1;
 
     FakeCaptureTransport transport;
     transport.pendingTimeoutReads = 2;
     SamplingCaptureSession session;
     if (!expect(session.configure(&transport, config, &error), "C++ CONFIG handshake reaches CONFIGURED") ||
         !expect(transport.commands == QList<CaptureFrameType>{
-                    CaptureFrameType::HelloRequest, CaptureFrameType::ConfigCapture, CaptureFrameType::GetStatus},
-                "C++ handshake is HELLO -> CONFIG -> GET_STATUS")) return 1;
+                    CaptureFrameType::HelloRequest, CaptureFrameType::ConfigCapture,
+                    CaptureFrameType::GetStatus, CaptureFrameType::ConfigEvents},
+                "C++ handshake is HELLO -> CONFIG -> GET_STATUS -> CONFIG_EVENTS")) return 1;
     quint32 acceptedCaptureId = 0U;
     if (!expect(session.armAndWaitAccepted(&transport, 3U, &acceptedCaptureId, &error) &&
                     acceptedCaptureId == 42U,
@@ -188,6 +209,37 @@ int main(int argc, char** argv)
     incompatibleTransport.protocolVersion += 1U;
     if (!expect(!session.configure(&incompatibleTransport, config, &error),
                 "configuration rejects an incompatible protocol version")) return 1;
+
+    FakeCaptureTransport v3ResponseTransport;
+    v3ResponseTransport.responseFrameVersion = kCaptureProtocolVersionV3;
+    if (!expect(!session.configure(&v3ResponseTransport, config, &error),
+                "configuration rejects v3 control responses on the v2 response contract")) return 1;
+
+    FakeCaptureTransport oversizedStatusTransport;
+    oversizedStatusTransport.statusExtraBytes = 4;
+    if (!expect(!session.configure(&oversizedStatusTransport, config, &error),
+                "configuration rejects an oversized STATUS_RSP")) return 1;
+
+    QTemporaryDir afterArmTask;
+    FakeCaptureTransport afterArmTransport;
+    SamplingCaptureRecord afterArmRecord;
+    bool afterArmCalled = false;
+    quint32 afterArmCaptureId = 0U;
+    const CaptureSessionResult afterArmFailure = session.runDetailed(
+        &afterArmTransport, config, afterArmTask.path(), 100, &afterArmRecord,
+        [&](const quint32 captureId, QString* callbackError) {
+            afterArmCalled = true;
+            afterArmCaptureId = captureId;
+            if (callbackError != nullptr) *callbackError = QStringLiteral("run request failed");
+            return false;
+        });
+    if (!expect(afterArmCalled && afterArmCaptureId == 42U && !afterArmFailure.success &&
+                    afterArmFailure.phase == QStringLiteral("after_arm") &&
+                    afterArmFailure.recoverySucceeded,
+                "after-ARM callback runs after ACK and preserves STOP recovery on failure") ||
+        !expect(afterArmTransport.commands.indexOf(CaptureFrameType::StartEventStream) ==
+                    afterArmTransport.commands.indexOf(CaptureFrameType::ArmCapture) + 1,
+                "START_EVENT_STREAM is sent immediately after ARM ACK")) return 1;
 
     QTemporaryDir recoveryTask;
     FakeCaptureTransport timeoutTransport;
@@ -278,6 +330,145 @@ int main(int argc, char** argv)
     const SamplingCaptureRecord record = assembler.record();
     if (!expect(record.samples.size() == 2 && record.captureId == 42, "1024-bit samples assembled")) return 1;
 
+    QByteArray eventMeta;
+    append32(&eventMeta, 120'000'000U);
+    append32(&eventMeta, 0x19fU);
+    append32(&eventMeta, 0x19fU);
+    append32(&eventMeta, 0x060U);
+    append32(&eventMeta, 64U);
+    for (int index = 0; index < 11; ++index) append32(&eventMeta, 0U);
+    QByteArray eventData;
+    append64(&eventData, 1234U);
+    append32(&eventData, 42U);
+    append32(&eventData, 0U);
+    eventData.append(char(1));
+    eventData.append(char(2));
+    eventData.append(char(0));
+    eventData.append(char(0));
+    append32(&eventData, 1U << 1U);
+    append32(&eventData, 2U);
+    append32(&eventData, 0U);
+    eventData.append(char(0x55));
+    eventData.append(char(0xaa));
+    eventData.append(QByteArray(30, '\0'));
+    QByteArray eventEnd;
+    append32(&eventEnd, 0U);
+    append32(&eventEnd, 0U);
+    append32(&eventEnd, 1U);
+    append32(&eventEnd, 1U);
+    append32(&eventEnd, 0U);
+    for (int protocol = 0; protocol < 9; ++protocol) append32(&eventEnd, 0U);
+    append32(&eventEnd, 0x19fU);
+    append32(&eventEnd, 0x19fU);
+    const QByteArray v3Stream =
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 20U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, eventData, 21U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::CaptureMeta, meta, 22U, 42U, 0U, kCaptureProtocolVersion) +
+        encoder.encode(CaptureFrameType::SampleData, samples, 23U, 42U, 0U, kCaptureProtocolVersion) +
+        encoder.encode(CaptureFrameType::EventEnd, eventEnd, 24U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::CaptureEnd, end, 25U, 42U, 0U, kCaptureProtocolVersion);
+    CaptureFrameCodec v3Decoder;
+    const CaptureDecodeResult v3Decoded = v3Decoder.feed(v3Stream);
+    if (!expect(v3Decoded.success && v3Decoded.frames.size() == 6,
+                "v3 codec accepts negotiated event frames")) return 1;
+    SamplingCaptureAssembler v3Assembler;
+    for (const CaptureFrame& frame : v3Decoded.frames) {
+        if (!expect(v3Assembler.append(frame, &error), "v3 capture/event frame accepted")) return 1;
+    }
+    const SamplingCaptureRecord v3Record = v3Assembler.record();
+    if (!expect(v3Assembler.complete() && v3Record.protocolEvents.size() == 1 &&
+                    v3Record.protocolEvents.first().timestampTicks == 1234U &&
+                    v3Record.protocolEvents.first().payload == QByteArray::fromHex("55aa") &&
+                    v3Record.eventEmittedTotal == 1U && v3Record.eventDroppedTotal == 0U,
+                "v3 event record and EVENT_END statistics assemble exactly")) return 1;
+    QTemporaryDir earlyEventTask;
+    FakeCaptureTransport earlyEventTransport;
+    earlyEventTransport.queueIncoming(v3Stream);
+    SamplingCaptureRecord earlyEventRecord;
+    if (!expect(session.collect(&earlyEventTransport, earlyEventTask.path(), 1000,
+                                &earlyEventRecord, &error) &&
+                    earlyEventRecord.protocolEvents.size() == 1 &&
+                    earlyEventRecord.samples.size() == 2,
+                "collect preserves EVENT_META/EVENT_DATA before CAPTURE_META")) return 1;
+    QTemporaryDir v3Task;
+    if (!expect(exportScalarVcd(v3Record, v3Task.path(), nullptr, nullptr, &error),
+                "v3 capture exports continuous VCD and sparse events") ||
+        !expect(QFileInfo::exists(QDir(v3Task.path()).filePath(QStringLiteral("evidence/protocol_events.json"))),
+                "v3 sparse event archive exists")) return 1;
+    QFile eventArchive(QDir(v3Task.path()).filePath(QStringLiteral("evidence/protocol_events.json")));
+    if (!expect(eventArchive.open(QIODevice::ReadOnly), "v3 event archive readable")) return 1;
+    const QJsonObject eventArchiveObject = QJsonDocument::fromJson(eventArchive.readAll()).object();
+    if (!expect(eventArchiveObject.value(QStringLiteral("schema")).toString() ==
+                    QStringLiteral("lockstep-protocol-events-v3") &&
+                    eventArchiveObject.value(QStringLiteral("events")).toArray().size() == 1,
+                "v3 event archive preserves contract and event count")) return 1;
+
+    QByteArray badEventData = eventData;
+    badEventData[20] = 0;
+    const QByteArray badEventStream =
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 30U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, badEventData, 31U, 42U, 0U, kCaptureProtocolVersionV3);
+    CaptureFrameCodec badEventDecoder;
+    const CaptureDecodeResult badEventDecoded = badEventDecoder.feed(badEventStream);
+    SamplingCaptureAssembler badEventAssembler;
+    if (!expect(badEventDecoded.success && badEventAssembler.append(badEventDecoded.frames.at(0), &error) &&
+                    !badEventAssembler.append(badEventDecoded.frames.at(1), &error),
+                "event record without its protocol reason bit is rejected")) return 1;
+
+    QByteArray wrongCapabilitiesMeta = eventMeta;
+    overwrite32(&wrongCapabilitiesMeta, 8, 0x183U);
+    CaptureFrameCodec wrongCapabilitiesDecoder;
+    const CaptureDecodeResult wrongCapabilitiesDecoded = wrongCapabilitiesDecoder.feed(
+        encoder.encode(CaptureFrameType::EventMeta, wrongCapabilitiesMeta, 40U, 42U, 0U,
+                       kCaptureProtocolVersionV3));
+    SamplingCaptureAssembler wrongCapabilitiesAssembler;
+    if (!expect(wrongCapabilitiesDecoded.success &&
+                    !wrongCapabilitiesAssembler.append(wrongCapabilitiesDecoded.frames.first(), &error),
+                "EVENT_META rejects an enabled mask different from the request")) return 1;
+
+    QByteArray invalidSourceKindData = eventData;
+    invalidSourceKindData[18] = char(4);
+    CaptureFrameCodec invalidSourceKindDecoder;
+    const CaptureDecodeResult invalidSourceKindDecoded = invalidSourceKindDecoder.feed(
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 50U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, invalidSourceKindData, 51U, 42U, 0U,
+                       kCaptureProtocolVersionV3));
+    SamplingCaptureAssembler invalidSourceKindAssembler;
+    if (!expect(invalidSourceKindDecoded.success &&
+                    invalidSourceKindAssembler.append(invalidSourceKindDecoded.frames.at(0), &error) &&
+                    !invalidSourceKindAssembler.append(invalidSourceKindDecoded.frames.at(1), &error),
+                "event record rejects an unknown source kind")) return 1;
+
+    QByteArray invalidPaddingData = eventData;
+    invalidPaddingData[34] = char(1);
+    CaptureFrameCodec invalidPaddingDecoder;
+    const CaptureDecodeResult invalidPaddingDecoded = invalidPaddingDecoder.feed(
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 60U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, invalidPaddingData, 61U, 42U, 0U,
+                       kCaptureProtocolVersionV3));
+    SamplingCaptureAssembler invalidPaddingAssembler;
+    if (!expect(invalidPaddingDecoded.success &&
+                    invalidPaddingAssembler.append(invalidPaddingDecoded.frames.at(0), &error) &&
+                    !invalidPaddingAssembler.append(invalidPaddingDecoded.frames.at(1), &error),
+                "event record rejects non-zero unused payload bytes")) return 1;
+
+    QByteArray droppedEventEnd = eventEnd;
+    overwrite32(&droppedEventEnd, 8, 2U);
+    overwrite32(&droppedEventEnd, 16, 1U);
+    overwrite32(&droppedEventEnd, 20, 1U);
+    CaptureFrameCodec droppedEventDecoder;
+    const CaptureDecodeResult droppedEventDecoded = droppedEventDecoder.feed(
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 70U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, eventData, 71U, 42U, 0U, kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventEnd, droppedEventEnd, 72U, 42U, 0U,
+                       kCaptureProtocolVersionV3));
+    SamplingCaptureAssembler droppedEventAssembler;
+    if (!expect(droppedEventDecoded.success &&
+                    droppedEventAssembler.append(droppedEventDecoded.frames.at(0), &error) &&
+                    droppedEventAssembler.append(droppedEventDecoded.frames.at(1), &error) &&
+                    !droppedEventAssembler.append(droppedEventDecoded.frames.at(2), &error),
+                "EVENT_END rejects any reported event loss")) return 1;
+
     QTemporaryDir task;
     QString vcdPath;
     QString sidecarPath;
@@ -298,10 +489,12 @@ int main(int argc, char** argv)
         QTemporaryDir replayTask;
         const QString rawPath = QDir(replayTask.path()).filePath(QStringLiteral("fixture.dat"));
         QFile rawFile(rawPath);
-        if (!expect(rawFile.open(QIODevice::WriteOnly) && rawFile.write(stream) == stream.size(),
-                    "offline fixture written")) return 1;
-        rawFile.close();
         QProcess replay;
+        const QByteArray replayStream = v3Stream;
+        if (!expect(rawFile.open(QIODevice::WriteOnly) &&
+                        rawFile.write(replayStream) == replayStream.size(),
+                    "v3 early-event offline fixture written")) return 1;
+        rawFile.close();
         replay.start(QString::fromLocal8Bit(argv[1]), {
             QStringLiteral("--offline-capture"), rawPath,
             QStringLiteral("--task-root"), replayTask.path(),
@@ -320,6 +513,55 @@ int main(int argc, char** argv)
             if (!expect(QFileInfo::exists(QDir(replayTask.path()).filePath(output)),
                         "offline replay output exists")) return 1;
         }
+
+        QByteArray subsetEventMeta = eventMeta;
+        overwrite32(&subsetEventMeta, 8, 0x183U);
+        QByteArray subsetEventEnd = eventEnd;
+        overwrite32(&subsetEventEnd, 56, 0x183U);
+        const QByteArray subsetStream =
+            encoder.encode(CaptureFrameType::EventMeta, subsetEventMeta, 20U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::EventData, eventData, 21U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureMeta, meta, 22U, 42U, 0U,
+                           kCaptureProtocolVersion) +
+            encoder.encode(CaptureFrameType::SampleData, samples, 23U, 42U, 0U,
+                           kCaptureProtocolVersion) +
+            encoder.encode(CaptureFrameType::EventEnd, subsetEventEnd, 24U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureEnd, end, 25U, 42U, 0U,
+                           kCaptureProtocolVersion);
+        QTemporaryDir subsetReplayTask;
+        const QString subsetRawPath = QDir(subsetReplayTask.path()).filePath(
+            QStringLiteral("subset_fixture.dat"));
+        QFile subsetRaw(subsetRawPath);
+        if (!expect(subsetRaw.open(QIODevice::WriteOnly) &&
+                        subsetRaw.write(subsetStream) == subsetStream.size(),
+                    "subset-mask offline fixture written")) return 1;
+        subsetRaw.close();
+        QProcess subsetReplay;
+        subsetReplay.start(QString::fromLocal8Bit(argv[1]), {
+            QStringLiteral("--offline-capture"), subsetRawPath,
+            QStringLiteral("--event-enable-mask"), QStringLiteral("0x183"),
+            QStringLiteral("--task-root"), subsetReplayTask.path(),
+            QStringLiteral("--task-id"), QStringLiteral("offline_subset_fixture")});
+        if (!expect(subsetReplay.waitForFinished(30'000) && subsetReplay.exitCode() == 0,
+                    "offline replay accepts the explicitly requested event subset")) return 1;
+
+        QFile trailingRaw(rawPath);
+        const QByteArray trailingStream = replayStream +
+            encoder.encode(CaptureFrameType::HelloResponse, QByteArray(), 26U);
+        if (!expect(trailingRaw.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                        trailingRaw.write(trailingStream) == trailingStream.size(),
+                    "trailing-frame offline fixture written")) return 1;
+        trailingRaw.close();
+        QProcess trailingReplay;
+        trailingReplay.start(QString::fromLocal8Bit(argv[1]), {
+            QStringLiteral("--offline-capture"), rawPath,
+            QStringLiteral("--task-root"), replayTask.path(),
+            QStringLiteral("--task-id"), QStringLiteral("offline_trailing_fixture")});
+        if (!expect(trailingReplay.waitForFinished(30'000) && trailingReplay.exitCode() == 5,
+                    "offline replay rejects frames after CAPTURE_END")) return 1;
 
         QProcess invalidLiveCapture;
         invalidLiveCapture.start(QString::fromLocal8Bit(argv[1]), {

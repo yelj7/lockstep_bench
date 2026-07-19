@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.cpp
 * 日期: 2026-07-16
-* 版本: v2.1
-* 更新记录: 将 FT601 枚举、bulk 传输和重连迁移为 libusb。
-* 描述: 实现线协议校验、采集组装、libusb 传输和标量 VCD/sidecar 输出。
+* 版本: v3.0
+* 更新记录: 增加事件配置、流释放、稀疏事件归档及混合帧顺序校验。
+* 描述: 实现 v2/v3 线协议、libusb 传输、1024-bit VCD 和事件 sidecar 输出。
 **********************************************************/
 
 #include "sampling_capture.h"
@@ -24,12 +24,13 @@ namespace {
 
 constexpr quint32 kMaxPayloadBytes = 4U * 1024U * 1024U;
 constexpr quint32 kCrcDisabledFlag = 1U << 1U;
-constexpr int kUsbReadChunkBytes = 4096;
-constexpr int kStatusResponseBytes = 64;
+constexpr int kUsbReadChunkBytes = 32 * 1024;
+constexpr int kStatusResponseBytes = kUsbReadChunkBytes;
 constexpr quint16 kFt601VendorId = 0x0403U;
 constexpr quint16 kFt601ProductId = 0x601fU;
 constexpr quint8 kFt601OutEndpoint = 0x02U;
 constexpr quint8 kFt601InEndpoint = 0x82U;
+constexpr quint8 kFt601ControlOutEndpoint = 0x01U;
 constexpr unsigned int kUsbTransferTimeoutMs = 2000U;
 
 struct CaptureUsbInterface final {
@@ -37,6 +38,12 @@ struct CaptureUsbInterface final {
     int alternateSetting = 0;
     quint8 outEndpoint = 0;
     quint8 inEndpoint = 0;
+};
+
+struct Ft601UsbLayout final {
+    int controlInterfaceNumber = -1;
+    int controlAlternateSetting = 0;
+    CaptureUsbInterface capture;
 };
 
 QString usbSpeedText(libusb_device* device)
@@ -53,7 +60,7 @@ QString usbSpeedText(libusb_device* device)
     }
 }
 
-bool findCaptureUsbInterface(libusb_device* device, CaptureUsbInterface* selection, QString* error)
+bool findFt601UsbLayout(libusb_device* device, Ft601UsbLayout* selection, QString* error)
 {
     libusb_config_descriptor* config = nullptr;
     const int status = libusb_get_active_config_descriptor(device, &config);
@@ -65,12 +72,12 @@ bool findCaptureUsbInterface(libusb_device* device, CaptureUsbInterface* selecti
         return false;
     }
 
-    CaptureUsbInterface found;
-    for (quint8 interfaceIndex = 0; interfaceIndex < config->bNumInterfaces &&
-         found.interfaceNumber < 0; ++interfaceIndex) {
+    Ft601UsbLayout found;
+    for (quint8 interfaceIndex = 0; interfaceIndex < config->bNumInterfaces; ++interfaceIndex) {
         const libusb_interface& usbInterface = config->interface[interfaceIndex];
         for (int alternateIndex = 0; alternateIndex < usbInterface.num_altsetting; ++alternateIndex) {
             const libusb_interface_descriptor& alternate = usbInterface.altsetting[alternateIndex];
+            bool hasControlOut = false;
             bool hasOut = false;
             bool hasIn = false;
             for (quint8 endpointIndex = 0; endpointIndex < alternate.bNumEndpoints; ++endpointIndex) {
@@ -78,22 +85,27 @@ bool findCaptureUsbInterface(libusb_device* device, CaptureUsbInterface* selecti
                 if ((endpoint.bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) != LIBUSB_TRANSFER_TYPE_BULK) {
                     continue;
                 }
+                hasControlOut = hasControlOut || endpoint.bEndpointAddress == kFt601ControlOutEndpoint;
                 hasOut = hasOut || endpoint.bEndpointAddress == kFt601OutEndpoint;
                 hasIn = hasIn || endpoint.bEndpointAddress == kFt601InEndpoint;
             }
-            if (!hasOut || !hasIn) continue;
-            found.interfaceNumber = alternate.bInterfaceNumber;
-            found.alternateSetting = alternate.bAlternateSetting;
-            found.outEndpoint = kFt601OutEndpoint;
-            found.inEndpoint = kFt601InEndpoint;
-            break;
+            if (hasControlOut && found.controlInterfaceNumber < 0) {
+                found.controlInterfaceNumber = alternate.bInterfaceNumber;
+                found.controlAlternateSetting = alternate.bAlternateSetting;
+            }
+            if (hasOut && hasIn && found.capture.interfaceNumber < 0) {
+                found.capture.interfaceNumber = alternate.bInterfaceNumber;
+                found.capture.alternateSetting = alternate.bAlternateSetting;
+                found.capture.outEndpoint = kFt601OutEndpoint;
+                found.capture.inEndpoint = kFt601InEndpoint;
+            }
         }
     }
     libusb_free_config_descriptor(config);
-    if (found.interfaceNumber < 0) {
+    if (found.controlInterfaceNumber < 0 || found.capture.interfaceNumber < 0) {
         if (error != nullptr) {
             *error = QStringLiteral(
-                "FT601 active USB configuration 中未找到同时包含 bulk 端点 0x02/0x82 的接口");
+                "FT601 active USB configuration 缺少控制端点 0x01 或采集端点 0x02/0x82");
         }
         return false;
     }
@@ -135,10 +147,16 @@ quint32 read32(const char* data)
     return qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(data));
 }
 
+quint64 read64(const char* data)
+{
+    return qFromLittleEndian<quint64>(reinterpret_cast<const uchar*>(data));
+}
+
 bool parseStatusV2(const CaptureFrame& frame, CaptureStatusV2* status, QString* error)
 {
-    if (frame.header.type != CaptureFrameType::StatusResponse || frame.payload.size() < 64) {
-        if (error != nullptr) *error = QStringLiteral("STATUS_RSP v2 长度或类型错误");
+    if (frame.header.type != CaptureFrameType::StatusResponse ||
+        frame.header.version != kCaptureProtocolVersion || frame.payload.size() != 64) {
+        if (error != nullptr) *error = QStringLiteral("STATUS_RSP v2 版本、长度或类型错误");
         return false;
     }
     const char* data = frame.payload.constData();
@@ -228,13 +246,13 @@ void saveSessionEvidence(const QString& taskRootPath, const CaptureSessionResult
 
 QByteArray CaptureFrameCodec::encode(const CaptureFrameType type, const QByteArray& payload,
                                  const quint32 sequence, const quint32 captureId,
-                                 const quint32 flags) const
+                                 const quint32 flags, const quint16 version) const
 {
     QByteArray padded = payload;
     padded.append(QByteArray((4 - (payload.size() % 4)) % 4, '\0'));
     QByteArray header;
     append32(&header, kCaptureFrameMagic);
-    append16(&header, kCaptureProtocolVersion);
+    append16(&header, version);
     append16(&header, static_cast<quint16>(type));
     append32(&header, kCaptureFrameHeaderBytes);
     append32(&header, static_cast<quint32>(payload.size()));
@@ -275,7 +293,8 @@ CaptureDecodeResult CaptureFrameCodec::feed(const QByteArray& bytes)
         frame.header.captureId = read32(raw + 20);
         frame.header.flags = read32(raw + 24);
         frame.header.crc32 = read32(raw + 28);
-        if (frame.header.version != kCaptureProtocolVersion ||
+        if ((frame.header.version != kCaptureProtocolVersion &&
+             frame.header.version != kCaptureProtocolVersionV3) ||
             frame.header.headerLength != kCaptureFrameHeaderBytes || frame.header.payloadLength > kMaxPayloadBytes) {
             result.success = false;
             result.error = QStringLiteral("采集帧头合同错误");
@@ -314,7 +333,8 @@ bool SamplingCaptureConfig::validate(QString* error) const
     const bool rateValid = sampleRateHz == 1'000'000U || sampleRateHz == 10'000'000U ||
                            sampleRateHz == 50'000'000U || sampleRateHz == 120'000'000U;
     if (!countsValid || !rateValid || (protocolGroupMask & ~0x1ffU) != 0U || mode != 0U ||
-        triggerTimeoutSamples == 0U) {
+        triggerTimeoutSamples == 0U || (eventEnableMask & ~0x19fU) != 0U || eventLimit != 0U ||
+        eventWatchdogTicks == 0U || eventHardTimeoutTicks < eventWatchdogTicks) {
         if (error != nullptr) {
             *error = QStringLiteral("采样配置不符合 1024 路有限采集合同");
         }
@@ -343,14 +363,43 @@ QByteArray SamplingCaptureConfig::toPayload() const
     return payload;
 }
 
+QByteArray SamplingCaptureConfig::toEventPayload() const
+{
+    QByteArray payload;
+    append32(&payload, eventEnableMask);
+    append32(&payload, eventLimit);
+    append32(&payload, eventWatchdogTicks);
+    append32(&payload, eventHardTimeoutTicks);
+    return payload;
+}
+
+SamplingCaptureAssembler::SamplingCaptureAssembler(const quint32 expectedEnabledSourceMask)
+    : expectedEnabledSourceMask_(expectedEnabledSourceMask)
+{
+}
+
 bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
 {
-    if (!hasMeta_) expectedSequence_ = frame.header.sequence;
+    const bool eventFrame = frame.header.type == CaptureFrameType::EventMeta ||
+                            frame.header.type == CaptureFrameType::EventData ||
+                            frame.header.type == CaptureFrameType::EventEnd;
+    const bool continuousFrame = frame.header.type == CaptureFrameType::CaptureMeta ||
+                                 frame.header.type == CaptureFrameType::SampleData ||
+                                 frame.header.type == CaptureFrameType::CaptureEnd;
+    if ((eventFrame && frame.header.version != kCaptureProtocolVersionV3) ||
+        (continuousFrame && frame.header.version != kCaptureProtocolVersion)) {
+        if (error != nullptr) *error = QStringLiteral("采集帧版本与 v2/v3 双流合同不一致");
+        return false;
+    }
+    if (!hasAnyFrame_) {
+        expectedSequence_ = frame.header.sequence;
+        hasAnyFrame_ = true;
+    }
     if (frame.header.sequence != expectedSequence_++) {
         if (error != nullptr) *error = QStringLiteral("采集帧序号不连续");
         return false;
     }
-    if (hasMeta_ && frame.header.captureId != record_.captureId) {
+    if ((hasMeta_ || hasEventMeta_) && frame.header.captureId != record_.captureId) {
         if (error != nullptr) *error = QStringLiteral("采集帧 capture_id 不一致");
         return false;
     }
@@ -366,11 +415,115 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         const quint32 sampleWordBits = read32(frame.payload.constData() + 28);
         record_.windowStartIndex = read32(frame.payload.constData() + 32);
         record_.triggerIndex = read32(frame.payload.constData() + 36);
-        if (physicalChannels != kCapturePhysicalChannels || sampleWordBits != kCaptureSampleWordBits) {
+        if (physicalChannels != kCapturePhysicalChannels || sampleWordBits != kCaptureSampleWordBits ||
+            (hasEventMeta_ && record_.eventTimebaseHz != record_.sampleRateHz)) {
             if (error != nullptr) *error = QStringLiteral("硬件上报的通道数或样本位宽不是 1024");
             return false;
         }
         hasMeta_ = true;
+        return true;
+    }
+    if (frame.header.type == CaptureFrameType::EventMeta) {
+        if (hasEventMeta_ || hasEnd_ || frame.header.version != kCaptureProtocolVersionV3 ||
+            frame.payload.size() != 64) {
+            if (error != nullptr) *error = QStringLiteral("EVENT_META 重复、版本或长度错误");
+            return false;
+        }
+        const char* data = frame.payload.constData();
+        const quint32 recordBytes = read32(data + 16);
+        record_.captureId = frame.header.captureId;
+        record_.eventTimebaseHz = read32(data + 0);
+        record_.implementedSourceMask = read32(data + 4);
+        record_.enabledSourceMask = read32(data + 8);
+        record_.designGapMask = read32(data + 12);
+        if (record_.eventTimebaseHz == 0U || recordBytes != 64U ||
+            record_.implementedSourceMask != 0x19fU ||
+            record_.enabledSourceMask != expectedEnabledSourceMask_ ||
+            record_.designGapMask != 0x060U ||
+            (record_.enabledSourceMask & ~record_.implementedSourceMask) != 0U ||
+            (hasMeta_ && record_.eventTimebaseHz != record_.sampleRateHz)) {
+            if (error != nullptr) *error = QStringLiteral("EVENT_META 能力或记录宽度合同错误");
+            return false;
+        }
+        hasEventMeta_ = true;
+        return true;
+    }
+    if (frame.header.type == CaptureFrameType::EventData) {
+        if (!hasEventMeta_ || hasEventEnd_ || hasEnd_ || frame.payload.isEmpty() ||
+            (frame.payload.size() % 64) != 0) {
+            if (error != nullptr) *error = QStringLiteral("EVENT_DATA 状态或长度错误");
+            return false;
+        }
+        for (int offset = 0; offset < frame.payload.size(); offset += 64) {
+            const char* data = frame.payload.constData() + offset;
+            SamplingCaptureRecord::ProtocolEvent event;
+            event.timestampTicks = read64(data + 0);
+            event.captureId = read32(data + 8);
+            event.localSequence = read32(data + 12);
+            event.protocolId = static_cast<quint8>(data[16]);
+            event.eventType = static_cast<quint8>(data[17]);
+            event.sourceKind = static_cast<quint8>(data[18]);
+            event.flags = static_cast<quint8>(data[19]);
+            event.eventReasonMask = read32(data + 20);
+            const quint32 payloadLength = read32(data + 24);
+            const quint32 reserved = read32(data + 28);
+            bool unusedPayloadIsZero = true;
+            if (payloadLength <= 32U) {
+                for (quint32 index = payloadLength; index < 32U; ++index) {
+                    if (data[32 + index] != '\0') {
+                        unusedPayloadIsZero = false;
+                        break;
+                    }
+                }
+            }
+            if (event.captureId != record_.captureId || event.protocolId >= 9U ||
+                event.sourceKind > 3U ||
+                (event.eventReasonMask & ~0x1ffU) != 0U ||
+                (event.eventReasonMask & (1U << event.protocolId)) == 0U ||
+                payloadLength > 32U || reserved != 0U || !unusedPayloadIsZero) {
+                if (error != nullptr) *error = QStringLiteral("事件记录字段合同错误");
+                return false;
+            }
+            if (hasEventSequence_[event.protocolId] &&
+                event.localSequence != nextEventSequence_[event.protocolId]) {
+                eventSequenceGap_ = true;
+            }
+            nextEventSequence_[event.protocolId] = event.localSequence + 1U;
+            hasEventSequence_[event.protocolId] = true;
+            event.payload = QByteArray(data + 32, static_cast<int>(payloadLength));
+            record_.protocolEvents.append(event);
+        }
+        return true;
+    }
+    if (frame.header.type == CaptureFrameType::EventEnd) {
+        if (!hasEventMeta_ || hasEventEnd_ || hasEnd_ || frame.payload.size() != 64) {
+            if (error != nullptr) *error = QStringLiteral("EVENT_END 状态或长度错误");
+            return false;
+        }
+        const char* data = frame.payload.constData();
+        record_.eventEndReason = read32(data + 0);
+        record_.eventOverflowMask = read32(data + 4);
+        record_.eventAcceptedTotal = read32(data + 8);
+        record_.eventEmittedTotal = read32(data + 12);
+        record_.eventDroppedTotal = read32(data + 16);
+        quint32 droppedSum = 0U;
+        for (int protocol = 0; protocol < 9; ++protocol) {
+            droppedSum += read32(data + 20 + protocol * 4);
+        }
+        const quint32 endEnabledSourceMask = read32(data + 56);
+        const quint32 endImplementedSourceMask = read32(data + 60);
+        if ((record_.eventOverflowMask & ~0x1ffU) != 0U ||
+            droppedSum != record_.eventDroppedTotal ||
+            record_.eventEmittedTotal != static_cast<quint32>(record_.protocolEvents.size()) ||
+            record_.eventAcceptedTotal != record_.eventEmittedTotal + record_.eventDroppedTotal ||
+            endEnabledSourceMask != record_.enabledSourceMask ||
+            endImplementedSourceMask != record_.implementedSourceMask ||
+            record_.eventDroppedTotal != 0U || record_.eventOverflowMask != 0U ||
+            eventSequenceGap_) {
+            if (error != nullptr) *error = QStringLiteral("EVENT_END 统计、溢出或事件序号不一致");
+            return false;
+        }
+        hasEventEnd_ = true;
         return true;
     }
     if (frame.header.type == CaptureFrameType::CaptureEnd && !hasMeta_) {
@@ -401,7 +554,8 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         payloadBytes_ += static_cast<quint32>(frame.payload.size());
         return true;
     }
-    if (frame.header.type != CaptureFrameType::CaptureEnd || frame.payload.size() != 32) {
+    if (frame.header.type != CaptureFrameType::CaptureEnd || frame.payload.size() != 32 ||
+        (hasEventMeta_ && !hasEventEnd_)) {
         if (error != nullptr) *error = QStringLiteral("采集流包含非预期帧");
         return false;
     }
@@ -426,7 +580,10 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
     return true;
 }
 
-bool SamplingCaptureAssembler::complete() const { return hasEnd_; }
+bool SamplingCaptureAssembler::complete() const
+{
+    return hasEnd_ && (!hasEventMeta_ || hasEventEnd_);
+}
 SamplingCaptureRecord SamplingCaptureAssembler::record() const { return record_; }
 
 class LibusbRuntime::Private final {
@@ -484,29 +641,100 @@ public:
         return libusb_get_bus_number(device) == identityBus && portPath(device) == identityPortPath;
     }
 
-    bool selectCaptureInterface(libusb_device* device, QString* error)
+    bool selectUsbLayout(libusb_device* device, QString* error)
     {
-        CaptureUsbInterface selection;
-        if (!findCaptureUsbInterface(device, &selection, error)) return false;
-        interfaceNumber = selection.interfaceNumber;
-        alternateSetting = selection.alternateSetting;
-        outEndpoint = selection.outEndpoint;
-        inEndpoint = selection.inEndpoint;
+        Ft601UsbLayout selection;
+        if (!findFt601UsbLayout(device, &selection, error)) return false;
+        controlInterfaceNumber = selection.controlInterfaceNumber;
+        controlAlternateSetting = selection.controlAlternateSetting;
+        interfaceNumber = selection.capture.interfaceNumber;
+        alternateSetting = selection.capture.alternateSetting;
+        outEndpoint = selection.capture.outEndpoint;
+        inEndpoint = selection.capture.inEndpoint;
+        return true;
+    }
+
+    bool claimInterfacesAndStartStreaming(QString* error)
+    {
+        int status = libusb_claim_interface(handle, controlInterfaceNumber);
+        if (status != LIBUSB_SUCCESS) {
+            if (error != nullptr) {
+                *error = QStringLiteral("无法 claim FT601 控制接口 %1: %2 (%3)")
+                             .arg(controlInterfaceNumber)
+                             .arg(QString::fromLatin1(libusb_error_name(status))).arg(status);
+            }
+            return false;
+        }
+        controlInterfaceClaimed = true;
+        if (controlAlternateSetting != 0) {
+            status = libusb_set_interface_alt_setting(
+                handle, controlInterfaceNumber, controlAlternateSetting);
+            if (status != LIBUSB_SUCCESS) {
+                if (error != nullptr) {
+                    *error = QStringLiteral("无法选择 FT601 控制接口 alternate setting: %1 (%2)")
+                                 .arg(QString::fromLatin1(libusb_error_name(status))).arg(status);
+                }
+                return false;
+            }
+        }
+
+        status = libusb_claim_interface(handle, interfaceNumber);
+        if (status != LIBUSB_SUCCESS) {
+            if (error != nullptr) {
+                *error = QStringLiteral("无法 claim FT601 采集接口 %1: %2 (%3)")
+                             .arg(interfaceNumber)
+                             .arg(QString::fromLatin1(libusb_error_name(status))).arg(status);
+            }
+            return false;
+        }
+        captureInterfaceClaimed = true;
+        if (alternateSetting != 0) {
+            status = libusb_set_interface_alt_setting(handle, interfaceNumber, alternateSetting);
+            if (status != LIBUSB_SUCCESS) {
+                if (error != nullptr) {
+                    *error = QStringLiteral("无法选择 FT601 采集接口 alternate setting: %1 (%2)")
+                                 .arg(QString::fromLatin1(libusb_error_name(status))).arg(status);
+                }
+                return false;
+            }
+        }
+
+        unsigned char streamingRequest[20] = {
+            0x00, 0x00, 0x00, 0x00, 0x82, 0x02, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        int transferred = 0;
+        status = libusb_bulk_transfer(handle, kFt601ControlOutEndpoint, streamingRequest,
+                                      sizeof(streamingRequest), &transferred,
+                                      kUsbTransferTimeoutMs);
+        if (status != LIBUSB_SUCCESS || transferred != static_cast<int>(sizeof(streamingRequest))) {
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "FT601 streaming 初始化失败: libusb=%1 (%2), requested=%3, transferred=%4")
+                             .arg(QString::fromLatin1(libusb_error_name(status))).arg(status)
+                             .arg(sizeof(streamingRequest)).arg(transferred);
+            }
+            return false;
+        }
         return true;
     }
 
     void closeHandle()
     {
         if (handle == nullptr) return;
-        if (interfaceClaimed) libusb_release_interface(handle, interfaceNumber);
+        if (captureInterfaceClaimed) libusb_release_interface(handle, interfaceNumber);
+        if (controlInterfaceClaimed) libusb_release_interface(handle, controlInterfaceNumber);
         libusb_close(handle);
         handle = nullptr;
-        interfaceClaimed = false;
+        captureInterfaceClaimed = false;
+        controlInterfaceClaimed = false;
     }
 
     libusb_context* context = nullptr;
     libusb_device_handle* handle = nullptr;
     quint32 openIndex = 0U;
+    int controlInterfaceNumber = -1;
+    int controlAlternateSetting = 0;
     int interfaceNumber = -1;
     int alternateSetting = 0;
     quint8 outEndpoint = 0;
@@ -516,7 +744,8 @@ public:
     quint8 identityBus = 0;
     bool hasOpenIndex = false;
     bool hasIdentity = false;
-    bool interfaceClaimed = false;
+    bool controlInterfaceClaimed = false;
+    bool captureInterfaceClaimed = false;
 };
 
 QString usbErrorText(const int status)
@@ -567,14 +796,14 @@ QList<LibusbDeviceInfo> LibusbRuntime::enumerate(QString* error) const
         info.busNumber = libusb_get_bus_number(list[listIndex]);
         info.deviceAddress = libusb_get_device_address(list[listIndex]);
         info.usbSpeed = usbSpeedText(list[listIndex]);
-        CaptureUsbInterface captureInterface;
-        info.captureInterfaceAvailable = findCaptureUsbInterface(
-            list[listIndex], &captureInterface, &info.captureInterfaceError);
+        Ft601UsbLayout usbLayout;
+        info.captureInterfaceAvailable = findFt601UsbLayout(
+            list[listIndex], &usbLayout, &info.captureInterfaceError);
         if (info.captureInterfaceAvailable) {
-            info.interfaceNumber = captureInterface.interfaceNumber;
-            info.alternateSetting = captureInterface.alternateSetting;
-            info.outEndpoint = captureInterface.outEndpoint;
-            info.inEndpoint = captureInterface.inEndpoint;
+            info.interfaceNumber = usbLayout.capture.interfaceNumber;
+            info.alternateSetting = usbLayout.capture.alternateSetting;
+            info.outEndpoint = usbLayout.capture.outEndpoint;
+            info.inEndpoint = usbLayout.capture.inEndpoint;
         }
         libusb_device_handle* temporaryHandle = nullptr;
         if (libusb_open(list[listIndex], &temporaryHandle) == LIBUSB_SUCCESS) {
@@ -631,7 +860,7 @@ bool LibusbRuntime::open(const quint32 index, QString* error)
         selectedDescriptor = descriptor;
         if (status == LIBUSB_SUCCESS) {
             QString interfaceError;
-            if (d_->selectCaptureInterface(selectedDevice, &interfaceError)) {
+            if (d_->selectUsbLayout(selectedDevice, &interfaceError)) {
                 d_->rememberIdentity(selectedDevice, selectedDescriptor);
             } else {
                 if (error != nullptr) *error = interfaceError;
@@ -652,28 +881,9 @@ bool LibusbRuntime::open(const quint32 index, QString* error)
     }
 
     libusb_set_auto_detach_kernel_driver(d_->handle, 1);
-    status = libusb_claim_interface(d_->handle, d_->interfaceNumber);
-    if (status != LIBUSB_SUCCESS) {
-        if (error != nullptr) {
-            *error = QStringLiteral("无法 claim FT601 USB 接口 %1: %2 (%3)；Windows 请使用 WinUSB/libusbK 驱动")
-                         .arg(d_->interfaceNumber).arg(usbErrorText(status)).arg(status);
-        }
+    if (!d_->claimInterfacesAndStartStreaming(error)) {
         d_->closeHandle();
         return false;
-    }
-    d_->interfaceClaimed = true;
-    if (d_->alternateSetting != 0) {
-        status = libusb_set_interface_alt_setting(
-            d_->handle, d_->interfaceNumber, d_->alternateSetting);
-        if (status != LIBUSB_SUCCESS) {
-            if (error != nullptr) {
-                *error = QStringLiteral("无法选择 FT601 USB 接口 %1 alternate setting %2: %3 (%4)")
-                             .arg(d_->interfaceNumber).arg(d_->alternateSetting)
-                             .arg(usbErrorText(status)).arg(status);
-            }
-            d_->closeHandle();
-            return false;
-        }
     }
     d_->openIndex = index;
     d_->hasOpenIndex = true;
@@ -761,7 +971,7 @@ bool LibusbRuntime::reopen(QString* error)
     for (ssize_t listIndex = 0; listIndex < count; ++listIndex) {
         if (!d_->matchesIdentity(list[listIndex])) continue;
         status = libusb_open(list[listIndex], &d_->handle);
-        if (status == LIBUSB_SUCCESS && !d_->selectCaptureInterface(list[listIndex], error)) {
+        if (status == LIBUSB_SUCCESS && !d_->selectUsbLayout(list[listIndex], error)) {
             d_->closeHandle();
             status = LIBUSB_ERROR_NOT_FOUND;
         }
@@ -777,34 +987,17 @@ bool LibusbRuntime::reopen(QString* error)
         return false;
     }
     libusb_set_auto_detach_kernel_driver(d_->handle, 1);
-    status = libusb_claim_interface(d_->handle, d_->interfaceNumber);
-    if (status != LIBUSB_SUCCESS) {
-        if (error != nullptr) {
-            *error = QStringLiteral("FT601 重连后无法 claim USB 接口: %1 (%2)")
-                         .arg(usbErrorText(status)).arg(status);
-        }
+    if (!d_->claimInterfacesAndStartStreaming(error)) {
         d_->closeHandle();
         return false;
-    }
-    d_->interfaceClaimed = true;
-    if (d_->alternateSetting != 0) {
-        status = libusb_set_interface_alt_setting(
-            d_->handle, d_->interfaceNumber, d_->alternateSetting);
-        if (status != LIBUSB_SUCCESS) {
-            if (error != nullptr) {
-                *error = QStringLiteral("FT601 重连后无法选择 alternate setting: %1 (%2)")
-                             .arg(usbErrorText(status)).arg(status);
-            }
-            d_->closeHandle();
-            return false;
-        }
     }
     return true;
 }
 
 bool LibusbRuntime::isOpen() const
 {
-    return isInitialized() && d_->handle != nullptr && d_->interfaceClaimed;
+    return isInitialized() && d_->handle != nullptr && d_->controlInterfaceClaimed &&
+        d_->captureInterfaceClaimed;
 }
 
 bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRootPath,
@@ -866,6 +1059,45 @@ bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRo
     sidecar.insert(QStringLiteral("trigger_index"), static_cast<qint64>(capture.triggerIndex));
     sidecar.insert(QStringLiteral("stop_reason"), static_cast<qint64>(capture.stopReason));
     sidecar.insert(QStringLiteral("vcd"), QStringLiteral("waveform/capture.vcd"));
+    if (capture.eventTimebaseHz != 0U) {
+        QJsonArray events;
+        for (const SamplingCaptureRecord::ProtocolEvent& event : capture.protocolEvents) {
+            QJsonObject item;
+            item.insert(QStringLiteral("timestamp_ticks"), QString::number(event.timestampTicks));
+            item.insert(QStringLiteral("capture_id"), static_cast<qint64>(event.captureId));
+            item.insert(QStringLiteral("local_sequence"), static_cast<qint64>(event.localSequence));
+            item.insert(QStringLiteral("protocol_id"), static_cast<int>(event.protocolId));
+            item.insert(QStringLiteral("event_type"), static_cast<int>(event.eventType));
+            item.insert(QStringLiteral("source_kind"), static_cast<int>(event.sourceKind));
+            item.insert(QStringLiteral("flags"), static_cast<int>(event.flags));
+            item.insert(QStringLiteral("event_reason_mask"), static_cast<qint64>(event.eventReasonMask));
+            item.insert(QStringLiteral("payload_hex"), QString::fromLatin1(event.payload.toHex()));
+            events.append(item);
+        }
+        QJsonObject eventArchive;
+        eventArchive.insert(QStringLiteral("schema"), QStringLiteral("lockstep-protocol-events-v3"));
+        eventArchive.insert(QStringLiteral("capture_id"), static_cast<qint64>(capture.captureId));
+        eventArchive.insert(QStringLiteral("timebase_hz"), static_cast<qint64>(capture.eventTimebaseHz));
+        eventArchive.insert(QStringLiteral("implemented_source_mask"),
+                            static_cast<qint64>(capture.implementedSourceMask));
+        eventArchive.insert(QStringLiteral("enabled_source_mask"),
+                            static_cast<qint64>(capture.enabledSourceMask));
+        eventArchive.insert(QStringLiteral("design_gap_mask"), static_cast<qint64>(capture.designGapMask));
+        eventArchive.insert(QStringLiteral("end_reason"), static_cast<qint64>(capture.eventEndReason));
+        eventArchive.insert(QStringLiteral("overflow_mask"), static_cast<qint64>(capture.eventOverflowMask));
+        eventArchive.insert(QStringLiteral("accepted_total"),
+                            static_cast<qint64>(capture.eventAcceptedTotal));
+        eventArchive.insert(QStringLiteral("emitted_total"),
+                            static_cast<qint64>(capture.eventEmittedTotal));
+        eventArchive.insert(QStringLiteral("dropped_total"),
+                            static_cast<qint64>(capture.eventDroppedTotal));
+        eventArchive.insert(QStringLiteral("events"), events);
+        const QString eventPath = QDir(evidenceDir).filePath(QStringLiteral("protocol_events.json"));
+        if (!saveFile(eventPath, QJsonDocument(eventArchive).toJson(QJsonDocument::Indented), error)) return false;
+        sidecar.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-sidecar-v3"));
+        sidecar.insert(QStringLiteral("event_timebase_hz"), static_cast<qint64>(capture.eventTimebaseHz));
+        sidecar.insert(QStringLiteral("protocol_events"), QStringLiteral("evidence/protocol_events.json"));
+    }
     const QString outputSidecar = QDir(evidenceDir).filePath(QStringLiteral("capture_sidecar.json"));
     if (!saveFile(outputSidecar, QJsonDocument(sidecar).toJson(QJsonDocument::Indented), error)) return false;
     if (vcdPath != nullptr) *vcdPath = outputVcd;
@@ -883,8 +1115,9 @@ bool SamplingCaptureSession::configure(CaptureTransport* const transport, const 
     CaptureFrameCodec codec;
     int transferred = 0;
     const auto sendCommand = [&](const CaptureFrameType type, const QByteArray& payload,
-                                 const quint32 sequence) {
-        return transport->writePipe(0x02U, codec.encode(type, payload, sequence),
+                                 const quint32 sequence,
+                                 const quint16 version = kCaptureProtocolVersion) {
+        return transport->writePipe(0x02U, codec.encode(type, payload, sequence, 0U, 0U, version),
                                     &transferred, error);
     };
     quint32 nextResponseSequence = 0U;
@@ -943,7 +1176,7 @@ bool SamplingCaptureSession::configure(CaptureTransport* const transport, const 
     CaptureFrame response;
     if (!sendCommand(CaptureFrameType::HelloRequest, QByteArray(), 0U) ||
         !readResponse(CaptureFrameType::HelloResponse, QStringLiteral("hello"), &response) ||
-        response.payload.size() < 12 ||
+        response.header.version != kCaptureProtocolVersion || response.payload.size() != 32 ||
         read32(response.payload.constData()) != kCaptureProtocolVersion ||
         read32(response.payload.constData() + 4) != kCapturePhysicalChannels ||
         read32(response.payload.constData() + 8) != kCaptureSampleWordBits) {
@@ -952,17 +1185,27 @@ bool SamplingCaptureSession::configure(CaptureTransport* const transport, const 
     }
     if (!sendCommand(CaptureFrameType::ConfigCapture, config.toPayload(), 1U) ||
         !readResponse(CaptureFrameType::StatusResponse, QStringLiteral("config"), &response) ||
-        response.payload.size() < 64 ||
+        response.header.version != kCaptureProtocolVersion || response.payload.size() != 64 ||
         read32(response.payload.constData()) != 2U ||
         read32(response.payload.constData() + 4) != 1U ||
         read32(response.payload.constData() + 24) != 0U ||
         !sendCommand(CaptureFrameType::GetStatus, QByteArray(), 2U) ||
         !readResponse(CaptureFrameType::StatusResponse, QStringLiteral("get_status"), &response) ||
-        response.payload.size() < 64 ||
+        response.header.version != kCaptureProtocolVersion || response.payload.size() != 64 ||
         read32(response.payload.constData()) != 2U ||
         read32(response.payload.constData() + 4) != 2U ||
         read32(response.payload.constData() + 24) != 0U) {
         if (error != nullptr && error->isEmpty()) *error = QStringLiteral("CONFIG_CAPTURE 未进入 CONFIGURED 状态");
+        return false;
+    }
+    if (!sendCommand(CaptureFrameType::ConfigEvents, config.toEventPayload(), 3U,
+                     kCaptureProtocolVersionV3) ||
+        !readResponse(CaptureFrameType::StatusResponse, QStringLiteral("config_events"), &response) ||
+        response.header.version != kCaptureProtocolVersion || response.payload.size() != 64 ||
+        read32(response.payload.constData()) != 2U ||
+        read32(response.payload.constData() + 4) != 3U ||
+        read32(response.payload.constData() + 24) != 0U) {
+        if (error != nullptr && error->isEmpty()) *error = QStringLiteral("CONFIG_EVENTS 未进入 CONFIGURED 状态");
         return false;
     }
     return true;
@@ -1096,7 +1339,8 @@ bool SamplingCaptureSession::stopAndRecover(CaptureTransport* const transport, C
 
 CaptureSessionResult SamplingCaptureSession::runDetailed(
     CaptureTransport* const transport, const SamplingCaptureConfig& config,
-    const QString& taskRootPath, const int timeoutMs, SamplingCaptureRecord* const record) const
+    const QString& taskRootPath, const int timeoutMs, SamplingCaptureRecord* const record,
+    const std::function<bool(quint32, QString*)>& afterArm) const
 {
     CaptureSessionResult result;
     QString error;
@@ -1113,12 +1357,27 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
         return result;
     }
     quint32 captureId = 0U;
-    const bool armOk = armAndWaitAccepted(transport, 3U, &captureId, &error);
+    const bool armOk = armAndWaitAccepted(transport, 4U, &captureId, &error);
     if (!armOk) {
         result.phase = QStringLiteral("arm");
-    } else if (!collect(transport, taskRootPath, timeoutMs, record, &error)) {
-        result.phase = QStringLiteral("collect");
     } else {
+        CaptureFrameCodec codec;
+        const QByteArray release = codec.encode(CaptureFrameType::StartEventStream, QByteArray(),
+                                                5U, 0U, 0U, kCaptureProtocolVersionV3);
+        int transferred = 0;
+        if (!transport->writePipe(0x02U, release, &transferred, &error) ||
+            transferred != release.size()) {
+            if (error.isEmpty()) error = QStringLiteral("START_EVENT_STREAM 写入不完整");
+            result.phase = QStringLiteral("start_event_stream");
+        }
+    }
+    if (armOk && result.phase.isEmpty() && afterArm && !afterArm(captureId, &error)) {
+        result.phase = QStringLiteral("after_arm");
+    } else if (armOk && result.phase.isEmpty() &&
+               !collect(transport, taskRootPath, timeoutMs, record, &error,
+                        config.eventEnableMask)) {
+        result.phase = QStringLiteral("collect");
+    } else if (armOk && result.phase.isEmpty()) {
         result.success = true;
         result.phase = QStringLiteral("complete");
         result.message.clear();
@@ -1178,17 +1437,19 @@ bool SamplingCaptureSession::armAndWaitAccepted(CaptureTransport* transport,
                 if (error != nullptr) *error = QStringLiteral("device rejected ARM_CAPTURE");
                 return false;
             }
-            if (frame.header.type != CaptureFrameType::StatusResponse || frame.payload.size() < 64) continue;
-            const quint32 state = read32(frame.payload.constData());
+            if (frame.header.type != CaptureFrameType::StatusResponse) continue;
+            CaptureStatusV2 status;
+            if (!parseStatusV2(frame, &status, error)) return false;
+            const quint32 state = status.state;
             if (state != 3U && state != 4U) {
                 if (error != nullptr) *error = QStringLiteral("ARM_CAPTURE was not accepted, state=%1").arg(state);
                 return false;
             }
-            if (read32(frame.payload.constData() + 4) != commandSequence) {
+            if (status.requestSequence != commandSequence) {
                 if (error != nullptr) *error = QStringLiteral("ARM 状态响应请求序号不一致");
                 return false;
             }
-            if (captureId != nullptr) *captureId = read32(frame.payload.constData() + 8);
+            if (captureId != nullptr) *captureId = status.captureId;
             return true;
         }
     }
@@ -1198,7 +1459,8 @@ bool SamplingCaptureSession::armAndWaitAccepted(CaptureTransport* transport,
 
 bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString& taskRootPath,
                                      const int timeoutMs, SamplingCaptureRecord* record,
-                                     QString* error) const
+                                     QString* error,
+                                     const quint32 expectedEnabledSourceMask) const
 {
     if (transport == nullptr || !transport->isOpen() || record == nullptr || timeoutMs <= 0) {
         if (error != nullptr) *error = QStringLiteral("capture collection arguments are invalid");
@@ -1213,7 +1475,7 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
             saveFile(QDir(evidenceDir).filePath(QStringLiteral("raw_capture.dat")), rawCapture, nullptr);
         }
     };
-    SamplingCaptureAssembler assembler;
+    SamplingCaptureAssembler assembler(expectedEnabledSourceMask);
     bool captureStarted = false;
     QElapsedTimer timer;
     timer.start();
@@ -1239,7 +1501,8 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
                 if (error != nullptr) *error = QStringLiteral("采集流返回 ERROR_RSP");
                 return false;
             }
-            if (frame.header.type == CaptureFrameType::CaptureMeta) captureStarted = true;
+            if (frame.header.type == CaptureFrameType::CaptureMeta ||
+                frame.header.type == CaptureFrameType::EventMeta) captureStarted = true;
             if ((captureStarted || frame.header.type == CaptureFrameType::CaptureEnd) &&
                 !assembler.append(frame, error)) {
                 persistRawCapture();

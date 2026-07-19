@@ -22,6 +22,15 @@
     {"name":"mismatch[1]","sample_bit":503,"semantic":"trace_output_mismatch"},
     {"name":"mismatch[0]","sample_bit":502,"semantic":"counter_output_mismatch"}
   ],
+  "capability_bits": [
+    {"group":"uart","sample_bit":768,"semantic":"real_source"},
+    {"group":"can","sample_bit":770,"semantic":"core_enabled"},
+    {"group":"eth","sample_bit":773,"semantic":"core_enabled"},
+    {"group":"usb","sample_bit":775,"semantic":"loopback_source"},
+    {"group":"jtag","sample_bit":776,"semantic":"real_source"},
+    {"group":"spi","sample_bit":781,"semantic":"core_enabled"},
+    {"group":"i2c","sample_bit":782,"semantic":"core_enabled"}
+  ],
   "mapped_protocol_groups": ["ahb","uart","spi","can","i2c","eth","usb","jtag","mismatch"],
   "pending_protocol_groups": []
 }
