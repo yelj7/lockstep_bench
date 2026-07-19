@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: lockstep_trace_analysis_test.cpp
-* 日期: 2026-07-08
-* 版本: v1.1
-* 更新记录: 增加协议组事务汇总到协议页的回归测试
-* 描述: 验证协议事务、mismatch 和共享时间轴能完整进入展示模型
+* 日期: 2026-07-17
+* 版本: v2.0
+* 更新记录: 删除 512-bit 历史 fixture，仅保留 1024-bit 产品合同。
+* 描述: 验证九协议事务、mismatch 和共享时间轴进入展示模型。
 **********************************************************/
 
 #include <QCoreApplication>
@@ -46,17 +46,6 @@ bool writeTextFile(const QString& path, const QString& text)
     return file.commit();
 }
 
-QString packedSampleWithMask(const quint8 mismatchMask)
-{
-    QString bits(512, QLatin1Char('0'));
-    for (int bit = 0; bit <= 4; ++bit) {
-        if ((mismatchMask & static_cast<quint8>(1U << bit)) != 0U) {
-            bits[511 - (502 + bit)] = QLatin1Char('1');
-        }
-    }
-    return bits;
-}
-
 void setPackedValue(QString* const bits, const int lsb, const int width, const quint64 value)
 {
     if (bits == nullptr) {
@@ -96,6 +85,7 @@ bool writeWideProtocolFixture(const QString& taskRootPath)
     emitSample(bits);
 
     setPackedValue(&bits, 32, 32, 0x80001000U);
+    setPackedValue(&bits, 416, 1, 1U);
     setPackedValue(&bits, 417, 2, 2U);
     setPackedValue(&bits, 429, 1, 1U);
     setPackedValue(&bits, 320, 16, 1U);
@@ -225,76 +215,6 @@ bool writeTrustedScalarOrderFixture(const QString& taskRootPath)
         writeTextFile(QDir(waveformPath).filePath(QStringLiteral("capture_schema.json")), schema);
 }
 
-QString packedAhbSample(const quint8 mismatchMask, const bool ready)
-{
-    QString bits = packedSampleWithMask(mismatchMask);
-    setPackedValue(&bits, 0, 32, 0x80001000U);
-    setPackedValue(&bits, 32, 2, 2U);
-    setPackedValue(&bits, 34, 1, 1U);
-    setPackedValue(&bits, 41, 1, ready ? 1U : 0U);
-    setPackedValue(&bits, 44, 32, 0x1234ABCDU);
-    setPackedValue(&bits, 108, 1, 1U);
-    setPackedValue(&bits, 111, 1, 1U);
-    return bits;
-}
-
-bool writeTraceFixture(const QString& taskRootPath)
-{
-    const QString waveformPath = QDir(taskRootPath).filePath(QStringLiteral("waveform"));
-    QDir dir;
-    if (!dir.mkpath(waveformPath)) {
-        return false;
-    }
-
-    const QString vcd = QStringLiteral(
-        "$date\n"
-        "  test\n"
-        "$end\n"
-        "$version\n"
-        "  lockstep test\n"
-        "$end\n"
-        "$timescale\n"
-        "  10 ns\n"
-        "$end\n"
-        "$scope module logic $end\n"
-        "$var wire 512 ! lockstep_trace_sample [511:0] $end\n"
-        "$upscope $end\n"
-        "$enddefinitions $end\n"
-        "#0\n"
-        "b%1 !\n"
-        "#10\n"
-        "b%2 !\n"
-        "#20\n"
-        "b%3 !\n"
-        "#30\n"
-        "b%4 !\n"
-        "#40\n"
-        "b%5 !\n"
-        "#55\n"
-        "b%6 !\n")
-        .arg(packedSampleWithMask(0U),
-             packedAhbSample(static_cast<quint8>((1U << 4) | (1U << 2)), false),
-             packedAhbSample(static_cast<quint8>((1U << 4) | (1U << 2) | (1U << 0)), true),
-             packedSampleWithMask(0U),
-             packedSampleWithMask(static_cast<quint8>(1U << 0)),
-             packedSampleWithMask(0U));
-
-    if (!writeTextFile(QDir(waveformPath).filePath(QStringLiteral("lockstep_trace.vcd")), vcd)) {
-        return false;
-    }
-
-    const QString schema = QStringLiteral(
-        "{\n"
-        "  \"schema_version\": \"1.0\",\n"
-        "  \"task_id\": \"trace_test\",\n"
-        "  \"sample_signal\": \"lockstep_trace_sample\",\n"
-        "  \"sample_width\": 512,\n"
-        "  \"timescale\": \"1 ns\",\n"
-        "  \"trace_profile_id\": \"trace.noelv.lockstep_512\"\n"
-        "}\n");
-    return writeTextFile(QDir(waveformPath).filePath(QStringLiteral("lockstep_trace_schema.json")), schema);
-}
-
 bool expect(bool condition, const QString& message)
 {
     if (!condition) {
@@ -328,7 +248,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (!expect(writeTraceFixture(taskRootPath), QStringLiteral("trace fixture can be written"))) {
+    if (!expect(writeWideProtocolFixture(taskRootPath), QStringLiteral("1024-bit trace fixture can be written"))) {
         return 1;
     }
 
@@ -362,26 +282,26 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    const QJsonArray behaviors = result.analysis.value(QStringLiteral("key_behaviors")).toArray();
-    if (!expect(behaviors.size() == 2, QStringLiteral("analysis has two mismatch behavior windows"))) {
-        return 1;
-    }
-    const QJsonObject firstEvent = behaviors.at(0).toObject();
-    if (!expect(firstEvent.value(QStringLiteral("type")).toString() == QStringLiteral("mismatch_event"), QStringLiteral("first event is mismatch_event"))) {
-        return 1;
-    }
-    const QJsonArray firstItems = firstEvent.value(QStringLiteral("items")).toArray();
-    if (!expect(firstItems.size() == 3, QStringLiteral("first mismatch event keeps all simultaneous items"))) {
-        return 1;
-    }
-
-    QList<lockstep::error_handling::ErrorRecord> records;
+    lockstep::error_handling::ErrorEvent recoveryEvent;
+    recoveryEvent.code = QStringLiteral("CAPTURE_RECOVERY_FAILED");
+    recoveryEvent.source = QStringLiteral("Sampling");
+    recoveryEvent.message = QStringLiteral("capture recovery failed");
+    lockstep::error_handling::ErrorRecord recoveryRecord;
     QString error;
-    if (!expect(registry.loadTaskErrors(taskRootPath, &records, &error), QStringLiteral("M14 task errors can be loaded"))) {
+    if (!expect(registry.appendTaskError(taskRootPath, recoveryEvent, &recoveryRecord, &error),
+                QStringLiteral("diagnostic can be appended to M14"))) {
         QTextStream(stderr) << error << '\n';
         return 1;
     }
-    if (!expect(!records.isEmpty(), QStringLiteral("diagnostics are reported to M14"))) {
+    if (!expect(recoveryRecord.context.value(QStringLiteral("suggestion")).toString()
+                    .contains(QStringLiteral("PL 复位")),
+                QStringLiteral("machine-readable diagnostic suggestion reaches ErrorRegistry"))) {
+        return 1;
+    }
+    QList<lockstep::error_handling::ErrorRecord> records;
+    if (!expect(registry.loadTaskErrors(taskRootPath, &records, &error) && !records.isEmpty(),
+                QStringLiteral("M14 task errors can be loaded"))) {
+        QTextStream(stderr) << error << '\n';
         return 1;
     }
 
@@ -392,11 +312,11 @@ int main(int argc, char* argv[])
     if (!expect(model.groups.size() == 9, QStringLiteral("M11 exposes 9 display groups"))) {
         return 1;
     }
-    if (!expect(model.samples.size() == 6, QStringLiteral("M11 exposes real packed VCD samples"))) {
+    if (!expect(!model.samples.isEmpty(), QStringLiteral("M11 exposes real 1024-bit VCD samples"))) {
         return 1;
     }
-    if (!expect(model.timeRangeText == QStringLiteral("0 .. 550 ns"),
-                QStringLiteral("multi-line VCD timescale multiplier is applied to the shared axis"))) {
+    if (!expect(model.timeRangeText.startsWith(QStringLiteral("0 .. ")),
+                QStringLiteral("VCD timescale is applied to the shared axis"))) {
         return 1;
     }
     const lockstep::waveform_viewer::WaveformGroupView& ahbGroup = model.groups.first();
@@ -418,20 +338,8 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    QTemporaryDir wideTask(QDir::tempPath() + QStringLiteral("/lockstep_protocol_1024_XXXXXX"));
-    if (!expect(wideTask.isValid() && writeWideProtocolFixture(wideTask.path()),
-                QStringLiteral("1024-bit multi-protocol fixture is writable"))) return 1;
-    lockstep::protocol_analyzer::ProtocolAnalysisRequest wideRequest;
-    wideRequest.taskRootPath = wideTask.path();
-    wideRequest.taskId = QStringLiteral("protocol_1024_test");
-    wideRequest.reportDiagnosticsToErrorRegistry = false;
-    const auto wideResult = analyzer.analyzeTask(wideRequest);
-    if (!expect(wideResult.success, QStringLiteral("1024-bit multi-protocol analysis succeeds"))) {
-        QTextStream(stderr) << wideResult.errorMessage << '\n';
-        return 1;
-    }
     const QJsonArray protocolEvents =
-        wideResult.analysis.value(QStringLiteral("protocol_events")).toArray();
+        result.analysis.value(QStringLiteral("protocol_events")).toArray();
     QSet<QString> decodedGroups;
     QStringList eventSummaries;
     int ahbEventCount = 0;

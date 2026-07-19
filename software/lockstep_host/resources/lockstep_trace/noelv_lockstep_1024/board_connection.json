@@ -4,6 +4,6 @@
   "capture_protocol": "FT601 capture frame protocol v1",
   "sample_word_bits": 1024,
   "physical_channels": 1024,
-  "ft601": {"out_pipe":"0x02","in_pipe":"0x82","transport":"D3XX dynamic"},
+  "ft601": {"vid":"0x0403","pid":"0x601f","interface":0,"out_endpoint":"0x02","in_endpoint":"0x82","transport":"libusb bulk"},
   "vcd": "waveform/capture.vcd"
 }

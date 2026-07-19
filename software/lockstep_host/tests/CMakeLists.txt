@@ -1,9 +1,9 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
 # * 日期: 2026-07-08
-# * 版本: v1.0
-# * 更新记录: 初版创建 M11/M12 自动化测试目标
-# * 描述: 定义波形显示与协议解析模块的 CTest 测试
+# * 版本: v1.2
+# * 更新记录: 增加任务加载、配置保存和删除确认弹窗测试
+# * 描述: 定义软件领域模块与工作台交互的 CTest 测试
 # **********************************************************/
 
 add_executable(lockstep_trace_analysis_test
@@ -58,6 +58,42 @@ else()
     target_compile_options(lockstep_sampling_capture_test PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME lockstep_sampling_capture_test COMMAND lockstep_sampling_capture_test $<TARGET_FILE:lockstep_ui_preview>)
+
+add_executable(lockstep_libusb_runtime_test libusb_runtime_test.cpp)
+target_link_libraries(lockstep_libusb_runtime_test PRIVATE lockstep_acquisition Qt${QT_VERSION_MAJOR}::Core)
+target_include_directories(lockstep_libusb_runtime_test SYSTEM PRIVATE "${LOCKSTEP_LIBUSB_INCLUDE_DIR}")
+target_compile_features(lockstep_libusb_runtime_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(lockstep_libusb_runtime_test PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(lockstep_libusb_runtime_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME lockstep_libusb_runtime_test COMMAND lockstep_libusb_runtime_test)
+
+add_executable(lockstep_workbench_dialogs_test workbench_dialogs_test.cpp)
+target_link_libraries(lockstep_workbench_dialogs_test
+    PRIVATE
+        lockstep_workbench_dialogs
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Widgets
+)
+target_compile_features(lockstep_workbench_dialogs_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(lockstep_workbench_dialogs_test PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(lockstep_workbench_dialogs_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME lockstep_workbench_dialogs_test COMMAND lockstep_workbench_dialogs_test)
+set_tests_properties(lockstep_workbench_dialogs_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+add_test(
+    NAME lockstep_libusb_transport_contract_test
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DPRODUCT_EXE=$<TARGET_FILE:lockstep_ui_preview>
+        -DOBJDUMP=${CMAKE_OBJDUMP}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/libusb_transport_contract_test.cmake
+)
 
 add_executable(lockstep_waveform_ui_test
     waveform_ui_test.cpp

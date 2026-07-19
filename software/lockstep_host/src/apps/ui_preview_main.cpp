@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_preview_main.cpp
 * 日期: 2026-07-13
-* 版本: v2.1
-* 更新记录: 增加唯一 EXE 的纯 C++ FT601 实时采集模式
+* 版本: v2.3
+* 更新记录: 将 FT601 实时采集与诊断入口迁移为 libusb
 * 描述: 按参数启动界面、调试服务、离线回放或实时采集模式。
 **********************************************************/
 
@@ -10,6 +10,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -115,6 +116,12 @@ int finalizeCaptureTask(const QString& taskRoot, const QString& taskId)
     artifacts.append(artifact(QStringLiteral("capture_sidecar"), QStringLiteral("evidence/capture_sidecar.json")));
     artifacts.append(artifact(QStringLiteral("capture_vcd"), QStringLiteral("waveform/capture.vcd")));
     artifacts.append(artifact(QStringLiteral("protocol_analysis"), QStringLiteral("evidence/protocol_analysis.json")));
+    const auto appendIfPresent = [&artifacts, &artifact, &taskRoot](const QString& name, const QString& path) {
+        if (QFileInfo::exists(QDir(taskRoot).filePath(path))) artifacts.append(artifact(name, path));
+    };
+    appendIfPresent(QStringLiteral("capture_status"), QStringLiteral("evidence/capture_status.json"));
+    appendIfPresent(QStringLiteral("capture_error"), QStringLiteral("evidence/capture_error.json"));
+    appendIfPresent(QStringLiteral("fault_injection"), QStringLiteral("evidence/fault_injection.json"));
     QJsonObject artifactRoot;
     artifactRoot.insert(QStringLiteral("schema"), QStringLiteral("lockstep-artifacts-v1"));
     artifactRoot.insert(QStringLiteral("artifacts"), artifacts);
@@ -178,9 +185,6 @@ int runLiveCapture(int argc, char* argv[])
     const QString taskRoot = argumentValue(arguments, QStringLiteral("--task-root"));
     const QString taskId = argumentValue(arguments, QStringLiteral("--task-id"));
     if (taskRoot.isEmpty()) return 20;
-    const QString libraryPath = argumentValue(arguments, QStringLiteral("--ftd3xx"));
-    if (!libraryPath.isEmpty()) qputenv("LOCKSTEP_FTD3XX_LIBRARY", libraryPath.toLocal8Bit());
-
     bool argumentsValid = true;
     lockstep::acquisition::SamplingCaptureConfig config;
     config.sampleRateHz = unsignedArgument(arguments, QStringLiteral("--sample-rate"), config.sampleRateHz,
@@ -201,39 +205,123 @@ int runLiveCapture(int argc, char* argv[])
                                               &argumentsValid);
     if (!argumentsValid) return 21;
     config.triggerEdgeFall = unsignedArgument(arguments, QStringLiteral("--trigger-edge-fall"), 0U,
-                                              &argumentsValid);
+                                               &argumentsValid);
+    if (!argumentsValid) return 21;
+    config.triggerTimeoutSamples = unsignedArgument(
+        arguments, QStringLiteral("--trigger-timeout-samples"), config.triggerTimeoutSamples,
+        &argumentsValid);
     if (!argumentsValid) return 21;
 
     QString error;
-    lockstep::acquisition::D3xxRuntime transport;
-    if (!transport.load(&error)) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_load"), error, 22);
-        QTextStream(stderr) << QStringLiteral("FT601 D3XX 加载失败: ") << error << Qt::endl;
+    lockstep::acquisition::LibusbRuntime transport;
+    if (!transport.initialize(&error)) {
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_initialize"), error, 22);
+        QTextStream(stderr) << QStringLiteral("FT601 libusb 初始化失败: ") << error << Qt::endl;
         return 22;
     }
-    const QList<lockstep::acquisition::D3xxDeviceInfo> devices = transport.enumerate(&error);
+    const QList<lockstep::acquisition::LibusbDeviceInfo> devices = transport.enumerate(&error);
     if (devices.isEmpty()) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_enumerate"), error, 23);
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_enumerate"), error, 23);
         QTextStream(stderr) << QStringLiteral("FT601 枚举失败: ") << error << Qt::endl;
         return 23;
     }
     const quint32 deviceIndex = unsignedArgument(arguments, QStringLiteral("--device-index"),
                                                  devices.first().index, &argumentsValid);
     if (!argumentsValid || !transport.open(deviceIndex, &error)) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_open"), error, 24);
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_open"), error, 24);
         QTextStream(stderr) << QStringLiteral("FT601 打开失败: ") << error << Qt::endl;
         return 24;
     }
     lockstep::acquisition::SamplingCaptureRecord record;
     lockstep::acquisition::SamplingCaptureSession session;
-    const bool captured = session.run(&transport, config, taskRoot, 120000, &record, &error);
+    const lockstep::acquisition::CaptureSessionResult captureResult =
+        session.runDetailed(&transport, config, taskRoot, 120000, &record);
     transport.close();
-    if (!captured) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("capture_session"), error, 25);
-        QTextStream(stderr) << QStringLiteral("FT601 实时采集失败: ") << error << Qt::endl;
+    if (!captureResult.success) {
+        writeLiveCaptureFailure(taskRoot, captureResult.phase, captureResult.message, 25);
+        QTextStream(stderr) << QStringLiteral("FT601 实时采集失败: ")
+                            << captureResult.message << Qt::endl;
         return 25;
     }
     return finalizeCaptureTask(taskRoot, taskId);
+}
+
+QJsonObject captureStatusJson(const lockstep::acquisition::CaptureStatusV2& status)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("state"), static_cast<double>(status.state));
+    object.insert(QStringLiteral("request_sequence"), static_cast<double>(status.requestSequence));
+    object.insert(QStringLiteral("capture_id"), static_cast<double>(status.captureId));
+    object.insert(QStringLiteral("samples_seen"), static_cast<double>(status.samplesSeen));
+    object.insert(QStringLiteral("samples_uploaded"), static_cast<double>(status.samplesUploaded));
+    object.insert(QStringLiteral("device_status_flags"), static_cast<double>(status.deviceStatusFlags));
+    object.insert(QStringLiteral("last_error_code"), static_cast<double>(status.lastErrorCode));
+    object.insert(QStringLiteral("command_state"), static_cast<double>(status.commandState));
+    object.insert(QStringLiteral("capture_state"), static_cast<double>(status.captureState));
+    object.insert(QStringLiteral("capture_flags"), static_cast<double>(status.captureFlags));
+    object.insert(QStringLiteral("pretrigger_samples"), static_cast<double>(status.pretriggerSamples));
+    object.insert(QStringLiteral("posttrigger_samples"), static_cast<double>(status.posttriggerSamples));
+    object.insert(QStringLiteral("frame_source_state"), static_cast<double>(status.frameSourceState));
+    object.insert(QStringLiteral("tx_generator_state"), static_cast<double>(status.txGeneratorState));
+    object.insert(QStringLiteral("ft601_state"), static_cast<double>(status.ft601State));
+    object.insert(QStringLiteral("tx_bytes"), static_cast<double>(status.txBytes));
+    return object;
+}
+
+int runCaptureDiagnostic(int argc, char* argv[])
+{
+    QCoreApplication application(argc, argv);
+    const QStringList arguments = application.arguments();
+    QJsonObject output;
+    output.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-diagnostic-v2"));
+    output.insert(QStringLiteral("generated_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    QString error;
+    lockstep::acquisition::LibusbRuntime transport;
+    if (!transport.initialize(&error)) {
+        output.insert(QStringLiteral("success"), false);
+        output.insert(QStringLiteral("error"), error);
+        QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
+        return 30;
+    }
+    const QList<lockstep::acquisition::LibusbDeviceInfo> devices = transport.enumerate(&error);
+    bool argumentValid = true;
+    const quint32 deviceIndex = unsignedArgument(
+        arguments, QStringLiteral("--device-index"), devices.isEmpty() ? 0U : devices.first().index,
+        &argumentValid);
+    if (!argumentValid || devices.isEmpty() || !transport.open(deviceIndex, &error)) {
+        output.insert(QStringLiteral("success"), false);
+        output.insert(QStringLiteral("error"), error.isEmpty() ? QStringLiteral("未枚举到 FT601 设备") : error);
+        QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
+        return 31;
+    }
+
+    lockstep::acquisition::SamplingCaptureSession session;
+    lockstep::acquisition::CaptureStatusV2 status;
+    bool success = false;
+    if (arguments.contains(QStringLiteral("--capture-status"))) {
+        output.insert(QStringLiteral("operation"), QStringLiteral("status"));
+        success = session.queryStatus(&transport, &status, &error);
+    } else if (arguments.contains(QStringLiteral("--capture-stop"))) {
+        output.insert(QStringLiteral("operation"), QStringLiteral("stop"));
+        success = session.stopAndRecover(&transport, &status, &error);
+    } else {
+        output.insert(QStringLiteral("operation"), QStringLiteral("smoke"));
+        lockstep::acquisition::SamplingCaptureConfig config;
+        config.triggerTimeoutSamples = unsignedArgument(
+            arguments, QStringLiteral("--trigger-timeout-samples"), 120'000U, &argumentValid);
+        quint32 captureId = 0U;
+        success = argumentValid && session.configure(&transport, config, &error) &&
+            session.armAndWaitAccepted(&transport, 3U, &captureId, &error) &&
+            session.queryStatus(&transport, &status, &error);
+        output.insert(QStringLiteral("capture_id"), static_cast<double>(captureId));
+        if (success) success = session.stopAndRecover(&transport, &status, &error);
+    }
+    output.insert(QStringLiteral("success"), success);
+    output.insert(QStringLiteral("status"), captureStatusJson(status));
+    if (!error.isEmpty()) output.insert(QStringLiteral("error"), error);
+    transport.close();
+    QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
+    return success ? 0 : 32;
 }
 
 lockstep::ui::UiMode parseMode(const QStringList& arguments)
@@ -258,6 +346,11 @@ int main(int argc, char* argv[])
         }
         if (argument == QStringLiteral("--live-capture")) {
             return runLiveCapture(argc, argv);
+        }
+        if (argument == QStringLiteral("--capture-status") ||
+            argument == QStringLiteral("--capture-stop") ||
+            argument == QStringLiteral("--capture-smoke")) {
+            return runCaptureDiagnostic(argc, argv);
         }
     }
     for (int index = 1; index < argc; ++index) {

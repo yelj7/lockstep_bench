@@ -1,12 +1,13 @@
 /*****************************************************************************
 * 文件名: workbench_controller.cpp
 * 日期: 2026-07-13
-* 版本: v1.1
-* 更新记录: 增加安装布局资源路径并统一中文文件头
+* 版本: v1.3
+* 更新记录: 增加任务加载确认及采样配置覆盖、另存为决策流程
 * 描述: 实现 UI 动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配
 *****************************************************************************/
 
 #include "workbench_controller.h"
+#include "workbench_dialogs.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -132,29 +133,6 @@ bool askYesNo(QWidget* const parent, const QString& title, const QString& messag
 {
     return QMessageBox::question(parent, title, message, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) ==
         QMessageBox::Yes;
-}
-
-bool confirmTaskDeletion(QWidget* const parent, const QString& taskLabel)
-{
-    QMessageBox dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("删除验证任务"));
-    dialog.setIcon(QMessageBox::Warning);
-    dialog.setText(QStringLiteral("确认删除验证任务“%1”？").arg(taskLabel));
-    dialog.setInformativeText(QStringLiteral("任务目录中的输入、证据、日志和报告会全部删除，且无法撤销。"));
-
-    QPushButton* const noButton = dialog.addButton(QStringLiteral("否"), QMessageBox::RejectRole);
-    QPushButton* const yesButton = dialog.addButton(QStringLiteral("是"), QMessageBox::AcceptRole);
-    noButton->setProperty("primary_button", true);
-    noButton->setProperty("primaryButton", true);
-    noButton->setDefault(true);
-    noButton->setAutoDefault(true);
-    yesButton->setAutoDefault(false);
-    dialog.setDefaultButton(noButton);
-    dialog.setEscapeButton(noButton);
-    lockstep::ui::UiTheme::applyWorkbenchStyle(&dialog);
-
-    dialog.exec();
-    return dialog.clickedButton() == yesButton;
 }
 
 bool promptTaskMetadata(
@@ -314,6 +292,31 @@ QString debugReturnSummary(const QString& rawText)
     return lines.join(QStringLiteral(", "));
 }
 
+bool samplingConfigChanged(const QString& path, const QJsonObject& proposed)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return true;
+    return lockstep::apps::dialogs::samplingConfigHasMeaningfulChanges(file.readAll(), proposed);
+}
+
+bool writePayloadFile(const QString& path, const QByteArray& payload, QString* const error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error != nullptr) *error = QStringLiteral("无法写入文件: %1").arg(path);
+        return false;
+    }
+    if (file.write(payload) != payload.size()) {
+        if (error != nullptr) *error = QStringLiteral("文件写入不完整: %1").arg(path);
+        return false;
+    }
+    if (!file.commit()) {
+        if (error != nullptr) *error = QStringLiteral("文件提交失败: %1").arg(path);
+        return false;
+    }
+    return true;
+}
+
 QString serialDisplayName(const QSerialPortInfo& info)
 {
     const QString portName = info.portName().trimmed();
@@ -359,6 +362,21 @@ int serialPreferredScore(const QSerialPortInfo& info)
         score -= 500;
     }
     return score;
+}
+
+QString diagnosticCodeFromMessage(const QString& message)
+{
+    const QStringList codes = {
+        QStringLiteral("DAP_NOT_ENUMERATED"), QStringLiteral("DAP_OPEN_FAILED"),
+        QStringLiteral("JTAG_CHAIN_EMPTY"), QStringLiteral("JTAG_IDCODE_FAILED"),
+        QStringLiteral("DMI_NO_RESPONSE"), QStringLiteral("CAPTURE_TRIGGER_TIMEOUT"),
+        QStringLiteral("CAPTURE_STREAM_TIMEOUT"), QStringLiteral("CAPTURE_RECOVERY_FAILED")};
+    for (const QString& code : codes) {
+        if (message.contains(QStringLiteral("[") + code + QLatin1Char(']')) || message.contains(code)) {
+            return code;
+        }
+    }
+    return QString();
 }
 
 bool hasExpectedRunOutput(const QString& text)
@@ -1168,6 +1186,20 @@ void WorkbenchController::loadTaskToWorkbench(const QString& taskId)
         return;
     }
 
+    const QString targetLabel = context.summary.taskName.trimmed().isEmpty()
+        ? normalizedTaskId
+        : QStringLiteral("%1 (%2)").arg(context.summary.taskName, normalizedTaskId);
+    const QString currentSummary = hasTask_
+        ? QStringLiteral("当前任务：%1 (%2)")
+              .arg(currentTask_.summary.taskName.trimmed().isEmpty()
+                       ? currentTask_.summary.taskId : currentTask_.summary.taskName,
+                   currentTask_.summary.taskId)
+        : QStringLiteral("当前工作台没有已加载任务。");
+    if (window_ != nullptr && !dialogs::confirmTaskLoad(window_, targetLabel, currentSummary)) {
+        logInfo(QStringLiteral("Workspace"), QStringLiteral("已取消加载验证任务: %1").arg(normalizedTaskId));
+        return;
+    }
+
     currentTask_ = context;
     flowState_ = workflow_.startFlow(currentTask_.summary.taskId, flowMode());
     selectedTaskId_ = currentTask_.summary.taskId;
@@ -1278,7 +1310,7 @@ void WorkbenchController::deleteTask(const QString& taskId)
         }
     }
 
-    if ((window_ != nullptr) && !confirmTaskDeletion(window_, taskLabel)) {
+    if ((window_ != nullptr) && !dialogs::confirmTaskDeletion(window_, taskLabel)) {
         logInfo(QStringLiteral("Workspace"), QStringLiteral("已取消删除验证任务: %1").arg(normalizedTaskId));
         return;
     }
@@ -1720,45 +1752,128 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     root.insert(QStringLiteral("hardware_protocol"), hardwareProtocol);
     root.insert(QStringLiteral("created_at"), currentTimeText());
 
-    const QString configPath = currentTask_.paths.samplingConfigPath;
-    if (!QDir().mkpath(QFileInfo(configPath).absolutePath())) {
-        logError(QStringLiteral("Sampling"), QStringLiteral("无法创建采样配置目录: %1").arg(QFileInfo(configPath).absolutePath()));
-        return false;
-    }
-
-    QSaveFile file(configPath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        logError(QStringLiteral("Sampling"), QStringLiteral("无法写入采样配置: %1").arg(configPath));
-        return false;
-    }
     const QJsonDocument document(root);
     const QByteArray payload = document.toJson(QJsonDocument::Indented);
-    if (file.write(payload) != payload.size()) {
-        logError(QStringLiteral("Sampling"), QStringLiteral("采样配置写入不完整: %1").arg(configPath));
-        return false;
+    workspace::TaskContext targetTask = currentTask_;
+    bool createdNewTask = false;
+    QString error;
+    const bool meaningfulConfigChange = QFileInfo::exists(currentTask_.paths.samplingConfigPath) &&
+        samplingConfigChanged(currentTask_.paths.samplingConfigPath, root);
+
+    if (meaningfulConfigChange && window_ != nullptr) {
+        const dialogs::ConfigSaveDecision decision = dialogs::askConfigSaveDecision(
+            window_, currentTask_.summary.taskName.trimmed().isEmpty()
+                         ? currentTask_.summary.taskId : currentTask_.summary.taskName);
+        if (decision == dialogs::ConfigSaveDecision::Cancel) {
+            logInfo(QStringLiteral("Sampling"), QStringLiteral("已取消保存采样配置。"));
+            return false;
+        }
+        if (decision == dialogs::ConfigSaveDecision::SaveAsNewTask) {
+            QString taskName = QStringLiteral("%1 - 副本").arg(
+                currentTask_.summary.taskName.trimmed().isEmpty()
+                    ? currentTask_.summary.taskId : currentTask_.summary.taskName);
+            QString description = currentTask_.summary.description;
+            if (!promptTaskMetadata(window_, QStringLiteral("另存为新任务"), taskName, description,
+                                    &taskName, &description)) {
+                logInfo(QStringLiteral("Sampling"), QStringLiteral("已取消另存为新任务。"));
+                return false;
+            }
+
+            workspace::TaskCreateOptions options;
+            options.taskName = taskName;
+            options.description = description;
+            options.inputs.resourceSnapshot = resourceSnapshotJson();
+            options.stageStatus = QStringLiteral("created_from_sampling_config");
+            if (!workspace_.createTask(workspaceMode(), options, &targetTask, &error)) {
+                logError(QStringLiteral("Sampling"), QStringLiteral("另存为新任务失败: %1").arg(error));
+                return false;
+            }
+            createdNewTask = true;
+
+            workspace::TaskInputSet clonedInputs;
+            clonedInputs.resourceSnapshot = resourceSnapshotJson();
+            struct InputCopySpec final {
+                workspace::TaskInputFileKind kind;
+                workspace::TaskInputItem workspace::TaskInputSet::*member;
+            };
+            const InputCopySpec copySpecs[] = {
+                {workspace::TaskInputFileKind::ProgramFile, &workspace::TaskInputSet::programFile},
+                {workspace::TaskInputFileKind::ProgramManifest, &workspace::TaskInputSet::programManifest},
+                {workspace::TaskInputFileKind::FaultInjectionConfig, &workspace::TaskInputSet::faultInjectionConfig}
+            };
+            for (const InputCopySpec& spec : copySpecs) {
+                const workspace::TaskInputItem& sourceItem = currentTask_.inputs.*(spec.member);
+                if (sourceItem.relativePath.trimmed().isEmpty()) continue;
+                const QString sourcePath = QDir(currentTask_.paths.taskRootPath).filePath(sourceItem.relativePath);
+                if (!QFileInfo::exists(sourcePath)) continue;
+                workspace::TaskInputImportRequest request;
+                request.mode = workspaceMode();
+                request.taskId = targetTask.summary.taskId;
+                request.kind = spec.kind;
+                request.sourceFilePath = sourcePath;
+                request.targetFileName = sourceItem.originalFileName;
+                workspace::TaskInputItem imported;
+                if (!workspace_.importTaskInputFile(request, &imported, &error)) {
+                    workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
+                    logError(QStringLiteral("Sampling"), QStringLiteral("复制任务输入失败: %1").arg(error));
+                    return false;
+                }
+                clonedInputs.*(spec.member) = imported;
+            }
+            targetTask.inputs = clonedInputs;
+        }
     }
-    if (!file.commit()) {
-        logError(QStringLiteral("Sampling"), QStringLiteral("采样配置提交失败: %1").arg(configPath));
+
+    const QString configPath = targetTask.paths.samplingConfigPath;
+    if (!QDir().mkpath(QFileInfo(configPath).absolutePath())) {
+        logError(QStringLiteral("Sampling"), QStringLiteral("无法创建采样配置目录: %1").arg(QFileInfo(configPath).absolutePath()));
+        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
         return false;
     }
 
-    workspace::TaskInputSet inputs = currentTask_.inputs;
+    QString writeError;
+    if (!writePayloadFile(configPath, payload, &writeError)) {
+        logError(QStringLiteral("Sampling"), writeError);
+        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
+        return false;
+    }
+
+    workspace::TaskInputSet inputs = targetTask.inputs;
     inputs.resourceSnapshot = resourceSnapshotJson();
     inputs.samplingConfig.id = QStringLiteral("input_%1").arg(currentTimeText());
-    inputs.samplingConfig.relativePath = QDir(currentTask_.paths.taskRootPath).relativeFilePath(configPath);
+    inputs.samplingConfig.relativePath = QDir(targetTask.paths.taskRootPath).relativeFilePath(configPath);
     inputs.samplingConfig.originalFileName = QFileInfo(configPath).fileName();
     inputs.samplingConfig.sha256 = fileSha256Text(configPath);
     inputs.samplingConfig.sizeBytes = QFileInfo(configPath).size();
     inputs.samplingConfig.importedAt = currentTimeText();
 
     workspace::TaskContext updated;
-    QString error;
-    if (!workspace_.saveTaskInputs(workspaceMode(), currentTask_.summary.taskId, inputs, &updated, &error)) {
+    bool inputSaved = false;
+    if (meaningfulConfigChange && !createdNewTask) {
+        workspace::InputChangeRequest request;
+        request.mode = workspaceMode();
+        request.taskId = targetTask.summary.taskId;
+        request.changedInputs = inputs;
+        request.action = workspace::InputChangeAction::OverwriteCurrentTask;
+        workspace::InputChangeResult result;
+        inputSaved = workspace_.handleInputChange(request, &result, &error);
+        if (inputSaved) updated = result.task;
+    } else {
+        inputSaved = workspace_.saveTaskInputs(
+            workspaceMode(), targetTask.summary.taskId, inputs, &updated, &error);
+    }
+    if (!inputSaved) {
         logError(QStringLiteral("Sampling"), QStringLiteral("保存采样配置索引失败: %1").arg(error));
+        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
         return false;
     }
 
     currentTask_ = updated;
+    if (createdNewTask) {
+        flowState_ = workflow_.startFlow(currentTask_.summary.taskId, flowMode());
+        hasTask_ = true;
+        resetExecutionState();
+    }
     selectedTaskId_ = currentTask_.summary.taskId;
     logInfo(
         QStringLiteral("Sampling"),
@@ -1767,13 +1882,13 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
                  mismatchEnable ? QStringLiteral("true") : QStringLiteral("false"),
                  QString::number(mismatchMask, 16)));
     if (requestHardwareSend) {
-        acquisition::D3xxRuntime transport;
+        acquisition::LibusbRuntime transport;
         QString transportError;
-        if (!transport.load(&transportError)) {
+        if (!transport.initialize(&transportError)) {
             logError(QStringLiteral("Sampling"), transportError);
             return false;
         }
-        const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&transportError);
+        const QList<acquisition::LibusbDeviceInfo> devices = transport.enumerate(&transportError);
         if (devices.isEmpty() || !transport.open(devices.first().index, &transportError)) {
             logError(QStringLiteral("Sampling"), transportError.isEmpty()
                 ? QStringLiteral("未枚举到 FT601 设备") : transportError);
@@ -1889,10 +2004,10 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 ? QStringLiteral("错误注入失败，已阻断 ARM: %1").arg(faultResult.error)
                 : captureError;
         }
-        acquisition::D3xxRuntime transport;
-        bool success = captureError.isEmpty() && transport.load(&captureError);
+        acquisition::LibusbRuntime transport;
+        bool success = captureError.isEmpty() && transport.initialize(&captureError);
         if (success) {
-            const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&captureError);
+            const QList<acquisition::LibusbDeviceInfo> devices = transport.enumerate(&captureError);
             success = !devices.isEmpty();
             if (!success && captureError.isEmpty()) captureError = QStringLiteral("未枚举到 FT601 设备");
             if (success) success = transport.open(devices.first().index, &captureError);
@@ -1900,7 +2015,18 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
         acquisition::SamplingCaptureRecord record;
         if (success) {
             acquisition::SamplingCaptureSession session;
-            success = session.run(&transport, config, taskRoot, 120'000, &record, &captureError);
+            const acquisition::CaptureSessionResult captureResult =
+                session.runDetailed(&transport, config, taskRoot, 120'000, &record);
+            success = captureResult.success;
+            captureError = captureResult.message;
+            if (!success) {
+                const QString code = captureError.contains(QStringLiteral("CAPTURE_RECOVERY_FAILED"))
+                    ? QStringLiteral("CAPTURE_RECOVERY_FAILED")
+                    : captureError.contains(QStringLiteral("stop_reason=2"))
+                        ? QStringLiteral("CAPTURE_TRIGGER_TIMEOUT")
+                        : QStringLiteral("CAPTURE_STREAM_TIMEOUT");
+                captureError = QStringLiteral("[%1] %2").arg(code, captureError);
+            }
         }
         transport.close();
 
@@ -1953,6 +2079,15 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 appendArtifact(QStringLiteral("capture_sidecar"), QStringLiteral("evidence/capture_sidecar.json"));
                 appendArtifact(QStringLiteral("capture_vcd"), QStringLiteral("waveform/capture.vcd"));
                 appendArtifact(QStringLiteral("protocol_analysis"), QStringLiteral("evidence/protocol_analysis.json"));
+                if (QFileInfo::exists(QDir(taskRoot).filePath(QStringLiteral("evidence/capture_status.json")))) {
+                    appendArtifact(QStringLiteral("capture_status"), QStringLiteral("evidence/capture_status.json"));
+                }
+                if (QFileInfo::exists(QDir(taskRoot).filePath(QStringLiteral("evidence/capture_error.json")))) {
+                    appendArtifact(QStringLiteral("capture_error"), QStringLiteral("evidence/capture_error.json"));
+                }
+                if (QFileInfo::exists(QDir(taskRoot).filePath(QStringLiteral("evidence/fault_injection.json")))) {
+                    appendArtifact(QStringLiteral("fault_injection"), QStringLiteral("evidence/fault_injection.json"));
+                }
                 QJsonObject artifactIndex;
                 artifactIndex.insert(QStringLiteral("schema"), QStringLiteral("lockstep-artifacts-v1"));
                 artifactIndex.insert(QStringLiteral("artifacts"), artifacts);
@@ -2660,7 +2795,9 @@ reporting::ReportDocumentModel WorkbenchController::buildReportModel() const
         diagnostic.source = error.source;
         diagnostic.message = error.message;
         diagnostic.suggestion = error.resolution.isEmpty()
-            ? QStringLiteral("查看来源记录并处理后重新生成报告") : error.resolution;
+            ? error.context.value(QStringLiteral("suggestion")).toString(
+                  QStringLiteral("查看来源记录并处理后重新生成报告"))
+            : error.resolution;
         diagnostic.occurredAt = error.createdAt;
         if (error.severity == error_handling::ErrorSeverity::Warning) {
             model.warnings.append(diagnostic);
@@ -3451,7 +3588,11 @@ void WorkbenchController::logError(const QString& source, const QString& message
     if (window_ != nullptr) {
         window_->appendLog(ui::LogChannel::Operation, ui::LogLevel::Error, source, message);
     }
-    recordError(QStringLiteral("UI_BACKEND_ERROR"), error_handling::ErrorSeverity::Error, source, message, QString());
+    const QString diagnosticCode = diagnosticCodeFromMessage(message);
+    const QString code = diagnosticCode.isEmpty() ? QStringLiteral("UI_BACKEND_ERROR") : diagnosticCode;
+    const error_handling::ErrorSeverity severity = code == QStringLiteral("CAPTURE_RECOVERY_FAILED")
+        ? error_handling::ErrorSeverity::Blocking : error_handling::ErrorSeverity::Error;
+    recordError(code, severity, source, message, QString());
 }
 
 void WorkbenchController::recordError(

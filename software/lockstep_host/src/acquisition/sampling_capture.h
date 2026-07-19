@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.h
 * 日期: 2026-07-14
-* 版本: v1.1
-* 更新记录: 增加可测试传输接口和 CONFIG 状态回读确认
-* 描述: 声明帧编解码、采集会话、D3XX 枚举和标量 VCD 产物导出。
+* 版本: v2.1
+* 更新记录: 将 FT601 传输迁移为 libusb。
+* 描述: 声明帧编解码、采集会话、libusb 枚举和标量 VCD 产物导出。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_ACQUISITION_SAMPLING_CAPTURE_H_
@@ -65,7 +65,7 @@ struct CapturePipeReadResult final {
     QByteArray data;
     bool pendingTimeout = false;
     bool fatalError = false;
-    unsigned long status = 0;
+    int status = 0;
     quint8 pipeId = 0;
     int requestedBytes = 0;
     int transferredBytes = 0;
@@ -156,8 +156,19 @@ private:
     bool hasEnd_ = false;
 };
 
-struct D3xxDeviceInfo final {
+struct LibusbDeviceInfo final {
     quint32 index = 0;
+    quint16 vendorId = 0;
+    quint16 productId = 0;
+    quint8 busNumber = 0;
+    quint8 deviceAddress = 0;
+    bool captureInterfaceAvailable = false;
+    int interfaceNumber = -1;
+    int alternateSetting = 0;
+    quint8 outEndpoint = 0;
+    quint8 inEndpoint = 0;
+    QString usbSpeed;
+    QString captureInterfaceError;
     QString serialNumber;
     QString description;
 };
@@ -179,19 +190,25 @@ public:
         result.fatalError = result.data.isEmpty() && !error.isEmpty();
         return result;
     }
+    virtual bool reopen(QString* error)
+    {
+        if (error != nullptr) *error = QStringLiteral("传输不支持重新打开");
+        return false;
+    }
     virtual bool isOpen() const = 0;
 };
 
-class D3xxRuntime final : public CaptureTransport {
+class LibusbRuntime final : public CaptureTransport {
 public:
-    bool load(QString* error);
-    QList<D3xxDeviceInfo> enumerate(QString* error) const;
+    bool initialize(QString* error);
+    QList<LibusbDeviceInfo> enumerate(QString* error) const;
     bool open(quint32 index, QString* error);
     bool writePipe(quint8 pipeId, const QByteArray& bytes, int* transferred, QString* error) override;
     QByteArray readPipe(quint8 pipeId, int maximumBytes, QString* error) override;
     CapturePipeReadResult readPipeDetailed(quint8 pipeId, int maximumBytes) override;
+    bool reopen(QString* error) override;
     void close();
-    bool isLoaded() const;
+    bool isInitialized() const;
     bool isOpen() const override;
 
 private:

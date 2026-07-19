@@ -1,9 +1,9 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
 # * 日期: 2026-07-14
-# * 版本: v2.0
-# * 更新记录: 合并界面与调试服务为单一产品可执行文件
-# * 描述: 构建 lockstep_ui_preview 并复制运行资源。
+# * 版本: v2.2
+# * 更新记录: 增加工作台确认弹窗模块
+# * 描述: 构建 lockstep_ui_preview、确认弹窗模块并复制 libusb 与运行资源。
 # **********************************************************/
 
 set(LOCKSTEP_UI_PREVIEW_SOURCES
@@ -13,6 +13,18 @@ set(LOCKSTEP_UI_PREVIEW_SOURCES
     debug_service_main.cpp
     debug_service_entry.h
 )
+
+add_library(lockstep_workbench_dialogs STATIC
+    workbench_dialogs.cpp
+    workbench_dialogs.h
+)
+target_link_libraries(lockstep_workbench_dialogs
+    PUBLIC
+        lockstep_ui_common
+        Qt${QT_VERSION_MAJOR}::Widgets
+)
+target_compile_features(lockstep_workbench_dialogs PUBLIC cxx_std_17)
+target_include_directories(lockstep_workbench_dialogs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(QT_VERSION_MAJOR GREATER_EQUAL 6)
     qt_add_executable(lockstep_ui_preview ${LOCKSTEP_UI_PREVIEW_SOURCES})
@@ -63,6 +75,7 @@ target_link_libraries(lockstep_ui_preview
         lockstep_waveform_viewer
         lockstep_workflow
         lockstep_workspace
+        lockstep_workbench_dialogs
         ${LOCKSTEP_HIDAPI_TARGET}
         Qt${QT_VERSION_MAJOR}::Core
         Qt${QT_VERSION_MAJOR}::Gui
@@ -94,22 +107,24 @@ if(WIN32)
         )
     endif()
 
-    find_file(LOCKSTEP_FTD3XX_RUNTIME_DLL
-        NAMES FTD3XX.dll
+    find_file(LOCKSTEP_LIBUSB_RUNTIME_DLL
+        NAMES libusb-1.0.dll
         PATHS
-            "${CMAKE_SOURCE_DIR}/../../.codex-tasks/20260715-protocol-decode/ftd3xx"
-            "${CMAKE_SOURCE_DIR}/../../software/lockstep_host/resources"
+            "${CMAKE_PREFIX_PATH}/bin"
+            "D:/Program Files/msys64/ucrt64/bin"
         NO_DEFAULT_PATH
     )
-    if(LOCKSTEP_FTD3XX_RUNTIME_DLL)
+    if(LOCKSTEP_LIBUSB_RUNTIME_DLL)
         add_custom_command(
             TARGET lockstep_ui_preview
             POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${LOCKSTEP_FTD3XX_RUNTIME_DLL}"
+                "${LOCKSTEP_LIBUSB_RUNTIME_DLL}"
                 $<TARGET_FILE_DIR:lockstep_ui_preview>
-            COMMENT "Copy FT601 D3XX runtime next to lockstep_ui_preview"
+            COMMENT "Copy FT601 libusb runtime next to lockstep_ui_preview"
         )
+    else()
+        message(FATAL_ERROR "libusb-1.0.dll is required for the Windows product")
     endif()
 endif()
 

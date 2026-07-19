@@ -1,0 +1,8 @@
+List of CLB Tiles
+CLEM_X21Y351
+CLEL_R_X21Y351
+
+List of Congested Nets
+core0/noelv0/cpuloop[0].gen_ls_core.core/u0/c0/c0/iu0/syncrregs.r_reg[wb][wdata][0]_520[53]
+core0/noelv0/cpuloop[0].gen_ls_core.core/u0/c0/c0/iu0/syncrregs.r_reg[wb][wdata][0]_520[52]
+

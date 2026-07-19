@@ -1267,22 +1267,22 @@ QList<ProtocolGroupDefinition> fixedProtocolGroups()
             field(QStringLiteral("cts_n"), 514), field(QStringLiteral("rts_n"), 515)
         }),
         group(QStringLiteral("spi"), QStringLiteral("SPI"), {
-            field(QStringLiteral("sclk"), 144), field(QStringLiteral("mosi"), 145),
-            field(QStringLiteral("miso"), 146), field(QStringLiteral("cs_n"), 147)
+            field(QStringLiteral("sclk"), 544), field(QStringLiteral("mosi"), 545),
+            field(QStringLiteral("miso"), 546), field(QStringLiteral("cs_n"), 547)
         }),
         group(QStringLiteral("can"), QStringLiteral("CAN"), {
-            field(QStringLiteral("rx"), 176), field(QStringLiteral("tx"), 177)
+            field(QStringLiteral("rx"), 576), field(QStringLiteral("tx"), 577)
         }),
         group(QStringLiteral("i2c"), QStringLiteral("I2C"), {
-            field(QStringLiteral("scl"), 208), field(QStringLiteral("sda"), 209)
+            field(QStringLiteral("scl"), 608), field(QStringLiteral("sda"), 609)
         }),
         group(QStringLiteral("eth"), QStringLiteral("ETH"), {
-            field(QStringLiteral("tx_en"), 240), field(QStringLiteral("tx_er"), 241, 1, true),
-            field(QStringLiteral("rx_dv"), 242), field(QStringLiteral("rx_er"), 243, 1, true),
-            field(QStringLiteral("txd"), 248, 8), field(QStringLiteral("rxd"), 256, 8)
+            field(QStringLiteral("tx_en"), 640), field(QStringLiteral("tx_er"), 641, 1, true),
+            field(QStringLiteral("rx_dv"), 642), field(QStringLiteral("rx_er"), 643, 1, true),
+            field(QStringLiteral("txd"), 648, 8), field(QStringLiteral("rxd"), 656, 8)
         }),
         group(QStringLiteral("usb"), QStringLiteral("USB"), {
-            field(QStringLiteral("dp"), 304), field(QStringLiteral("dm"), 305)
+            field(QStringLiteral("dp"), 704), field(QStringLiteral("dm"), 705)
         }),
         group(QStringLiteral("jtag"), QStringLiteral("JTAG"), {
             field(QStringLiteral("tck"), 736), field(QStringLiteral("tms"), 737),
@@ -1303,16 +1303,6 @@ QList<ProtocolGroupDefinition> fixedProtocolGroups()
                   QStringLiteral("mismatch[0] counter_output"))
         })
     };
-    // 旧 512-bit profile 的协议探针从 bit 112 开始，1024-bit 硬件从 bit 512 开始。
-    for (ProtocolGroupDefinition& definition : definitions) {
-        if (definition.id == QStringLiteral("ahb") || definition.id == QStringLiteral("uart") ||
-            definition.id == QStringLiteral("jtag") || definition.id == QStringLiteral("mismatch")) {
-            continue;
-        }
-        for (ProtocolFieldDefinition& protocolField : definition.fields) {
-            protocolField.lsb += 400;
-        }
-    }
     return definitions;
 }
 
@@ -1328,14 +1318,6 @@ ProtocolAnalysisResult ProtocolAnalyzer::analyzeTask(const ProtocolAnalysisReque
 
     QString vcdPath = waveformFilePath(taskRootPath, QString::fromLatin1(kTraceVcdName));
     QString schemaPath = waveformFilePath(taskRootPath, QString::fromLatin1(kTraceSchemaName));
-    if (!QFileInfo::exists(vcdPath)) {
-        const QString legacy = waveformFilePath(taskRootPath, QStringLiteral("lockstep_trace.vcd"));
-        if (QFileInfo::exists(legacy)) vcdPath = legacy;
-    }
-    if (!QFileInfo::exists(schemaPath)) {
-        const QString legacy = waveformFilePath(taskRootPath, QStringLiteral("lockstep_trace_schema.json"));
-        if (QFileInfo::exists(legacy)) schemaPath = legacy;
-    }
     const QString analysisPath = QDir(taskRootPath).filePath(fixedTraceAnalysisRelativePath());
     result.analysisPath = analysisPath;
 

@@ -1,21 +1,15 @@
 /**********************************************************
 * 文件名: sampling_capture_test.cpp
 * 日期: 2026-07-16
-* 版本: 1.2
-* 更新记录: 对齐 CONFIG_CAPTURE 与 GET_STATUS 均返回 STATUS_RSP 的硬件合同。
-* 描述: 验证 FT601 帧、配置握手、采集结束门槛和 1024-bit VCD 导出。
-**********************************************************/
-
-/**********************************************************
-* 文件名: sampling_capture_test.cpp
-* 日期: 2026-07-14
-* 版本: v1.1
-* 更新记录: 增加纯 C++ HELLO/CONFIG/STATUS 握手测试
-* 描述: 验证帧 CRC、分片接收、采集结束门槛和标量 VCD/sidecar 导出。
+* 版本: 2.0
+* 更新记录: 增加 libusb 初始化、无效设备打开和传输错误分类回归。
+* 描述: 验证协议 v2、libusb 传输合同、恢复门槛、采集结束和 1024-bit VCD 导出。
 **********************************************************/
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QTemporaryDir>
@@ -62,9 +56,12 @@ public:
         } else if (request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture ||
                    request.header.type == lockstep::acquisition::CaptureFrameType::GetStatus ||
                    request.header.type == lockstep::acquisition::CaptureFrameType::ArmCapture) {
-            const quint32 responseState = request.header.type == lockstep::acquisition::CaptureFrameType::ArmCapture
-                ? armState : configuredState;
-            append32(&payload, responseState);
+            if (request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture) {
+                currentState = configuredState;
+            } else if (request.header.type == lockstep::acquisition::CaptureFrameType::ArmCapture) {
+                currentState = armState;
+            }
+            append32(&payload, currentState);
             append32(&payload, request.header.sequence);
             append32(&payload, request.header.type == lockstep::acquisition::CaptureFrameType::ArmCapture ? 42U : 0U);
             for (int index = 0; index < 2; ++index) append32(&payload, 0U);
@@ -76,7 +73,13 @@ public:
                 request.header.sequence + responseSequenceDelta +
                     ((request.header.type == lockstep::acquisition::CaptureFrameType::ConfigCapture)
                          ? configResponseSequenceGap
-                         : 0U));
+                          : 0U));
+        } else if (request.header.type == lockstep::acquisition::CaptureFrameType::StopCapture) {
+            currentState = configuredState;
+            for (int index = 0; index < 8; ++index) append32(&payload, index == 3 ? 2U : 0U);
+            pending_ += responseCodec_.encode(
+                lockstep::acquisition::CaptureFrameType::CaptureEnd, payload,
+                request.header.sequence + responseSequenceDelta, 42U);
         }
         return true;
     }
@@ -108,6 +111,13 @@ public:
         return result;
     }
 
+    bool reopen(QString* error) override
+    {
+        ++reopenCount;
+        if (!reopenSucceeds && error != nullptr) *error = QStringLiteral("fake reopen failed");
+        return reopenSucceeds;
+    }
+
     bool isOpen() const override { return true; }
 
     QList<lockstep::acquisition::CaptureFrameType> commands;
@@ -116,8 +126,11 @@ public:
     quint32 configResponseSequenceGap = 0U;
     quint32 configuredState = 2U;
     quint32 armState = 4U;
+    quint32 currentState = 2U;
     quint32 lastError = 0U;
     int pendingTimeoutReads = 0;
+    int reopenCount = 0;
+    bool reopenSucceeds = true;
 
 private:
     lockstep::acquisition::CaptureFrameCodec requestCodec_;
@@ -134,6 +147,16 @@ int main(int argc, char** argv)
 
     SamplingCaptureConfig config;
     QString error;
+    LibusbRuntime usbTransport;
+    if (!expect(usbTransport.initialize(&error), "libusb context initializes") ||
+        !expect(usbTransport.isInitialized() && !usbTransport.isOpen(),
+                "initialized libusb transport starts closed") ||
+        !expect(!usbTransport.open(0xffffffffU, &error) &&
+                    error.contains(QStringLiteral("FT601")),
+                "invalid FT601 index is rejected") ||
+        !expect(usbTransport.readPipeDetailed(0x82U, 64).fatalError,
+                "closed libusb transport read is fatal")) return 1;
+    usbTransport.close();
     if (!expect(config.validate(&error), "default 1024 capture config is valid") ||
         !expect(config.sampleRateHz == 120'000'000U, "default config matches live 120 MHz hardware") ||
         !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract")) return 1;
@@ -165,6 +188,32 @@ int main(int argc, char** argv)
     incompatibleTransport.protocolVersion += 1U;
     if (!expect(!session.configure(&incompatibleTransport, config, &error),
                 "configuration rejects an incompatible protocol version")) return 1;
+
+    QTemporaryDir recoveryTask;
+    FakeCaptureTransport timeoutTransport;
+    SamplingCaptureRecord timeoutRecord;
+    const CaptureSessionResult recoveredTimeout = session.runDetailed(
+        &timeoutTransport, config, recoveryTask.path(), 1, &timeoutRecord);
+    if (!expect(!recoveredTimeout.success && recoveredTimeout.phase == QStringLiteral("collect") &&
+                    recoveredTimeout.recoveryAttempted && recoveredTimeout.recoverySucceeded,
+                "collect timeout performs STOP recovery") ||
+        !expect(timeoutTransport.commands.contains(CaptureFrameType::StopCapture) &&
+                    timeoutTransport.reopenCount == 1,
+                "STOP recovery reopens libusb exactly once") ||
+        !expect(QFileInfo::exists(QDir(recoveryTask.path()).filePath(QStringLiteral("evidence/raw_capture.dat"))) &&
+                    QFileInfo::exists(QDir(recoveryTask.path()).filePath(QStringLiteral("evidence/capture_status.json"))),
+                "failed capture preserves raw and status evidence")) return 1;
+
+    QTemporaryDir failedRecoveryTask;
+    FakeCaptureTransport failedRecoveryTransport;
+    failedRecoveryTransport.reopenSucceeds = false;
+    SamplingCaptureRecord failedRecoveryRecord;
+    const CaptureSessionResult failedRecovery = session.runDetailed(
+        &failedRecoveryTransport, config, failedRecoveryTask.path(), 1, &failedRecoveryRecord);
+    if (!expect(!failedRecovery.success && failedRecovery.recoveryAttempted &&
+                    !failedRecovery.recoverySucceeded &&
+                    failedRecovery.message.contains(QStringLiteral("CAPTURE_RECOVERY_FAILED")),
+                "libusb reopen failure is reported as CAPTURE_RECOVERY_FAILED")) return 1;
 
     CaptureFrameCodec encoder;
     QByteArray meta;

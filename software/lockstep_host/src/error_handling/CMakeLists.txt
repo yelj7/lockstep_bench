@@ -7,6 +7,8 @@
 # **********************************************************/
 
 add_library(lockstep_error_handling STATIC
+    diagnostic_rules.cpp
+    diagnostic_rules.h
     error_registry.cpp
     error_registry.h
 )

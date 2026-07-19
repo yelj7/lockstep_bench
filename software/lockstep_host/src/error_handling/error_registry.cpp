@@ -16,6 +16,8 @@
 
 #include "error_registry.h"
 
+#include "diagnostic_rules.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -433,6 +435,10 @@ ErrorRecord ErrorRegistry::createRecord(const ErrorEvent& event) const
     record.createdAt = currentTimeText();
     record.updatedAt = record.createdAt;
     record.context = event.context;
+    if (!record.context.contains(QStringLiteral("suggestion"))) {
+        const QString suggestion = diagnosticSuggestion(record.code);
+        if (!suggestion.isEmpty()) record.context.insert(QStringLiteral("suggestion"), suggestion);
+    }
     return record;
 }
 

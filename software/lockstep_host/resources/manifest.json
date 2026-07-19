@@ -55,6 +55,18 @@
       "status": "enabled"
     }
   ],
+  "diagnostic_rules": [
+    {
+      "id": "diagnostics.lockstep.default",
+      "name": "Lockstep Connection and Capture Diagnostic Rules",
+      "version": "1.0.0",
+      "mode": "test",
+      "modes": ["research", "test"],
+      "relative_path": "diagnostics/diagnostic_rules.json",
+      "sha256": "",
+      "status": "enabled"
+    }
+  ],
   "lockstep_trace_profiles": [
     {
       "id": "trace.noelv.lockstep_1024",
@@ -63,16 +75,6 @@
       "mode": "test",
       "modes": ["research", "test"],
       "relative_path": "lockstep_trace/noelv_lockstep_1024/trace_profile.json",
-      "sha256": "",
-      "status": "enabled"
-    },
-    {
-      "id": "trace.noelv.lockstep_512",
-      "name": "NOEL-V Lockstep 512-bit Trace Profile",
-      "version": "1.0.0.0",
-      "mode": "test",
-      "modes": ["research", "test"],
-      "relative_path": "lockstep_trace/noelv_lockstep_512/trace_profile.json",
       "sha256": "",
       "status": "enabled"
     }

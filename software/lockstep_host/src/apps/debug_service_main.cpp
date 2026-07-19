@@ -1036,7 +1036,10 @@ public:
             return false;
         }
 
-        hid_device_info* const devices = hid_enumerate(config.vendorId, config.productId);
+        hid_device_info* devices = nullptr;
+        for (int attempt = 0; attempt < 3 && devices == nullptr; ++attempt) {
+            devices = hid_enumerate(config.vendorId, config.productId);
+        }
         hid_device_info* selected = nullptr;
         QStringList candidates;
         for (hid_device_info* item = devices; item != nullptr; item = item->next) {
@@ -1057,7 +1060,7 @@ public:
             hid_free_enumeration(devices);
             setError(
                 errorMessage,
-                QStringLiteral("未找到 CMSIS-DAP HID 设备: vid=0x%1 pid=0x%2。")
+                QStringLiteral("[DAP_NOT_ENUMERATED] 重枚举两次后仍未找到 CMSIS-DAP HID 设备: vid=0x%1 pid=0x%2。")
                     .arg(config.vendorId, 4, 16, QChar::fromLatin1('0'))
                     .arg(config.productId, 4, 16, QChar::fromLatin1('0')));
             return false;
@@ -1072,7 +1075,8 @@ public:
         handle_ = hid_open_path(selected->path);
         hid_free_enumeration(devices);
         if (handle_ == nullptr) {
-            setError(errorMessage, QStringLiteral("打开 CMSIS-DAP HID 设备失败: %1").arg(path_));
+            setError(errorMessage, QStringLiteral("[DAP_OPEN_FAILED] 打开 CMSIS-DAP HID 设备失败，可能被占用或权限不足: %1")
+                .arg(path_));
             return false;
         }
 
@@ -1255,34 +1259,49 @@ public:
         }
 
         QString robustIdcodeError;
-        QString idcodeIrError;
-        if (!selectIr(targetConfig_.idcodeIr, &idcodeIrError)) {
-            robustIdcodeError = idcodeIrError;
-        } else {
-            hasIdCode_ = readIdCodeByDrScan(&idCode_, &robustIdcodeError);
-            if (hasIdCode_ && !isValidJtagIdCode(idCode_)) {
-                robustIdcodeError = QStringLiteral("JTAG IDCODE invalid: %1").arg(hexU32(idCode_));
-                hasIdCode_ = false;
+        for (int attempt = 0; attempt < 3 && !hasIdCode_; ++attempt) {
+            if (attempt > 0) {
+                QByteArray disconnectRequest;
+                disconnectRequest.append(static_cast<char>(kDapDisconnect));
+                QString disconnectError;
+                (void)device_.expectStatusOk(
+                    disconnectRequest, QStringLiteral("重新连接前断开 CMSIS-DAP"), &disconnectError);
+                if (!connectJtag(&robustIdcodeError) ||
+                    !setClock(request.adapterSpeedKhz, &robustIdcodeError) ||
+                    !configureTap(&robustIdcodeError) ||
+                    !tapReset(&robustIdcodeError)) {
+                    continue;
+                }
+            }
+            QString idcodeIrError;
+            if (!selectIr(targetConfig_.idcodeIr, &idcodeIrError)) {
+                robustIdcodeError = idcodeIrError;
+            } else {
+                hasIdCode_ = readIdCodeByDrScan(&idCode_, &robustIdcodeError);
+                if (hasIdCode_ && !isValidJtagIdCode(idCode_)) {
+                    robustIdcodeError = QStringLiteral("JTAG IDCODE invalid: %1").arg(hexU32(idCode_));
+                    hasIdCode_ = false;
+                }
+            }
+            if (!hasIdCode_) {
+                quint32 fallbackIdCode = 0U;
+                QString fallbackError;
+                const bool fallbackOk = readIdCode(&fallbackIdCode, &fallbackError);
+                if (fallbackOk && isValidJtagIdCode(fallbackIdCode)) {
+                    idCode_ = fallbackIdCode;
+                    robustIdcodeError.clear();
+                    hasIdCode_ = true;
+                } else if (fallbackOk) {
+                    robustIdcodeError = QStringLiteral("JTAG IDCODE invalid: %1").arg(hexU32(fallbackIdCode));
+                } else if (!fallbackError.isEmpty()) {
+                    robustIdcodeError = fallbackError;
+                }
             }
         }
 
         if (!hasIdCode_) {
-            quint32 fallbackIdCode = 0U;
-            QString fallbackError;
-            const bool fallbackOk = readIdCode(&fallbackIdCode, &fallbackError);
-            if (fallbackOk && isValidJtagIdCode(fallbackIdCode)) {
-                idCode_ = fallbackIdCode;
-                robustIdcodeError.clear();
-                hasIdCode_ = true;
-            } else if (fallbackOk) {
-                robustIdcodeError = QStringLiteral("JTAG IDCODE invalid: %1").arg(hexU32(fallbackIdCode));
-            } else if (!fallbackError.isEmpty()) {
-                robustIdcodeError = fallbackError;
-            }
-        }
-
-        if (!hasIdCode_) {
-            idcodeFailure_ = robustIdcodeError;
+            idcodeFailure_ = QStringLiteral("[JTAG_IDCODE_FAILED] TAP reset 和重新连接两次后仍无法读取 IDCODE: %1")
+                .arg(robustIdcodeError);
             setError(errorMessage, idcodeFailure_);
             return false;
         }
@@ -2117,16 +2136,12 @@ private:
         if (debugModuleReady_) {
             return true;
         }
-        if (!readDtmcs(errorMessage)) {
-            return false;
-        }
-        if (!resetDmi(errorMessage)) {
-            return false;
-        }
-        if (!dmiWrite(kDmControl, baseDmControl(), errorMessage)) {
-            return false;
-        }
-        if (!dmiRead(kDmStatus, &lastDmStatus_, errorMessage)) {
+        QString dmiError;
+        if (!readDtmcs(&dmiError) || !resetDmi(&dmiError) ||
+            !dmiWrite(kDmControl, baseDmControl(), &dmiError) ||
+            !dmiRead(kDmStatus, &lastDmStatus_, &dmiError)) {
+            lastDmiError_ = dmiError;
+            setError(errorMessage, QStringLiteral("[DMI_NO_RESPONSE] DMI 初始化无响应: %1").arg(dmiError));
             return false;
         }
 

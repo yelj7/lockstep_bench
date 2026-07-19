@@ -1,31 +1,105 @@
 /**********************************************************
 * 文件名: sampling_capture.cpp
 * 日期: 2026-07-16
-* 版本: v1.3
-* 更新记录: 打开 FT601 时不再中止或清空数据管道，避免破坏后续同步传输。
-* 描述: 实现线协议校验、采集组装、D3XX 动态枚举和标量 VCD/sidecar 输出。
+* 版本: v2.1
+* 更新记录: 将 FT601 枚举、bulk 传输和重连迁移为 libusb。
+* 描述: 实现线协议校验、采集组装、libusb 传输和标量 VCD/sidecar 输出。
 **********************************************************/
 
 #include "sampling_capture.h"
 
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QLibrary>
 #include <QSaveFile>
 #include <QSharedPointer>
 #include <QtEndian>
+
+#include <libusb.h>
 
 namespace lockstep::acquisition {
 namespace {
 
 constexpr quint32 kMaxPayloadBytes = 4U * 1024U * 1024U;
 constexpr quint32 kCrcDisabledFlag = 1U << 1U;
-constexpr int kD3xxReadChunkBytes = 4096;
+constexpr int kUsbReadChunkBytes = 4096;
 constexpr int kStatusResponseBytes = 64;
+constexpr quint16 kFt601VendorId = 0x0403U;
+constexpr quint16 kFt601ProductId = 0x601fU;
+constexpr quint8 kFt601OutEndpoint = 0x02U;
+constexpr quint8 kFt601InEndpoint = 0x82U;
+constexpr unsigned int kUsbTransferTimeoutMs = 2000U;
+
+struct CaptureUsbInterface final {
+    int interfaceNumber = -1;
+    int alternateSetting = 0;
+    quint8 outEndpoint = 0;
+    quint8 inEndpoint = 0;
+};
+
+QString usbSpeedText(libusb_device* device)
+{
+    switch (libusb_get_device_speed(device)) {
+    case LIBUSB_SPEED_LOW: return QStringLiteral("low-speed");
+    case LIBUSB_SPEED_FULL: return QStringLiteral("full-speed");
+    case LIBUSB_SPEED_HIGH: return QStringLiteral("high-speed");
+    case LIBUSB_SPEED_SUPER: return QStringLiteral("super-speed");
+#if defined(LIBUSB_SPEED_SUPER_PLUS)
+    case LIBUSB_SPEED_SUPER_PLUS: return QStringLiteral("super-speed-plus");
+#endif
+    default: return QStringLiteral("unknown");
+    }
+}
+
+bool findCaptureUsbInterface(libusb_device* device, CaptureUsbInterface* selection, QString* error)
+{
+    libusb_config_descriptor* config = nullptr;
+    const int status = libusb_get_active_config_descriptor(device, &config);
+    if (status != LIBUSB_SUCCESS || config == nullptr) {
+        if (error != nullptr) {
+            *error = QStringLiteral("无法读取 FT601 active USB configuration: %1 (%2)")
+                         .arg(QString::fromLatin1(libusb_error_name(status))).arg(status);
+        }
+        return false;
+    }
+
+    CaptureUsbInterface found;
+    for (quint8 interfaceIndex = 0; interfaceIndex < config->bNumInterfaces &&
+         found.interfaceNumber < 0; ++interfaceIndex) {
+        const libusb_interface& usbInterface = config->interface[interfaceIndex];
+        for (int alternateIndex = 0; alternateIndex < usbInterface.num_altsetting; ++alternateIndex) {
+            const libusb_interface_descriptor& alternate = usbInterface.altsetting[alternateIndex];
+            bool hasOut = false;
+            bool hasIn = false;
+            for (quint8 endpointIndex = 0; endpointIndex < alternate.bNumEndpoints; ++endpointIndex) {
+                const libusb_endpoint_descriptor& endpoint = alternate.endpoint[endpointIndex];
+                if ((endpoint.bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) != LIBUSB_TRANSFER_TYPE_BULK) {
+                    continue;
+                }
+                hasOut = hasOut || endpoint.bEndpointAddress == kFt601OutEndpoint;
+                hasIn = hasIn || endpoint.bEndpointAddress == kFt601InEndpoint;
+            }
+            if (!hasOut || !hasIn) continue;
+            found.interfaceNumber = alternate.bInterfaceNumber;
+            found.alternateSetting = alternate.bAlternateSetting;
+            found.outEndpoint = kFt601OutEndpoint;
+            found.inEndpoint = kFt601InEndpoint;
+            break;
+        }
+    }
+    libusb_free_config_descriptor(config);
+    if (found.interfaceNumber < 0) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "FT601 active USB configuration 中未找到同时包含 bulk 端点 0x02/0x82 的接口");
+        }
+        return false;
+    }
+    if (selection != nullptr) *selection = found;
+    return true;
+}
 
 quint32 crc32(const QByteArray& bytes)
 {
@@ -108,6 +182,46 @@ bool saveFile(const QString& path, const QByteArray& data, QString* error)
         return false;
     }
     return true;
+}
+
+QJsonObject statusToJson(const CaptureStatusV2& status)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("state"), static_cast<double>(status.state));
+    object.insert(QStringLiteral("request_sequence"), static_cast<double>(status.requestSequence));
+    object.insert(QStringLiteral("capture_id"), static_cast<double>(status.captureId));
+    object.insert(QStringLiteral("samples_seen"), static_cast<double>(status.samplesSeen));
+    object.insert(QStringLiteral("samples_uploaded"), static_cast<double>(status.samplesUploaded));
+    object.insert(QStringLiteral("device_status_flags"), static_cast<double>(status.deviceStatusFlags));
+    object.insert(QStringLiteral("last_error_code"), static_cast<double>(status.lastErrorCode));
+    object.insert(QStringLiteral("command_state"), static_cast<double>(status.commandState));
+    object.insert(QStringLiteral("capture_state"), static_cast<double>(status.captureState));
+    object.insert(QStringLiteral("capture_flags"), static_cast<double>(status.captureFlags));
+    object.insert(QStringLiteral("pretrigger_samples"), static_cast<double>(status.pretriggerSamples));
+    object.insert(QStringLiteral("posttrigger_samples"), static_cast<double>(status.posttriggerSamples));
+    object.insert(QStringLiteral("frame_source_state"), static_cast<double>(status.frameSourceState));
+    object.insert(QStringLiteral("tx_generator_state"), static_cast<double>(status.txGeneratorState));
+    object.insert(QStringLiteral("ft601_state"), static_cast<double>(status.ft601State));
+    object.insert(QStringLiteral("tx_bytes"), static_cast<double>(status.txBytes));
+    return object;
+}
+
+void saveSessionEvidence(const QString& taskRootPath, const CaptureSessionResult& result)
+{
+    if (taskRootPath.isEmpty()) return;
+    const QString evidenceDir = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidenceDir)) return;
+    QJsonObject object;
+    object.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-status-v2"));
+    object.insert(QStringLiteral("generated_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    object.insert(QStringLiteral("success"), result.success);
+    object.insert(QStringLiteral("phase"), result.phase);
+    object.insert(QStringLiteral("message"), result.message);
+    object.insert(QStringLiteral("recovery_attempted"), result.recoveryAttempted);
+    object.insert(QStringLiteral("recovery_succeeded"), result.recoverySucceeded);
+    object.insert(QStringLiteral("status"), statusToJson(result.status));
+    saveFile(QDir(evidenceDir).filePath(QStringLiteral("capture_status.json")),
+             QJsonDocument(object).toJson(QJsonDocument::Indented), nullptr);
 }
 
 }  // namespace
@@ -315,189 +429,383 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
 bool SamplingCaptureAssembler::complete() const { return hasEnd_; }
 SamplingCaptureRecord SamplingCaptureAssembler::record() const { return record_; }
 
-class D3xxRuntime::Private final {
+class LibusbRuntime::Private final {
 public:
-    QLibrary library;
-    using CreateDeviceInfoList = unsigned long (*)(unsigned long*);
-    using GetDeviceInfoDetail = unsigned long (*)(unsigned long, unsigned long*, unsigned long*,
-        unsigned long*, unsigned long*, void*, void*, void**);
-    using Create = unsigned long (*)(void*, unsigned long, void**);
-    using Close = unsigned long (*)(void*);
-    using PipeIo = unsigned long (*)(void*, unsigned char, unsigned char*, unsigned long,
-                                     unsigned long*, void*);
-    using SetPipeTimeout = unsigned long (*)(void*, unsigned char, unsigned long);
-    CreateDeviceInfoList createDeviceInfoList = nullptr;
-    GetDeviceInfoDetail getDeviceInfoDetail = nullptr;
-    Create create = nullptr;
-    Close close = nullptr;
-    PipeIo readPipe = nullptr;
-    PipeIo writePipe = nullptr;
-    SetPipeTimeout setPipeTimeout = nullptr;
-    void* handle = nullptr;
+    ~Private()
+    {
+        closeHandle();
+        if (context != nullptr) libusb_exit(context);
+    }
+
+    static bool isFt601(libusb_device* device, libusb_device_descriptor* descriptor = nullptr)
+    {
+        libusb_device_descriptor current = {};
+        if (libusb_get_device_descriptor(device, &current) != LIBUSB_SUCCESS) return false;
+        if (descriptor != nullptr) *descriptor = current;
+        return current.idVendor == kFt601VendorId && current.idProduct == kFt601ProductId;
+    }
+
+    static QByteArray portPath(libusb_device* device)
+    {
+        quint8 ports[8] = {};
+        const int count = libusb_get_port_numbers(device, ports, static_cast<int>(sizeof(ports)));
+        return count > 0 ? QByteArray(reinterpret_cast<const char*>(ports), count) : QByteArray();
+    }
+
+    static QByteArray serialNumber(libusb_device_handle* deviceHandle,
+                                   const libusb_device_descriptor& descriptor)
+    {
+        if (deviceHandle == nullptr || descriptor.iSerialNumber == 0) return QByteArray();
+        unsigned char text[256] = {};
+        const int length = libusb_get_string_descriptor_ascii(
+            deviceHandle, descriptor.iSerialNumber, text, sizeof(text));
+        return length > 0 ? QByteArray(reinterpret_cast<const char*>(text), length) : QByteArray();
+    }
+
+    void rememberIdentity(libusb_device* device, const libusb_device_descriptor& descriptor)
+    {
+        identitySerial = serialNumber(handle, descriptor);
+        identityBus = libusb_get_bus_number(device);
+        identityPortPath = portPath(device);
+        hasIdentity = !identitySerial.isEmpty() || !identityPortPath.isEmpty();
+    }
+
+    bool matchesIdentity(libusb_device* device) const
+    {
+        libusb_device_descriptor descriptor = {};
+        if (!isFt601(device, &descriptor)) return false;
+        if (!identitySerial.isEmpty()) {
+            libusb_device_handle* temporaryHandle = nullptr;
+            if (libusb_open(device, &temporaryHandle) != LIBUSB_SUCCESS) return false;
+            const QByteArray candidateSerial = serialNumber(temporaryHandle, descriptor);
+            libusb_close(temporaryHandle);
+            return candidateSerial == identitySerial;
+        }
+        return libusb_get_bus_number(device) == identityBus && portPath(device) == identityPortPath;
+    }
+
+    bool selectCaptureInterface(libusb_device* device, QString* error)
+    {
+        CaptureUsbInterface selection;
+        if (!findCaptureUsbInterface(device, &selection, error)) return false;
+        interfaceNumber = selection.interfaceNumber;
+        alternateSetting = selection.alternateSetting;
+        outEndpoint = selection.outEndpoint;
+        inEndpoint = selection.inEndpoint;
+        return true;
+    }
+
+    void closeHandle()
+    {
+        if (handle == nullptr) return;
+        if (interfaceClaimed) libusb_release_interface(handle, interfaceNumber);
+        libusb_close(handle);
+        handle = nullptr;
+        interfaceClaimed = false;
+    }
+
+    libusb_context* context = nullptr;
+    libusb_device_handle* handle = nullptr;
+    quint32 openIndex = 0U;
+    int interfaceNumber = -1;
+    int alternateSetting = 0;
+    quint8 outEndpoint = 0;
+    quint8 inEndpoint = 0;
+    QByteArray identitySerial;
+    QByteArray identityPortPath;
+    quint8 identityBus = 0;
+    bool hasOpenIndex = false;
+    bool hasIdentity = false;
+    bool interfaceClaimed = false;
 };
 
-bool D3xxRuntime::load(QString* error)
+QString usbErrorText(const int status)
+{
+    return QString::fromLatin1(libusb_error_name(status));
+}
+
+bool LibusbRuntime::initialize(QString* error)
 {
     d_.reset(new Private);
-    QString libraryPath = qEnvironmentVariable("LOCKSTEP_FTD3XX_LIBRARY");
-    if (libraryPath.isEmpty()) {
-        const QString bundled = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("FTD3XX.dll"));
-        libraryPath = QFileInfo::exists(bundled) ? bundled : QStringLiteral("FTD3XX");
-    }
-    d_->library.setFileName(libraryPath);
-    if (!d_->library.load()) {
-        if (error != nullptr) *error = QStringLiteral("无法加载 FTD3XX 动态库: %1").arg(d_->library.errorString());
-        return false;
-    }
-    d_->createDeviceInfoList = reinterpret_cast<Private::CreateDeviceInfoList>(d_->library.resolve("FT_CreateDeviceInfoList"));
-    d_->getDeviceInfoDetail = reinterpret_cast<Private::GetDeviceInfoDetail>(d_->library.resolve("FT_GetDeviceInfoDetail"));
-    d_->create = reinterpret_cast<Private::Create>(d_->library.resolve("FT_Create"));
-    d_->close = reinterpret_cast<Private::Close>(d_->library.resolve("FT_Close"));
-    d_->readPipe = reinterpret_cast<Private::PipeIo>(d_->library.resolve("FT_ReadPipe"));
-    d_->writePipe = reinterpret_cast<Private::PipeIo>(d_->library.resolve("FT_WritePipe"));
-    d_->setPipeTimeout = reinterpret_cast<Private::SetPipeTimeout>(d_->library.resolve("FT_SetPipeTimeout"));
-    if (d_->createDeviceInfoList == nullptr || d_->getDeviceInfoDetail == nullptr ||
-        d_->create == nullptr || d_->close == nullptr || d_->readPipe == nullptr || d_->writePipe == nullptr) {
-        if (error != nullptr) *error = QStringLiteral("FTD3XX 缺少设备枚举接口");
+    const int status = libusb_init(&d_->context);
+    if (status != LIBUSB_SUCCESS) {
+        if (error != nullptr) {
+            *error = QStringLiteral("libusb 初始化失败: %1 (%2)").arg(usbErrorText(status)).arg(status);
+        }
         d_.reset();
         return false;
     }
     return true;
 }
 
-QList<D3xxDeviceInfo> D3xxRuntime::enumerate(QString* error) const
+QList<LibusbDeviceInfo> LibusbRuntime::enumerate(QString* error) const
 {
-    QList<D3xxDeviceInfo> devices;
-    if (!isLoaded()) {
-        if (error != nullptr) *error = QStringLiteral("FTD3XX 尚未加载");
+    QList<LibusbDeviceInfo> devices;
+    if (!isInitialized()) {
+        if (error != nullptr) *error = QStringLiteral("libusb 尚未初始化");
         return devices;
     }
-    unsigned long count = 0;
-    if (d_->createDeviceInfoList(&count) != 0U) {
-        if (error != nullptr) *error = QStringLiteral("FT601 枚举失败");
-        return devices;
-    }
-    for (unsigned long index = 0; index < count; ++index) {
-        char serial[64] = {};
-        char description[128] = {};
-        unsigned long flags = 0, type = 0, id = 0, location = 0;
-        void* handle = nullptr;
-        if (d_->getDeviceInfoDetail(index, &flags, &type, &id, &location, serial, description, &handle) == 0U) {
-            D3xxDeviceInfo info;
-            info.index = static_cast<quint32>(index);
-            info.serialNumber = QString::fromLocal8Bit(serial);
-            info.description = QString::fromLocal8Bit(description);
-            devices.append(info);
+
+    libusb_device** list = nullptr;
+    const ssize_t count = libusb_get_device_list(d_->context, &list);
+    if (count < 0) {
+        if (error != nullptr) {
+            *error = QStringLiteral("FT601 libusb 枚举失败: %1 (%2)")
+                         .arg(usbErrorText(static_cast<int>(count))).arg(count);
         }
+        return devices;
+    }
+
+    for (ssize_t listIndex = 0; listIndex < count; ++listIndex) {
+        libusb_device_descriptor descriptor = {};
+        if (!Private::isFt601(list[listIndex], &descriptor)) continue;
+
+        LibusbDeviceInfo info;
+        info.index = static_cast<quint32>(devices.size());
+        info.vendorId = descriptor.idVendor;
+        info.productId = descriptor.idProduct;
+        info.busNumber = libusb_get_bus_number(list[listIndex]);
+        info.deviceAddress = libusb_get_device_address(list[listIndex]);
+        info.usbSpeed = usbSpeedText(list[listIndex]);
+        CaptureUsbInterface captureInterface;
+        info.captureInterfaceAvailable = findCaptureUsbInterface(
+            list[listIndex], &captureInterface, &info.captureInterfaceError);
+        if (info.captureInterfaceAvailable) {
+            info.interfaceNumber = captureInterface.interfaceNumber;
+            info.alternateSetting = captureInterface.alternateSetting;
+            info.outEndpoint = captureInterface.outEndpoint;
+            info.inEndpoint = captureInterface.inEndpoint;
+        }
+        libusb_device_handle* temporaryHandle = nullptr;
+        if (libusb_open(list[listIndex], &temporaryHandle) == LIBUSB_SUCCESS) {
+            unsigned char text[256] = {};
+            if (descriptor.iSerialNumber != 0 &&
+                libusb_get_string_descriptor_ascii(temporaryHandle, descriptor.iSerialNumber,
+                                                    text, sizeof(text)) > 0) {
+                info.serialNumber = QString::fromLatin1(reinterpret_cast<const char*>(text));
+            }
+            if (descriptor.iProduct != 0 &&
+                libusb_get_string_descriptor_ascii(temporaryHandle, descriptor.iProduct,
+                                                    text, sizeof(text)) > 0) {
+                info.description = QString::fromLatin1(reinterpret_cast<const char*>(text));
+            }
+            libusb_close(temporaryHandle);
+        }
+        devices.append(info);
+    }
+    libusb_free_device_list(list, 1);
+    if (devices.isEmpty() && error != nullptr) {
+        *error = QStringLiteral(
+            "未枚举到 FT601 libusb 设备 (VID=0x0403 PID=0x601f)；Windows 请确认设备已绑定 WinUSB/libusbK 驱动");
     }
     return devices;
 }
 
-bool D3xxRuntime::isLoaded() const { return !d_.isNull() && d_->library.isLoaded(); }
+bool LibusbRuntime::isInitialized() const { return !d_.isNull() && d_->context != nullptr; }
 
-bool D3xxRuntime::open(const quint32 index, QString* error)
+bool LibusbRuntime::open(const quint32 index, QString* error)
 {
-    if (!isLoaded() || d_->create(reinterpret_cast<void*>(static_cast<quintptr>(index)), 0x10U,
-                                  &d_->handle) != 0U) {
-        if (error != nullptr) *error = QStringLiteral("无法按索引打开 FT601");
+    if (!isInitialized()) {
+        if (error != nullptr) *error = QStringLiteral("libusb 尚未初始化，无法打开 FT601");
         return false;
     }
-    if (d_->setPipeTimeout != nullptr) {
-        d_->setPipeTimeout(d_->handle, 0x02U, 2000U);
-        d_->setPipeTimeout(d_->handle, 0x82U, 2000U);
+    close();
+
+    libusb_device** list = nullptr;
+    const ssize_t count = libusb_get_device_list(d_->context, &list);
+    if (count < 0) {
+        if (error != nullptr) *error = QStringLiteral("FT601 libusb 枚举失败: %1").arg(count);
+        return false;
     }
+
+    quint32 matchedIndex = 0U;
+    int status = LIBUSB_ERROR_NOT_FOUND;
+    libusb_device* selectedDevice = nullptr;
+    libusb_device_descriptor selectedDescriptor = {};
+    for (ssize_t listIndex = 0; listIndex < count; ++listIndex) {
+        libusb_device_descriptor descriptor = {};
+        if (!Private::isFt601(list[listIndex], &descriptor)) continue;
+        if (matchedIndex++ != index) continue;
+        status = libusb_open(list[listIndex], &d_->handle);
+        selectedDevice = list[listIndex];
+        selectedDescriptor = descriptor;
+        if (status == LIBUSB_SUCCESS) {
+            QString interfaceError;
+            if (d_->selectCaptureInterface(selectedDevice, &interfaceError)) {
+                d_->rememberIdentity(selectedDevice, selectedDescriptor);
+            } else {
+                if (error != nullptr) *error = interfaceError;
+                d_->closeHandle();
+                status = LIBUSB_ERROR_NOT_FOUND;
+            }
+        }
+        break;
+    }
+    libusb_free_device_list(list, 1);
+    if (status != LIBUSB_SUCCESS || d_->handle == nullptr) {
+        if (error != nullptr && error->isEmpty()) {
+            *error = QStringLiteral("无法按索引打开 FT601: index=%1, libusb=%2 (%3)")
+                         .arg(index).arg(usbErrorText(status)).arg(status);
+        }
+        d_->handle = nullptr;
+        return false;
+    }
+
+    libusb_set_auto_detach_kernel_driver(d_->handle, 1);
+    status = libusb_claim_interface(d_->handle, d_->interfaceNumber);
+    if (status != LIBUSB_SUCCESS) {
+        if (error != nullptr) {
+            *error = QStringLiteral("无法 claim FT601 USB 接口 %1: %2 (%3)；Windows 请使用 WinUSB/libusbK 驱动")
+                         .arg(d_->interfaceNumber).arg(usbErrorText(status)).arg(status);
+        }
+        d_->closeHandle();
+        return false;
+    }
+    d_->interfaceClaimed = true;
+    if (d_->alternateSetting != 0) {
+        status = libusb_set_interface_alt_setting(
+            d_->handle, d_->interfaceNumber, d_->alternateSetting);
+        if (status != LIBUSB_SUCCESS) {
+            if (error != nullptr) {
+                *error = QStringLiteral("无法选择 FT601 USB 接口 %1 alternate setting %2: %3 (%4)")
+                             .arg(d_->interfaceNumber).arg(d_->alternateSetting)
+                             .arg(usbErrorText(status)).arg(status);
+            }
+            d_->closeHandle();
+            return false;
+        }
+    }
+    d_->openIndex = index;
+    d_->hasOpenIndex = true;
     return true;
 }
 
-bool D3xxRuntime::writePipe(const quint8 pipeId, const QByteArray& bytes, int* transferred, QString* error)
+bool LibusbRuntime::writePipe(const quint8 pipeId, const QByteArray& bytes, int* transferred,
+                              QString* error)
 {
-    unsigned long count = 0;
-    const unsigned long status = !isOpen() ? 1U : d_->writePipe(
-        d_->handle, pipeId, reinterpret_cast<unsigned char*>(const_cast<char*>(bytes.constData())),
-        static_cast<unsigned long>(bytes.size()), &count, nullptr);
-    if (transferred != nullptr) *transferred = static_cast<int>(count);
-    if (status != 0U || count != static_cast<unsigned long>(bytes.size())) {
+    int count = 0;
+    const int status = !isOpen() ? LIBUSB_ERROR_NO_DEVICE : libusb_bulk_transfer(
+        d_->handle, pipeId,
+        reinterpret_cast<unsigned char*>(const_cast<char*>(bytes.constData())),
+        bytes.size(), &count, kUsbTransferTimeoutMs);
+    if (transferred != nullptr) *transferred = count;
+    if (status != LIBUSB_SUCCESS || count != bytes.size()) {
         if (error != nullptr) {
             *error = QStringLiteral(
-                "FT601 pipe 写入失败或不完整: status=%1, pipe=0x%2, requested=%3, transferred=%4")
-                         .arg(status)
-                         .arg(pipeId, 2, 16, QLatin1Char('0'))
-                         .arg(bytes.size())
-                         .arg(count);
+                "FT601 bulk 写入失败或不完整: libusb=%1 (%2), endpoint=0x%3, requested=%4, transferred=%5")
+                         .arg(usbErrorText(status)).arg(status)
+                         .arg(pipeId, 2, 16, QLatin1Char('0')).arg(bytes.size()).arg(count);
         }
         return false;
     }
     return true;
 }
 
-QByteArray D3xxRuntime::readPipe(const quint8 pipeId, const int maximumBytes, QString* error)
+QByteArray LibusbRuntime::readPipe(const quint8 pipeId, const int maximumBytes, QString* error)
 {
-    if (!isOpen() || maximumBytes <= 0) {
-        if (error != nullptr) *error = QStringLiteral("FT601 未打开或读取长度无效");
-        return QByteArray();
-    }
-    QByteArray bytes(maximumBytes, '\0');
-    unsigned long count = 0;
-    const unsigned long status = d_->readPipe(
-        d_->handle,
-        pipeId,
-        reinterpret_cast<unsigned char*>(bytes.data()),
-        static_cast<unsigned long>(bytes.size()),
-        &count,
-        nullptr);
-    if (status != 0U) {
-        if (error != nullptr) {
-            *error = QStringLiteral(
-                "FT601 pipe 读取失败: status=%1, pipe=0x%2, requested=%3, transferred=%4")
-                         .arg(status)
-                         .arg(pipeId, 2, 16, QLatin1Char('0'))
-                         .arg(maximumBytes)
-                         .arg(count);
-        }
-        return QByteArray();
-    }
-    bytes.resize(static_cast<int>(count));
-    return bytes;
+    const CapturePipeReadResult result = readPipeDetailed(pipeId, maximumBytes);
+    if ((result.fatalError || result.pendingTimeout) && error != nullptr) *error = result.error;
+    return result.data;
 }
 
-CapturePipeReadResult D3xxRuntime::readPipeDetailed(const quint8 pipeId, const int maximumBytes)
+CapturePipeReadResult LibusbRuntime::readPipeDetailed(const quint8 pipeId, const int maximumBytes)
 {
     CapturePipeReadResult result;
     result.pipeId = pipeId;
     result.requestedBytes = maximumBytes;
     if (!isOpen() || maximumBytes <= 0) {
+        result.status = !isOpen() ? LIBUSB_ERROR_NO_DEVICE : LIBUSB_ERROR_INVALID_PARAM;
         result.fatalError = true;
-        result.error = QStringLiteral("FT601 transport is not open or read length is invalid");
+        result.error = QStringLiteral("FT601 libusb 传输未打开或读取长度无效");
         return result;
     }
+
     QByteArray bytes(maximumBytes, '\0');
-    unsigned long count = 0;
-    const unsigned long status = d_->readPipe(
-        d_->handle, pipeId, reinterpret_cast<unsigned char*>(bytes.data()),
-        static_cast<unsigned long>(bytes.size()), &count, nullptr);
+    int count = 0;
+    const int status = libusb_bulk_transfer(
+        d_->handle, pipeId, reinterpret_cast<unsigned char*>(bytes.data()), bytes.size(),
+        &count, kUsbTransferTimeoutMs);
     result.status = status;
-    result.transferredBytes = static_cast<int>(count);
-    if (status != 0U) {
-        result.pendingTimeout = status == 19U;
+    result.transferredBytes = count;
+    if (count > 0) {
+        bytes.resize(count);
+        result.data = bytes;
+    }
+    if (status != LIBUSB_SUCCESS && !(status == LIBUSB_ERROR_TIMEOUT && count > 0)) {
+        result.pendingTimeout = status == LIBUSB_ERROR_TIMEOUT;
         result.fatalError = !result.pendingTimeout;
         result.error = QStringLiteral(
-            "FT601 pipe read failed: status=%1 pipe=0x%2 requested=%3 transferred=%4")
-            .arg(status).arg(pipeId, 2, 16, QLatin1Char('0'))
-            .arg(maximumBytes).arg(count);
-        return result;
+            "FT601 bulk 读取失败: libusb=%1 (%2), endpoint=0x%3, requested=%4, transferred=%5")
+                           .arg(usbErrorText(status)).arg(status)
+                           .arg(pipeId, 2, 16, QLatin1Char('0')).arg(maximumBytes).arg(count);
     }
-    bytes.resize(static_cast<int>(count));
-    result.data = bytes;
     return result;
 }
 
-void D3xxRuntime::close()
+void LibusbRuntime::close()
 {
-    if (isOpen()) d_->close(d_->handle);
-    if (!d_.isNull()) d_->handle = nullptr;
+    if (!d_.isNull()) d_->closeHandle();
 }
 
-bool D3xxRuntime::isOpen() const { return isLoaded() && d_->handle != nullptr; }
+bool LibusbRuntime::reopen(QString* error)
+{
+    if (!isInitialized() || !d_->hasOpenIndex || !d_->hasIdentity) {
+        if (error != nullptr) *error = QStringLiteral("FT601 缺少可重连的稳定 USB 身份");
+        return false;
+    }
+    close();
+
+    libusb_device** list = nullptr;
+    const ssize_t count = libusb_get_device_list(d_->context, &list);
+    int status = count < 0 ? static_cast<int>(count) : LIBUSB_ERROR_NOT_FOUND;
+    for (ssize_t listIndex = 0; listIndex < count; ++listIndex) {
+        if (!d_->matchesIdentity(list[listIndex])) continue;
+        status = libusb_open(list[listIndex], &d_->handle);
+        if (status == LIBUSB_SUCCESS && !d_->selectCaptureInterface(list[listIndex], error)) {
+            d_->closeHandle();
+            status = LIBUSB_ERROR_NOT_FOUND;
+        }
+        break;
+    }
+    if (list != nullptr) libusb_free_device_list(list, 1);
+    if (status != LIBUSB_SUCCESS || d_->handle == nullptr) {
+        if (error != nullptr) {
+            *error = QStringLiteral("无法按稳定 USB 身份重连 FT601: %1 (%2)")
+                         .arg(usbErrorText(status)).arg(status);
+        }
+        d_->handle = nullptr;
+        return false;
+    }
+    libusb_set_auto_detach_kernel_driver(d_->handle, 1);
+    status = libusb_claim_interface(d_->handle, d_->interfaceNumber);
+    if (status != LIBUSB_SUCCESS) {
+        if (error != nullptr) {
+            *error = QStringLiteral("FT601 重连后无法 claim USB 接口: %1 (%2)")
+                         .arg(usbErrorText(status)).arg(status);
+        }
+        d_->closeHandle();
+        return false;
+    }
+    d_->interfaceClaimed = true;
+    if (d_->alternateSetting != 0) {
+        status = libusb_set_interface_alt_setting(
+            d_->handle, d_->interfaceNumber, d_->alternateSetting);
+        if (status != LIBUSB_SUCCESS) {
+            if (error != nullptr) {
+                *error = QStringLiteral("FT601 重连后无法选择 alternate setting: %1 (%2)")
+                             .arg(usbErrorText(status)).arg(status);
+            }
+            d_->closeHandle();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool LibusbRuntime::isOpen() const
+{
+    return isInitialized() && d_->handle != nullptr && d_->interfaceClaimed;
+}
 
 bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRootPath,
                      QString* vcdPath, QString* sidecarPath, QString* error)
@@ -586,7 +894,7 @@ bool SamplingCaptureSession::configure(CaptureTransport* const transport, const 
         QElapsedTimer responseTimer;
         responseTimer.start();
         while (responseTimer.elapsed() < 2'000) {
-            const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kD3xxReadChunkBytes);
+            const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kUsbReadChunkBytes);
             if (read.fatalError) {
                 if (error != nullptr) *error = read.error;
                 return false;
@@ -710,55 +1018,80 @@ bool SamplingCaptureSession::stopAndRecover(CaptureTransport* const transport, C
     }
     CaptureStatusV2 current;
     QString statusError;
-    if (queryStatus(transport, &current, &statusError)) {
-        if (current.state == 1U || current.state == 2U || current.state == 7U || current.state == 8U) {
-            if (status != nullptr) *status = current;
-            return true;
-        }
-    }
+    const bool initialStatusRead = queryStatus(transport, &current, &statusError);
+    const bool captureActive = !initialStatusRead ||
+        (current.state == 3U || current.state == 4U || current.state == 5U || current.state == 6U);
 
     CaptureFrameCodec codec;
     int transferred = 0;
-    if (!transport->writePipe(0x02U, codec.encode(CaptureFrameType::StopCapture, QByteArray(), 101U),
-                              &transferred, error)) {
-        return false;
-    }
-    QElapsedTimer timer;
-    timer.start();
-    bool endSeen = false;
-    while (timer.elapsed() < 2'000) {
-        const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kD3xxReadChunkBytes);
-        if (read.fatalError) {
-            if (error != nullptr) *error = read.error;
-            return false;
-        }
-        if (read.pendingTimeout || read.data.isEmpty()) continue;
-        const CaptureDecodeResult decoded = codec.feed(read.data);
-        if (!decoded.success) {
-            if (error != nullptr) *error = decoded.error;
-            return false;
-        }
-        for (const CaptureFrame& frame : decoded.frames) {
-            if (frame.header.type == CaptureFrameType::CaptureEnd) endSeen = true;
-            if (frame.header.type == CaptureFrameType::ErrorResponse) {
-                if (error != nullptr) *error = QStringLiteral("STOP_CAPTURE 返回 ERROR_RSP");
-                return false;
+    bool stopSent = !captureActive;
+    bool endSeen = !captureActive;
+    QString recoveryDetail;
+    if (captureActive) {
+        stopSent = transport->writePipe(
+            0x02U, codec.encode(CaptureFrameType::StopCapture, QByteArray(), 101U), &transferred,
+            &recoveryDetail);
+        if (stopSent) {
+            QElapsedTimer timer;
+            timer.start();
+            while (timer.elapsed() < 2'000 && !endSeen) {
+                const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kUsbReadChunkBytes);
+                if (read.fatalError) {
+                    recoveryDetail = read.error;
+                    break;
+                }
+                if (read.pendingTimeout || read.data.isEmpty()) continue;
+                const CaptureDecodeResult decoded = codec.feed(read.data);
+                if (!decoded.success) {
+                    recoveryDetail = decoded.error;
+                    break;
+                }
+                for (const CaptureFrame& frame : decoded.frames) {
+                    if (frame.header.type == CaptureFrameType::CaptureEnd) endSeen = true;
+                    if (frame.header.type == CaptureFrameType::ErrorResponse) {
+                        recoveryDetail = QStringLiteral("STOP_CAPTURE 返回 ERROR_RSP");
+                    }
+                }
             }
         }
-        if (endSeen) break;
     }
-    if (!endSeen) {
-        if (error != nullptr) *error = QStringLiteral("STOP_CAPTURE 未收到 CAPTURE_END");
-        return false;
+
+    CaptureStatusV2 beforeReopen;
+    bool configuredBeforeReopen = false;
+    QElapsedTimer statusTimer;
+    statusTimer.start();
+    while (statusTimer.elapsed() < 2'000) {
+        QString queryError;
+        if (queryStatus(transport, &beforeReopen, &queryError) &&
+            (beforeReopen.state == 1U || beforeReopen.state == 2U)) {
+            configuredBeforeReopen = true;
+            break;
+        }
+        if (!queryError.isEmpty()) recoveryDetail = queryError;
     }
+
+    QString reopenError;
+    const bool reopened = transport->reopen(&reopenError);
     CaptureStatusV2 recovered;
-    if (!queryStatus(transport, &recovered, error)) return false;
-    if (recovered.state != 1U && recovered.state != 2U) {
-        if (error != nullptr) *error = QStringLiteral("采集恢复后状态仍为 %1").arg(recovered.state);
-        return false;
+    QString finalQueryError;
+    const bool finalStatusRead = reopened && queryStatus(transport, &recovered, &finalQueryError);
+    const bool finalConfigured = finalStatusRead && (recovered.state == 1U || recovered.state == 2U);
+    if (status != nullptr) *status = finalStatusRead ? recovered : beforeReopen;
+    if (stopSent && endSeen && configuredBeforeReopen && finalConfigured) return true;
+
+    QStringList details;
+    if (!initialStatusRead && !statusError.isEmpty()) details.append(statusError);
+    if (!stopSent) details.append(recoveryDetail.isEmpty() ? QStringLiteral("STOP_CAPTURE 写入失败") : recoveryDetail);
+    if (!endSeen) details.append(QStringLiteral("STOP_CAPTURE 未收到 CAPTURE_END"));
+    if (!configuredBeforeReopen) details.append(QStringLiteral("STOP 后 2 秒内未回到 CONFIGURED"));
+    if (!reopened) details.append(reopenError.isEmpty() ? QStringLiteral("libusb 重连失败") : reopenError);
+    if (reopened && !finalStatusRead) details.append(finalQueryError.isEmpty()
+        ? QStringLiteral("libusb 重连后状态查询失败") : finalQueryError);
+    if (finalStatusRead && !finalConfigured) {
+        details.append(QStringLiteral("libusb 重连后状态仍为 %1").arg(recovered.state));
     }
-    if (status != nullptr) *status = recovered;
-    return true;
+    if (error != nullptr) *error = details.join(QStringLiteral("; "));
+    return false;
 }
 
 CaptureSessionResult SamplingCaptureSession::runDetailed(
@@ -770,11 +1103,13 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
     if (transport == nullptr || !transport->isOpen() || record == nullptr || timeoutMs <= 0) {
         result.phase = QStringLiteral("validation");
         result.message = QStringLiteral("采集会话参数无效");
+        saveSessionEvidence(taskRootPath, result);
         return result;
     }
     if (!configure(transport, config, &error)) {
         result.phase = QStringLiteral("configure");
         result.message = error;
+        saveSessionEvidence(taskRootPath, result);
         return result;
     }
     quint32 captureId = 0U;
@@ -788,6 +1123,7 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
         result.phase = QStringLiteral("complete");
         result.message.clear();
         queryStatus(transport, &result.status, nullptr);
+        saveSessionEvidence(taskRootPath, result);
         return result;
     }
     result.message = error;
@@ -797,6 +1133,7 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
     if (!result.recoverySucceeded && !recoveryError.isEmpty()) {
         result.message += QStringLiteral("; CAPTURE_RECOVERY_FAILED: ") + recoveryError;
     }
+    saveSessionEvidence(taskRootPath, result);
     return result;
 }
 
@@ -870,13 +1207,20 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
     CaptureFrameCodec codec;
 
     QByteArray rawCapture;
+    const auto persistRawCapture = [&]() {
+        const QString evidenceDir = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+        if (QDir().mkpath(evidenceDir)) {
+            saveFile(QDir(evidenceDir).filePath(QStringLiteral("raw_capture.dat")), rawCapture, nullptr);
+        }
+    };
     SamplingCaptureAssembler assembler;
     bool captureStarted = false;
     QElapsedTimer timer;
     timer.start();
     while (!assembler.complete() && timer.elapsed() < timeoutMs) {
-        const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kD3xxReadChunkBytes);
+        const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kUsbReadChunkBytes);
         if (read.fatalError) {
+            persistRawCapture();
             if (error != nullptr) *error = read.error;
             return false;
         }
@@ -885,19 +1229,26 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
         rawCapture.append(chunk);
         const CaptureDecodeResult decoded = codec.feed(chunk);
         if (!decoded.success) {
+            persistRawCapture();
             if (error != nullptr) *error = decoded.error;
             return false;
         }
         for (const CaptureFrame& frame : decoded.frames) {
             if (frame.header.type == CaptureFrameType::ErrorResponse) {
+                persistRawCapture();
                 if (error != nullptr) *error = QStringLiteral("采集流返回 ERROR_RSP");
                 return false;
             }
             if (frame.header.type == CaptureFrameType::CaptureMeta) captureStarted = true;
-            if (captureStarted && !assembler.append(frame, error)) return false;
+            if ((captureStarted || frame.header.type == CaptureFrameType::CaptureEnd) &&
+                !assembler.append(frame, error)) {
+                persistRawCapture();
+                return false;
+            }
         }
     }
     if (!assembler.complete()) {
+        persistRawCapture();
         if (error != nullptr) *error = QStringLiteral("等待 CAPTURE_END 超时");
         return false;
     }

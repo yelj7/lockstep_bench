@@ -23,7 +23,7 @@
 | `fault_injection/` | 注错配置、脚本调用、串口响应和注错记录 | M08 |
 | `acquisition/` | 采集配置、采集会话、帧流接收、分帧、校验和 VCD 生成 | M09-M10 |
 | `waveform_viewer/` | 固定 VCD/schema/analysis 读取、9 组展示模型、关键行为和诊断显示 | M11 |
-| `protocol_analyzer/` | 512-bit trace VCD 合同校验、analysis 生成、mismatch 和协议事件解析 | M12 |
+| `protocol_analyzer/` | 1024 路标量 VCD 合同校验、analysis 生成、mismatch 和协议事件解析 | M12 |
 | `reporting/` | 任务级证据索引、报告输入检查、`report.json` 和报告结论 | M13 |
 | `error_handling/` | 错误事件、日志格式化、阻断原因和维护检查 | M14 |
 
