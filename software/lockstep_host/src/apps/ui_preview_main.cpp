@@ -268,6 +268,32 @@ QJsonObject captureStatusJson(const lockstep::acquisition::CaptureStatusV2& stat
     return object;
 }
 
+QJsonObject usbDeviceJson(const lockstep::acquisition::LibusbDeviceInfo& device)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("index"), static_cast<double>(device.index));
+    object.insert(QStringLiteral("vid"),
+                  QStringLiteral("0x%1").arg(device.vendorId, 4, 16, QLatin1Char('0')));
+    object.insert(QStringLiteral("pid"),
+                  QStringLiteral("0x%1").arg(device.productId, 4, 16, QLatin1Char('0')));
+    object.insert(QStringLiteral("bus"), static_cast<double>(device.busNumber));
+    object.insert(QStringLiteral("address"), static_cast<double>(device.deviceAddress));
+    object.insert(QStringLiteral("serial_number"), device.serialNumber);
+    object.insert(QStringLiteral("description"), device.description);
+    object.insert(QStringLiteral("usb_speed"), device.usbSpeed);
+    object.insert(QStringLiteral("capture_interface_available"), device.captureInterfaceAvailable);
+    object.insert(QStringLiteral("interface_number"), device.interfaceNumber);
+    object.insert(QStringLiteral("alternate_setting"), device.alternateSetting);
+    object.insert(QStringLiteral("out_endpoint"),
+                  QStringLiteral("0x%1").arg(device.outEndpoint, 2, 16, QLatin1Char('0')));
+    object.insert(QStringLiteral("in_endpoint"),
+                  QStringLiteral("0x%1").arg(device.inEndpoint, 2, 16, QLatin1Char('0')));
+    if (!device.captureInterfaceError.isEmpty()) {
+        object.insert(QStringLiteral("capture_interface_error"), device.captureInterfaceError);
+    }
+    return object;
+}
+
 int runCaptureDiagnostic(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
@@ -284,6 +310,11 @@ int runCaptureDiagnostic(int argc, char* argv[])
         return 30;
     }
     const QList<lockstep::acquisition::LibusbDeviceInfo> devices = transport.enumerate(&error);
+    QJsonArray usbDevices;
+    for (const lockstep::acquisition::LibusbDeviceInfo& device : devices) {
+        usbDevices.append(usbDeviceJson(device));
+    }
+    output.insert(QStringLiteral("usb_devices"), usbDevices);
     bool argumentValid = true;
     const quint32 deviceIndex = unsignedArgument(
         arguments, QStringLiteral("--device-index"), devices.isEmpty() ? 0U : devices.first().index,
@@ -291,8 +322,25 @@ int runCaptureDiagnostic(int argc, char* argv[])
     if (!argumentValid || devices.isEmpty() || !transport.open(deviceIndex, &error)) {
         output.insert(QStringLiteral("success"), false);
         output.insert(QStringLiteral("error"), error.isEmpty() ? QStringLiteral("未枚举到 FT601 设备") : error);
+#if defined(Q_OS_WIN)
+        output.insert(QStringLiteral("access_hint"),
+                      QStringLiteral("确认目标 FT601 已绑定 libusbK，且未误改 JTAG/CMSIS-DAP 驱动"));
+#else
+        output.insert(QStringLiteral("access_hint"),
+                      QStringLiteral("检查 99-lockstep-ft601.rules、uaccess/plugdev 权限和接口占用"));
+#endif
         QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
         return 31;
+    }
+
+    output.insert(QStringLiteral("selected_usb_device"),
+                  usbDeviceJson(devices.at(static_cast<int>(deviceIndex))));
+    if (arguments.contains(QStringLiteral("--usb-status"))) {
+        output.insert(QStringLiteral("operation"), QStringLiteral("usb_status"));
+        output.insert(QStringLiteral("success"), true);
+        transport.close();
+        QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
+        return 0;
     }
 
     lockstep::acquisition::SamplingCaptureSession session;
@@ -349,7 +397,8 @@ int main(int argc, char* argv[])
         }
         if (argument == QStringLiteral("--capture-status") ||
             argument == QStringLiteral("--capture-stop") ||
-            argument == QStringLiteral("--capture-smoke")) {
+            argument == QStringLiteral("--capture-smoke") ||
+            argument == QStringLiteral("--usb-status")) {
             return runCaptureDiagnostic(argc, argv);
         }
     }

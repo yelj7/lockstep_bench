@@ -32,6 +32,7 @@ echo "使用 CMake 生成器: ${cmake_generator}"
 
 qt_version=$(qmake -query QT_VERSION)
 hidapi_version=$(pkg-config --modversion hidapi-hidraw)
+libusb_version=$(pkg-config --modversion libusb-1.0)
 
 assert_safe_output_path()
 {
@@ -57,6 +58,7 @@ mkdir -p "${build_dir}" "${dist_dir}"
 cmake -S "${source_dir}" -B "${build_dir}" -G "${cmake_generator}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/ \
+    -DLOCKSTEP_KYLIN_PACKAGE=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "${build_dir}/CMakeCache.txt")
 [[ -n "${version}" ]] || { echo "无法从 CMake 项目读取版本" >&2; exit 1; }
@@ -83,6 +85,7 @@ done < <(find "${package_tree}/opt/lockstep-host" -type f -print0)
 export LOCKSTEP_BUILD_VERSION=${version}
 export LOCKSTEP_QT_VERSION=${qt_version}
 export LOCKSTEP_HIDAPI_VERSION=${hidapi_version}
+export LOCKSTEP_LIBUSB_VERSION=${libusb_version}
 dependency_manifest="${package_tree}/opt/lockstep-host/share/doc/runtime-dependencies.json"
 "${script_dir}/generate-runtime-dependencies.sh" "${package_tree}" "${dependency_manifest}"
 "${script_dir}/audit-linux-runtime.sh" "${package_tree}"
@@ -182,6 +185,7 @@ cat >"${package_tree}/opt/lockstep-host/share/doc/build-environment.json" <<EOF
   "project_version": "${version}",
   "qt_version": "${qt_version}",
   "hidapi_version": "${hidapi_version}",
+  "libusb_version": "${libusb_version}",
   "cmake_version": "$(cmake --version | head -n 1 | awk '{print $3}')",
   "cmake_generator": "${cmake_generator}",
   "compiler": "$(c++ --version | head -n 1)",

@@ -31,4 +31,5 @@ qt_widgets|pkg-config:Qt5Widgets|5.15.2|qtbase5-dev|Qt Widgets 开发模块
 qt_network|pkg-config:Qt5Network|5.15.2|qtbase5-dev|Qt Network 开发模块
 qt_serialport|pkg-config:Qt5SerialPort|5.15.2|libqt5serialport5-dev|Qt SerialPort 开发模块
 hidapi|pkg-config:hidapi-hidraw|0.14.*|libhidapi-dev|CMSIS-DAP hidraw 开发库
+libusb|pkg-config:libusb-1.0|1.*|libusb-1.0-0-dev|FT601 跨平台 USB 开发库
 pkg_config|command|pkg-config|pkg-config|开发库元数据查询

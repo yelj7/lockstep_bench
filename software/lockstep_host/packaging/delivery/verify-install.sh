@@ -32,6 +32,7 @@ check_file "${app_root}/share/doc/runtime-dependencies.json"
 check_file /usr/bin/lockstep-host
 check_file /usr/share/applications/lockstep-host.desktop
 check_file /etc/udev/rules.d/99-lockstep-cmsis-dap.rules
+check_file /etc/udev/rules.d/99-lockstep-ft601.rules
 
 while IFS= read -r candidate; do
     file_description=$(file -b "${candidate}")
@@ -53,9 +54,43 @@ if grep -R -q --include='*.json' 'targetDebugToolPath' "${app_root}/resources"; 
     failed=1
 fi
 
+ft601_present=0
+for vendor_file in /sys/bus/usb/devices/*/idVendor; do
+    [[ -f ${vendor_file} ]] || continue
+    device_root=${vendor_file%/idVendor}
+    [[ $(cat "${vendor_file}") == 0403 ]] || continue
+    [[ -f "${device_root}/idProduct" && $(cat "${device_root}/idProduct") == 601f ]] || continue
+    ft601_present=1
+    break
+done
+if [[ ${ft601_present} -eq 1 ]]; then
+    if [[ $(id -u) -eq 0 ]]; then
+        verify_user=${LOCKSTEP_VERIFY_USER:-${SUDO_USER:-}}
+        if [[ -z ${verify_user} || ${verify_user} == root ]] || ! id "${verify_user}" >/dev/null 2>&1; then
+            echo "FT601 已连接；root 验收必须通过 LOCKSTEP_VERIFY_USER 或 SUDO_USER 指定普通用户。" >&2
+            failed=1
+            usb_status_output=""
+        else
+            usb_status_output=$(runuser -u "${verify_user}" -- lockstep-host --usb-status 2>&1) || {
+                echo "FT601 已连接，但普通用户 ${verify_user} 的 libusb 枚举/claim 验收失败：" >&2
+                echo "${usb_status_output}" >&2
+                failed=1
+            }
+        fi
+    else
+        usb_status_output=$(lockstep-host --usb-status 2>&1) || {
+            echo "FT601 已连接，但当前普通用户的 libusb 枚举/claim 验收失败：" >&2
+            echo "${usb_status_output}" >&2
+            failed=1
+        }
+    fi
+else
+    echo "未连接 FT601，跳过普通用户 --usb-status 真机验收。"
+fi
+
 if [ "${failed}" -ne 0 ]; then
     echo "安装验收失败。" >&2
     exit 1
 fi
 
-echo "安装基础验收通过。硬件连接、烧写、回读、运行和串口收发仍需人工联调。"
+echo "安装基础验收通过。正式采集、烧写、回读、运行和串口收发仍需硬件联调。"
