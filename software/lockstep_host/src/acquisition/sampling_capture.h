@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.h
 * 日期: 2026-07-14
-* 版本: v3.0
-* 更新记录: 增加 v3 事件帧、START_EVENT_STREAM 和稀疏事件记录合同。
-* 描述: 声明帧编解码、采集会话、libusb 传输及 VCD/事件产物导出。
+* 版本: v3.1
+* 更新记录: 主分支恢复 D3XX 传输并保留 v3 事件帧与稀疏事件记录合同。
+* 描述: 声明帧编解码、采集会话、D3XX 传输及 VCD/事件产物导出。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_ACQUISITION_SAMPLING_CAPTURE_H_
@@ -199,19 +199,8 @@ private:
     bool hasEventSequence_[9] = {};
 };
 
-struct LibusbDeviceInfo final {
+struct D3xxDeviceInfo final {
     quint32 index = 0;
-    quint16 vendorId = 0;
-    quint16 productId = 0;
-    quint8 busNumber = 0;
-    quint8 deviceAddress = 0;
-    bool captureInterfaceAvailable = false;
-    int interfaceNumber = -1;
-    int alternateSetting = 0;
-    quint8 outEndpoint = 0;
-    quint8 inEndpoint = 0;
-    QString usbSpeed;
-    QString captureInterfaceError;
     QString serialNumber;
     QString description;
 };
@@ -241,17 +230,18 @@ public:
     virtual bool isOpen() const = 0;
 };
 
-class LibusbRuntime final : public CaptureTransport {
+class D3xxRuntime final : public CaptureTransport {
 public:
-    bool initialize(QString* error);
-    QList<LibusbDeviceInfo> enumerate(QString* error) const;
+    ~D3xxRuntime() override;
+    bool load(QString* error);
+    QList<D3xxDeviceInfo> enumerate(QString* error) const;
     bool open(quint32 index, QString* error);
     bool writePipe(quint8 pipeId, const QByteArray& bytes, int* transferred, QString* error) override;
     QByteArray readPipe(quint8 pipeId, int maximumBytes, QString* error) override;
     CapturePipeReadResult readPipeDetailed(quint8 pipeId, int maximumBytes) override;
     bool reopen(QString* error) override;
     void close();
-    bool isInitialized() const;
+    bool isLoaded() const;
     bool isOpen() const override;
 
 private:

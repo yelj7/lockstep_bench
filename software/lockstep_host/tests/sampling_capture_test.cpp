@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture_test.cpp
 * 日期: 2026-07-16
-* 版本: 3.0
-* 更新记录: 增加 v3 事件流释放、早到事件帧和事件归档回归。
-* 描述: 验证 v2/v3、libusb、恢复门槛、1024-bit VCD 和稀疏事件合同。
+* 版本: 3.1
+* 更新记录: 主分支恢复 D3XX 后更新传输无关的恢复门槛断言。
+* 描述: 验证 v2/v3、恢复门槛、1024-bit VCD 和稀疏事件合同。
 **********************************************************/
 
 #include <QCoreApplication>
@@ -166,16 +166,6 @@ int main(int argc, char** argv)
 
     SamplingCaptureConfig config;
     QString error;
-    LibusbRuntime usbTransport;
-    if (!expect(usbTransport.initialize(&error), "libusb context initializes") ||
-        !expect(usbTransport.isInitialized() && !usbTransport.isOpen(),
-                "initialized libusb transport starts closed") ||
-        !expect(!usbTransport.open(0xffffffffU, &error) &&
-                    error.contains(QStringLiteral("FT601")),
-                "invalid FT601 index is rejected") ||
-        !expect(usbTransport.readPipeDetailed(0x82U, 64).fatalError,
-                "closed libusb transport read is fatal")) return 1;
-    usbTransport.close();
     if (!expect(config.validate(&error), "default 1024 capture config is valid") ||
         !expect(config.sampleRateHz == 120'000'000U, "default config matches live 120 MHz hardware") ||
         !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract") ||
@@ -251,7 +241,7 @@ int main(int argc, char** argv)
                 "collect timeout performs STOP recovery") ||
         !expect(timeoutTransport.commands.contains(CaptureFrameType::StopCapture) &&
                     timeoutTransport.reopenCount == 1,
-                "STOP recovery reopens libusb exactly once") ||
+                "STOP recovery reopens transport exactly once") ||
         !expect(QFileInfo::exists(QDir(recoveryTask.path()).filePath(QStringLiteral("evidence/raw_capture.dat"))) &&
                     QFileInfo::exists(QDir(recoveryTask.path()).filePath(QStringLiteral("evidence/capture_status.json"))),
                 "failed capture preserves raw and status evidence")) return 1;
@@ -265,7 +255,7 @@ int main(int argc, char** argv)
     if (!expect(!failedRecovery.success && failedRecovery.recoveryAttempted &&
                     !failedRecovery.recoverySucceeded &&
                     failedRecovery.message.contains(QStringLiteral("CAPTURE_RECOVERY_FAILED")),
-                "libusb reopen failure is reported as CAPTURE_RECOVERY_FAILED")) return 1;
+                "transport reopen failure is reported as CAPTURE_RECOVERY_FAILED")) return 1;
 
     CaptureFrameCodec encoder;
     QByteArray meta;

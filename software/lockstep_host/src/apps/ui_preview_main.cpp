@@ -227,22 +227,22 @@ int runLiveCapture(int argc, char* argv[])
     if (!argumentsValid) return 21;
 
     QString error;
-    lockstep::acquisition::LibusbRuntime transport;
-    if (!transport.initialize(&error)) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_initialize"), error, 22);
-        QTextStream(stderr) << QStringLiteral("FT601 libusb 初始化失败: ") << error << Qt::endl;
+    lockstep::acquisition::D3xxRuntime transport;
+    if (!transport.load(&error)) {
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_load"), error, 22);
+        QTextStream(stderr) << QStringLiteral("FT601 D3XX 加载失败: ") << error << Qt::endl;
         return 22;
     }
-    const QList<lockstep::acquisition::LibusbDeviceInfo> devices = transport.enumerate(&error);
+    const QList<lockstep::acquisition::D3xxDeviceInfo> devices = transport.enumerate(&error);
     if (devices.isEmpty()) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_enumerate"), error, 23);
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_enumerate"), error, 23);
         QTextStream(stderr) << QStringLiteral("FT601 枚举失败: ") << error << Qt::endl;
         return 23;
     }
     const quint32 deviceIndex = unsignedArgument(arguments, QStringLiteral("--device-index"),
                                                  devices.first().index, &argumentsValid);
     if (!argumentsValid || !transport.open(deviceIndex, &error)) {
-        writeLiveCaptureFailure(taskRoot, QStringLiteral("libusb_open"), error, 24);
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("d3xx_open"), error, 24);
         QTextStream(stderr) << QStringLiteral("FT601 打开失败: ") << error << Qt::endl;
         return 24;
     }
@@ -345,14 +345,14 @@ int runCaptureDiagnostic(int argc, char* argv[])
     output.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-diagnostic-v2"));
     output.insert(QStringLiteral("generated_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     QString error;
-    lockstep::acquisition::LibusbRuntime transport;
-    if (!transport.initialize(&error)) {
+    lockstep::acquisition::D3xxRuntime transport;
+    if (!transport.load(&error)) {
         output.insert(QStringLiteral("success"), false);
         output.insert(QStringLiteral("error"), error);
         QTextStream(stdout) << QJsonDocument(output).toJson(QJsonDocument::Compact) << Qt::endl;
         return 30;
     }
-    const QList<lockstep::acquisition::LibusbDeviceInfo> devices = transport.enumerate(&error);
+    const QList<lockstep::acquisition::D3xxDeviceInfo> devices = transport.enumerate(&error);
     bool argumentValid = true;
     const quint32 deviceIndex = unsignedArgument(
         arguments, QStringLiteral("--device-index"), devices.isEmpty() ? 0U : devices.first().index,

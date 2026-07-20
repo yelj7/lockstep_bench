@@ -1882,13 +1882,13 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
                  mismatchEnable ? QStringLiteral("true") : QStringLiteral("false"),
                  QString::number(mismatchMask, 16)));
     if (requestHardwareSend) {
-        acquisition::LibusbRuntime transport;
+        acquisition::D3xxRuntime transport;
         QString transportError;
-        if (!transport.initialize(&transportError)) {
+        if (!transport.load(&transportError)) {
             logError(QStringLiteral("Sampling"), transportError);
             return false;
         }
-        const QList<acquisition::LibusbDeviceInfo> devices = transport.enumerate(&transportError);
+        const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&transportError);
         if (devices.isEmpty() || !transport.open(devices.first().index, &transportError)) {
             logError(QStringLiteral("Sampling"), transportError.isEmpty()
                 ? QStringLiteral("未枚举到 FT601 设备") : transportError);
@@ -2004,10 +2004,10 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 ? QStringLiteral("错误注入失败，已阻断 ARM: %1").arg(faultResult.error)
                 : captureError;
         }
-        acquisition::LibusbRuntime transport;
-        bool success = captureError.isEmpty() && transport.initialize(&captureError);
+        acquisition::D3xxRuntime transport;
+        bool success = captureError.isEmpty() && transport.load(&captureError);
         if (success) {
-            const QList<acquisition::LibusbDeviceInfo> devices = transport.enumerate(&captureError);
+            const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&captureError);
             success = !devices.isEmpty();
             if (!success && captureError.isEmpty()) captureError = QStringLiteral("未枚举到 FT601 设备");
             if (success) success = transport.open(devices.first().index, &captureError);

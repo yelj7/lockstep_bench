@@ -1,9 +1,9 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
 # * 日期: 2026-07-14
-# * 版本: v2.2
-# * 更新记录: 增加工作台确认弹窗模块
-# * 描述: 构建 lockstep_ui_preview、确认弹窗模块并复制 libusb 与运行资源。
+# * 版本: v2.3
+# * 更新记录: 主分支恢复复制 FTD3XX 运行库并保留工作台确认弹窗模块。
+# * 描述: 构建 lockstep_ui_preview、确认弹窗模块并复制 D3XX 与运行资源。
 # **********************************************************/
 
 set(LOCKSTEP_UI_PREVIEW_SOURCES
@@ -107,24 +107,24 @@ if(WIN32)
         )
     endif()
 
-    find_file(LOCKSTEP_LIBUSB_RUNTIME_DLL
-        NAMES libusb-1.0.dll
+    find_file(LOCKSTEP_FTD3XX_RUNTIME_DLL
+        NAMES FTD3XX.dll
         PATHS
-            "${CMAKE_PREFIX_PATH}/bin"
-            "D:/Program Files/msys64/ucrt64/bin"
+            "${CMAKE_SOURCE_DIR}/../../.codex-tasks/20260715-protocol-decode/ftd3xx"
+            "${CMAKE_SOURCE_DIR}/../../software/lockstep_host/resources"
         NO_DEFAULT_PATH
     )
-    if(LOCKSTEP_LIBUSB_RUNTIME_DLL)
+    if(LOCKSTEP_FTD3XX_RUNTIME_DLL)
         add_custom_command(
             TARGET lockstep_ui_preview
             POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${LOCKSTEP_LIBUSB_RUNTIME_DLL}"
+                "${LOCKSTEP_FTD3XX_RUNTIME_DLL}"
                 $<TARGET_FILE_DIR:lockstep_ui_preview>
-            COMMENT "Copy FT601 libusb runtime next to lockstep_ui_preview"
+            COMMENT "Copy FT601 D3XX runtime next to lockstep_ui_preview"
         )
     else()
-        message(FATAL_ERROR "libusb-1.0.dll is required for the Windows product")
+        message(FATAL_ERROR "FTD3XX.dll is required for the Windows product")
     endif()
 endif()
 

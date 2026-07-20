@@ -47,7 +47,7 @@
     {
       "code": "CAPTURE_RECOVERY_FAILED",
       "severity": "blocking",
-      "message": "采集 STOP 与 libusb 重连后仍未恢复",
+      "message": "采集 STOP 与 D3XX 重连后仍未恢复",
       "suggestion": "保留 raw/status 证据并执行 PL 复位；不要自动重烧比特流。"
     }
   ]
