@@ -1,0 +1,29 @@
+{
+  "schema": "lockstep-eight-protocol-benchmark-expectation-v1",
+  "fixture_kind": "simulation_only",
+  "mismatch_expected_mask": "0x00",
+  "groups": {
+    "ahb": {"expected_events": 128, "transaction_type": "ahb_transfer", "minimum_transactions": 128, "required_types": ["ahb_transfer"]},
+    "uart": {"expected_events": 32, "transaction_type": "uart_frame", "minimum_transactions": 32, "required_types": ["uart_frame"]},
+    "spi": {"expected_events": 32, "transaction_type": "spi_transfer", "minimum_transactions": 32, "required_types": ["spi_transfer"]},
+    "can": {"expected_events": 32, "transaction_type": "can_frame", "minimum_transactions": 32, "required_types": ["can_frame"]},
+    "i2c": {"expected_events": 131, "transaction_type": "i2c_transfer", "minimum_transactions": 32, "required_types": ["i2c_ack", "i2c_segment", "i2c_transfer"]},
+    "eth": {"expected_events": 32, "transaction_type": "eth_frame", "minimum_transactions": 32, "required_types": ["eth_frame"]},
+    "usb": {"expected_events": 33, "transaction_type": "usb_packet", "minimum_transactions": 32, "required_types": ["usb_reset", "usb_packet"]},
+    "jtag": {"expected_events": 544, "transaction_type": "jtag_scan", "minimum_transactions": 32, "required_types": ["jtag_cycle", "jtag_scan"]}
+  },
+  "required_semantics": [
+    "AHB READ",
+    "AHB WRITE",
+    "RESP=ERROR",
+    "UART TX 0x55",
+    "UART RX 0xA3",
+    "SPI 8 bits",
+    "CAN ID=0x120",
+    "I2C REPEATED_START",
+    "ETH FRAME TYPE=0x0800",
+    "USB RESET",
+    "USB PID=0xD",
+    "JTAG IR SCAN"
+  ]
+}

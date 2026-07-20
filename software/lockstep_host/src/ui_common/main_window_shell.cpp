@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: main_window_shell.cpp
 * 日期: 2026-07-14
-* 版本: v1.3
-* 更新记录: 内嵌波形滚动条减半为 9px，并仅显示真实协议波形信号
+* 版本: v1.4
+* 更新记录: 隐藏空闲协议占位文本，并按协议汇总关键行为与锁步状态
 * 描述: 实现上位机主窗口框架及各工作页面
 **********************************************************/
 
@@ -87,6 +87,83 @@ const QStringList& samplingMismatchDescriptions()
         QStringLiteral("AHB master 输出不匹配")
     };
     return descriptions;
+}
+
+bool protocolGroupUnavailable(const TraceGroupViewItem& group)
+{
+    const QString status = group.status.trimmed().toLower();
+    return status.contains(QStringLiteral("unavailable")) ||
+        status.contains(QStringLiteral("not_available")) ||
+        status.contains(QStringLiteral("not_captured")) ||
+        status.contains(QStringLiteral("missing")) ||
+        status.contains(QStringLiteral("invalid"));
+}
+
+QString protocolActivityBreakdown(const TraceGroupViewItem& group)
+{
+    int reads = 0;
+    int writes = 0;
+    int errors = 0;
+    for (const QString& transaction : group.transactions) {
+        const QString upper = transaction.toUpper();
+        if (upper.contains(QStringLiteral(" READ "))) ++reads;
+        if (upper.contains(QStringLiteral(" WRITE "))) ++writes;
+        if (upper.contains(QStringLiteral("RESP=ERROR")) ||
+            upper.contains(QStringLiteral("RESP=RETRY")) ||
+            upper.contains(QStringLiteral("RESP=SPLIT")) ||
+            upper.contains(QStringLiteral("FRAME_ERROR=1")) ||
+            upper.contains(QStringLiteral("CRC_ERROR"))) {
+            ++errors;
+        }
+    }
+
+    QStringList parts;
+    if (reads > 0) parts.append(QStringLiteral("读 %1").arg(reads));
+    if (writes > 0) parts.append(QStringLiteral("写 %1").arg(writes));
+    if (errors > 0) parts.append(QStringLiteral("异常 %1").arg(errors));
+    return parts.isEmpty() ? QStringLiteral("已检测到有效事务") : parts.join(QStringLiteral(" · "));
+}
+
+QStringList representativeProtocolTransactions(const QStringList& transactions)
+{
+    constexpr int kMaximumRepresentativeEvents = 4;
+    QStringList result;
+    const auto appendUnique = [&result](const QString& transaction) {
+        if (!transaction.isEmpty() && !result.contains(transaction)) result.append(transaction);
+    };
+    for (const QString& transaction : transactions) {
+        const QString upper = transaction.toUpper();
+        if (upper.contains(QStringLiteral("MISMATCH")) ||
+            upper.contains(QStringLiteral("RESP=ERROR")) ||
+            upper.contains(QStringLiteral("RESP=RETRY")) ||
+            upper.contains(QStringLiteral("RESP=SPLIT")) ||
+            upper.contains(QStringLiteral("FRAME_ERROR=1")) ||
+            upper.contains(QStringLiteral("CRC_ERROR"))) {
+            appendUnique(transaction);
+            if (result.size() >= kMaximumRepresentativeEvents) return result;
+        }
+    }
+    if (!transactions.isEmpty()) appendUnique(transactions.first());
+    if (transactions.size() > 2) appendUnique(transactions.at(transactions.size() / 2));
+    if (transactions.size() > 1) appendUnique(transactions.last());
+    return result.mid(0, kMaximumRepresentativeEvents);
+}
+
+void addRepresentativeProtocolEvents(
+    QTreeWidgetItem* const parent,
+    const QStringList& transactions)
+{
+    if (parent == nullptr) return;
+    const QStringList representatives = representativeProtocolTransactions(transactions);
+    for (const QString& transaction : representatives) {
+        const QRegularExpressionMatch range =
+            QRegularExpression(QStringLiteral("^\\[([^]]+)\\]\\s*(.*)$")).match(transaction);
+        const QString time = range.hasMatch() ? range.captured(1) : QStringLiteral("-");
+        const QString behavior = range.hasMatch() ? range.captured(2) : transaction;
+        QTreeWidgetItem* const item = new QTreeWidgetItem(
+            parent, {QStringLiteral("代表事件"), time, behavior});
+        item->setToolTip(2, transaction);
+    }
 }
 
 int scaledMetric(const int value, const double scale)
@@ -984,8 +1061,8 @@ private:
                 drawTransactions(painter, rect.adjusted(0, 4, 0, -4), row);
             } else if (unavailableStatus(row.status)) {
                 drawUnavailable(painter, rect, row.reason);
-            } else {
-                drawEmptyActivity(painter, rect, QStringLiteral("已解析，未检测到协议事件"));
+            } else if (row.groupId == QStringLiteral("mismatch")) {
+                drawEmptyActivity(painter, rect, QStringLiteral("处理器内无Mismatch"));
             }
             return;
         }
@@ -2088,7 +2165,7 @@ void MainWindowShell::setProtocolAnalysisView(
 {
     QLabel* const statusLabel = findChild<QLabel*>(QStringLiteral("protocol_status_label"));
     QLineEdit* const analysisEdit = findChild<QLineEdit*>(QStringLiteral("protocol_analysis_path_edit"));
-    QPlainTextEdit* const keyEdit = findChild<QPlainTextEdit*>(QStringLiteral("protocol_key_behaviors_edit"));
+    QTreeWidget* const keyTree = findChild<QTreeWidget*>(QStringLiteral("protocol_key_behaviors_tree"));
     QPlainTextEdit* const diagnosticsEdit = findChild<QPlainTextEdit*>(QStringLiteral("protocol_diagnostics_edit"));
 
     if (statusLabel != nullptr) {
@@ -2099,11 +2176,91 @@ void MainWindowShell::setProtocolAnalysisView(
     if (analysisEdit != nullptr) {
         analysisEdit->setText(analysisPath);
     }
-    if (keyEdit != nullptr) {
-        keyEdit->setProperty("protocolEventCount", keyBehaviors.size());
-        keyEdit->setPlainText(keyBehaviors.isEmpty()
-            ? QStringLiteral("采样窗口内未检测到完整协议事务。")
-            : keyBehaviors.join(QLatin1Char('\n')));
+    if (keyTree != nullptr) {
+        keyTree->clear();
+        int totalEvents = 0;
+        int activeProtocolCount = 0;
+        QStringList inactiveProtocols;
+        QStringList unavailableProtocols;
+        const TraceGroupViewItem* mismatchGroup = nullptr;
+        for (const TraceGroupViewItem& group : waveformGroups_) {
+            if (group.id == QStringLiteral("mismatch")) {
+                mismatchGroup = &group;
+                continue;
+            }
+            totalEvents += group.transactions.size();
+            if (protocolGroupUnavailable(group)) {
+                unavailableProtocols.append(QStringLiteral("%1: %2")
+                    .arg(group.displayName, group.reason));
+            } else if (group.transactions.isEmpty()) {
+                inactiveProtocols.append(group.displayName);
+            } else {
+                ++activeProtocolCount;
+            }
+        }
+        if (mismatchGroup != nullptr) totalEvents += mismatchGroup->transactions.size();
+
+        QTreeWidgetItem* const overview = new QTreeWidgetItem(
+            keyTree,
+            {QStringLiteral("采集概览"), QStringLiteral("%1 条事件").arg(totalEvents),
+             QStringLiteral("%1 个活跃协议").arg(activeProtocolCount)});
+        QFont overviewFont = overview->font(0);
+        overviewFont.setBold(true);
+        for (int column = 0; column < 3; ++column) overview->setFont(column, overviewFont);
+        if (!inactiveProtocols.isEmpty()) {
+            new QTreeWidgetItem(
+                overview,
+                {QStringLiteral("未见活动"), QStringLiteral("%1 个").arg(inactiveProtocols.size()),
+                 inactiveProtocols.join(QStringLiteral("、"))});
+        }
+        if (!unavailableProtocols.isEmpty()) {
+            QTreeWidgetItem* const unavailable = new QTreeWidgetItem(
+                overview,
+                {QStringLiteral("设计缺口"), QStringLiteral("%1 个").arg(unavailableProtocols.size()),
+                 unavailableProtocols.join(QStringLiteral("；"))});
+            unavailable->setForeground(1, QBrush(QColor(QStringLiteral("#ad6800"))));
+        }
+        overview->setExpanded(true);
+
+        const bool mismatchDetected = mismatchGroup != nullptr && !mismatchGroup->transactions.isEmpty();
+        QTreeWidgetItem* const mismatchItem = new QTreeWidgetItem(
+            keyTree,
+            {QStringLiteral("锁步一致性"),
+             mismatchDetected ? QStringLiteral("异常 · %1 条").arg(mismatchGroup->transactions.size())
+                              : QStringLiteral("正常"),
+             mismatchDetected ? QStringLiteral("检测到处理器内 Mismatch")
+                              : QStringLiteral("处理器内无Mismatch")});
+        const QColor mismatchColor(mismatchDetected ? QStringLiteral("#b42318")
+                                                     : QStringLiteral("#2f7d4a"));
+        mismatchItem->setForeground(1, QBrush(mismatchColor));
+        mismatchItem->setForeground(2, QBrush(mismatchColor));
+        if (mismatchDetected) {
+            addRepresentativeProtocolEvents(mismatchItem, mismatchGroup->transactions);
+            mismatchItem->setExpanded(true);
+        }
+
+        for (const TraceGroupViewItem& group : waveformGroups_) {
+            if (group.id == QStringLiteral("mismatch") || group.transactions.isEmpty() ||
+                protocolGroupUnavailable(group)) {
+                continue;
+            }
+            QTreeWidgetItem* const protocolItem = new QTreeWidgetItem(
+                keyTree,
+                {group.displayName, QStringLiteral("%1 条").arg(group.transactions.size()),
+                 protocolActivityBreakdown(group)});
+            addRepresentativeProtocolEvents(protocolItem, group.transactions);
+        }
+
+        if (waveformGroups_.isEmpty() && !keyBehaviors.isEmpty()) {
+            QTreeWidgetItem* const legacyItem = new QTreeWidgetItem(
+                keyTree,
+                {QStringLiteral("协议事件"), QStringLiteral("%1 条").arg(keyBehaviors.size()),
+                 QStringLiteral("缺少协议分组信息")});
+            addRepresentativeProtocolEvents(legacyItem, keyBehaviors);
+        }
+        keyTree->setProperty("protocolEventCount", totalEvents > 0 ? totalEvents : keyBehaviors.size());
+        keyTree->setProperty("activeProtocolCount", activeProtocolCount);
+        keyTree->setProperty("mismatchDetected", mismatchDetected);
     }
     if (diagnosticsEdit != nullptr) {
         diagnosticsEdit->setPlainText(diagnostics.isEmpty() ? QStringLiteral("暂无诊断。") : diagnostics.join(QLatin1Char('\n')));
@@ -3044,13 +3201,20 @@ QWidget* MainWindowShell::createProtocolPage()
     layout->addWidget(inputPanel);
 
     QSplitter* const splitter = new QSplitter(Qt::Horizontal, content);
-    QGroupBox* const keyPanel = panelBox(QStringLiteral("关键行为"), splitter);
+    QGroupBox* const keyPanel = panelBox(QStringLiteral("关键行为摘要"), splitter);
     QVBoxLayout* const keyLayout = new QVBoxLayout(keyPanel);
-    QPlainTextEdit* const keyEdit = new QPlainTextEdit(keyPanel);
-    keyEdit->setObjectName(QStringLiteral("protocol_key_behaviors_edit"));
-    keyEdit->setReadOnly(true);
-    keyEdit->setPlaceholderText(QStringLiteral("M12 输出的总线、外设和 mismatch 行为会显示在这里。"));
-    keyLayout->addWidget(keyEdit);
+    QTreeWidget* const keyTree = new QTreeWidget(keyPanel);
+    keyTree->setObjectName(QStringLiteral("protocol_key_behaviors_tree"));
+    keyTree->setColumnCount(3);
+    keyTree->setHeaderLabels({QStringLiteral("协议 / 类别"), QStringLiteral("状态 / 数量"), QStringLiteral("关键行为")});
+    keyTree->setRootIsDecorated(true);
+    keyTree->setAlternatingRowColors(true);
+    keyTree->setUniformRowHeights(true);
+    keyTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    keyTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    keyTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    keyTree->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    keyLayout->addWidget(keyTree);
     QGroupBox* const diagnosticsPanel = panelBox(QStringLiteral("诊断"), splitter);
     QVBoxLayout* const diagnosticsLayout = new QVBoxLayout(diagnosticsPanel);
     QPlainTextEdit* const diagnosticsEdit = new QPlainTextEdit(diagnosticsPanel);

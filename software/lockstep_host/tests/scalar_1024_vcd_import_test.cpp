@@ -13,15 +13,16 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPlainTextEdit>
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QTreeWidget>
 #include <QWheelEvent>
 
 #include "protocol_analysis.h"
 #include "main_window_shell.h"
+#include "test_temp_directory.h"
 #include "waveform_trace_viewer.h"
 
 namespace {
@@ -137,7 +138,7 @@ int exactColorCount(const QImage& image, const QColor& expected)
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
-    QTemporaryDir taskRoot(QDir::tempPath() + QStringLiteral("/lockstep_scalar_1024_XXXXXX"));
+    QTemporaryDir taskRoot(lockstepTestTemporaryTemplate(QStringLiteral("scalar_1024")));
     if (!expect(taskRoot.isValid(), QStringLiteral("temporary task directory is available"))) return 1;
     const QString waveformPath = QDir(taskRoot.path()).filePath(QStringLiteral("waveform"));
     if (!expect(QDir().mkpath(waveformPath), QStringLiteral("waveform directory is available"))) return 1;
@@ -330,12 +331,12 @@ int main(int argc, char* argv[])
         model.status, model.analysisPath, model.keyBehaviors, model.diagnostics);
     window.showPage(lockstep::ui::NavigationPage::Protocol);
     QCoreApplication::processEvents();
-    QPlainTextEdit* const eventList =
-        window.findChild<QPlainTextEdit*>(QStringLiteral("protocol_key_behaviors_edit"));
+    QTreeWidget* const eventList =
+        window.findChild<QTreeWidget*>(QStringLiteral("protocol_key_behaviors_tree"));
     if (!expect(eventList != nullptr &&
-                    eventList->property("protocolEventCount").toInt() == model.keyBehaviors.size() &&
-                    !eventList->toPlainText().trimmed().isEmpty(),
-                QStringLiteral("protocol page renders the decoded event list"))) return 1;
+                    eventList->property("protocolEventCount").toInt() > 0 &&
+                    eventList->topLevelItemCount() >= 2,
+                QStringLiteral("protocol page renders the grouped behavior summary"))) return 1;
     if (!screenshotPath.isEmpty()) {
         QImage protocolPage(window.size(), QImage::Format_ARGB32_Premultiplied);
         protocolPage.fill(Qt::white);

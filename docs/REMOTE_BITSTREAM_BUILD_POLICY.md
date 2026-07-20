@@ -24,4 +24,4 @@
 
 已有阶段产物不要求在服务器重复生成。允许上传综合 DCP、IP DCP、约束、源清单和仿真门禁摘要，并从下一阶段继续，但必须同时满足：Vivado 主次版本一致、器件型号一致、source digest 一致、DCP 可正常打开且无黑盒。续跑记录必须写明输入 DCP 的 SHA-256、上一阶段状态和实际起始命令。任何一项不一致时，远端必须从综合重新开始。
 
-构建完成后，下载比特流、`.ltx`、timing、utilization、DRC、clock interaction、source manifest、构建日志和 SHA-256 清单到对应 `.codex-tasks/` 目录。只有下载后的 SHA-256 与远端清单一致，产物才可用于上板。
+构建完成后，下载比特流、`.ltx`、timing、utilization、DRC、clock interaction、source manifest、构建日志和 SHA-256 清单到 `artifacts/remote_builds/<source_digest>/`。临时上传包、解压目录和本地构建目录统一放在 `D:\tmp\lockstep`，不得写入源码库。只有下载后的 SHA-256 与远端清单一致，产物才可用于上板。

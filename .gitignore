@@ -48,6 +48,7 @@ build.ninja
 /.codex-tasks/
 /software/lockstep_host/logs/
 /software/lockstep_host/tmp/
+/artifacts/
 
 # Offline build environment and package deliverables
 /software/lockstep_host/debs/

@@ -1,8 +1,0 @@
-﻿{
-    "task_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_101635",
-    "exit_code":  null,
-    "request_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_101635\\connect_request.json",
-    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_101635\\connect_response.json",
-    "stdout_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_101635\\stdout.txt",
-    "stderr_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_101635\\stderr.txt"
-}

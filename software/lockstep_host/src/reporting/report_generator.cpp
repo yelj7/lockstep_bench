@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: report_generator.cpp
 * 日期: 2026-07-14
-* 版本: v2.0
-* 更新记录: 实现统一模型、HTML 渲染、版本化归档和摘要校验
+* 版本: v2.1
+* 更新记录: 报告 staging 固定迁移到 D:\tmp，避免在任务目录残留临时目录
 * 描述: 实现测试报告结论计算、序列化、归档发布和读取
 **********************************************************/
 
@@ -33,6 +33,7 @@ constexpr char kRunControlPath[] = "evidence/run_control_record.json";
 constexpr char kArtifactIndexPath[] = "evidence/artifacts.json";
 constexpr char kWaveformPath[] = "waveform/capture.vcd";
 constexpr char kAnalysisPath[] = "evidence/protocol_analysis.json";
+constexpr char kTemporaryReportRoot[] = "D:/tmp/lockstep/report-staging";
 
 QString utcNow()
 {
@@ -921,9 +922,16 @@ ReportResult ReportGenerator::generateReport(
     const QString reportsPath = QDir(taskRootPath).filePath(QString::fromLatin1(kReportsName));
     const QString versionsPath = QDir(reportsPath).filePath(QString::fromLatin1(kVersionsName));
     const QString versionPath = QDir(versionsPath).filePath(model.reportId);
-    const QString tempPath = QDir(reportsPath).filePath(QStringLiteral(".tmp_%1").arg(model.reportId));
+    const QString taskKey = sha256(QDir::cleanPath(taskRootPath).toUtf8()).left(16);
+    const QString tempPath = QDir(QString::fromLatin1(kTemporaryReportRoot)).filePath(
+        QStringLiteral("%1_%2").arg(taskKey, model.reportId));
     if (!QDir().mkpath(versionsPath)) {
         result.errorMessage = QStringLiteral("无法创建报告版本目录: %1").arg(versionsPath);
+        return result;
+    }
+    if (!QDir().mkpath(QString::fromLatin1(kTemporaryReportRoot))) {
+        result.errorMessage = QStringLiteral("无法创建固定报告临时目录: %1")
+            .arg(QString::fromLatin1(kTemporaryReportRoot));
         return result;
     }
     if (QFileInfo::exists(versionPath)) {

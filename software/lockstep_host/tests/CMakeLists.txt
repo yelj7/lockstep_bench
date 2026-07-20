@@ -28,6 +28,26 @@ endif()
 
 add_test(NAME lockstep_trace_analysis_test COMMAND lockstep_trace_analysis_test)
 
+add_executable(lockstep_eight_protocol_benchmark_test
+    eight_protocol_benchmark_test.cpp
+)
+target_link_libraries(lockstep_eight_protocol_benchmark_test
+    PRIVATE
+        lockstep_protocol_analyzer
+        Qt${QT_VERSION_MAJOR}::Core
+)
+target_compile_features(lockstep_eight_protocol_benchmark_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(lockstep_eight_protocol_benchmark_test PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(lockstep_eight_protocol_benchmark_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(
+    NAME lockstep_eight_protocol_benchmark_test
+    COMMAND lockstep_eight_protocol_benchmark_test
+        ${CMAKE_SOURCE_DIR}/../../hardware/noelv_zcu102_overlay/benchmarks/eight_protocol
+)
+
 add_executable(lockstep_scalar_1024_vcd_import_test
     scalar_1024_vcd_import_test.cpp
 )

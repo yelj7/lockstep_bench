@@ -1,0 +1,30 @@
+{
+  "schema": "lockstep-eight-protocol-benchmark-v1",
+  "entry_address": "0x00000000",
+  "sample_width": 1024,
+  "timebase_hz": 120000000,
+  "minimum_complete_transactions_per_protocol": 32,
+  "expected_ahb_transactions": 128,
+  "program_done_marker": "PROGRAM_RUN_DONE",
+  "board_profile": {
+    "enabled": ["ahb", "uart", "spi", "can", "i2c"],
+    "host_driven": ["jtag"],
+    "disabled": {
+      "eth": "CFG_GRETH=0 in the current integrated top",
+      "usb": "no PL-visible USB/ULPI controller or PHY source"
+    }
+  },
+  "golden_profile": {
+    "kind": "simulation_only",
+    "enabled": ["ahb", "uart", "spi", "can", "i2c", "eth", "usb", "jtag"],
+    "mismatch_expected_mask": "0x00",
+    "board_evidence": false
+  },
+  "board_sequence": [
+    "load SREC and run from 0x00000000",
+    "ARM capture before releasing the CPU",
+    "perform 32 bounded JTAG IDCODE or DMI scans while firmware is running",
+    "collect UART/SPI/CAN/I2C and AHB evidence",
+    "report ETH and USB as unavailable/design_gap"
+  ]
+}

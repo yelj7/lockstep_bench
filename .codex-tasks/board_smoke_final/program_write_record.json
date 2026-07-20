@@ -1,9 +1,0 @@
-{
-    "created_at": "2026-07-09T05:18:28.242Z",
-    "error_message": "预检未通过或镜像无效，烧写未执行。",
-    "raw_return": "",
-    "segments": [
-    ],
-    "success": false,
-    "task_id": "debug_service_smoke"
-}

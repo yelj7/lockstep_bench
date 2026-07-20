@@ -1,0 +1,10 @@
+{
+  "schema": "lockstep-capture-sidecar-v3",
+  "capture_id": 8001,
+  "sample_rate_hz": 100000000,
+  "fixture_kind": "simulation_only",
+  "board_evidence": false,
+  "mismatch_expected_mask": "0x00",
+  "expected_complete_transactions_per_protocol": 32,
+  "expected_ahb_transactions": 128
+}

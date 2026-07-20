@@ -1,7 +1,0 @@
-﻿{
-    "task_dir":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_103437",
-    "success":  false,
-    "error_code":  "NO_RESPONSE",
-    "error_message":  "debug service did not create response file",
-    "response_path":  "D:\\0_ongoing\\lockstep\\lockstep_bench\\.codex-tasks\\board_connect_check_20260710_103437\\connect_response.json"
-}

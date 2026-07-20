@@ -110,7 +110,6 @@ if(WIN32)
     find_file(LOCKSTEP_FTD3XX_RUNTIME_DLL
         NAMES FTD3XX.dll
         PATHS
-            "${CMAKE_SOURCE_DIR}/../../.codex-tasks/20260715-protocol-decode/ftd3xx"
             "${CMAKE_SOURCE_DIR}/../../software/lockstep_host/resources"
         NO_DEFAULT_PATH
     )

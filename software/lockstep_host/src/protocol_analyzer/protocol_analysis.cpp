@@ -1420,6 +1420,7 @@ QJsonArray defaultGroups(
         }
         if (!transactions.isEmpty()) {
             group.insert(QStringLiteral("status"), QStringLiteral("event_detected"));
+            group.insert(QStringLiteral("reason"), QStringLiteral("检测到真实协议事务"));
             group.insert(QStringLiteral("transactions"), transactions);
         }
         groups.append(group);

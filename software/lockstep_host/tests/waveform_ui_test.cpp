@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: waveform_ui_test.cpp
 * 日期: 2026-07-14
-* 版本: v1.3
-* 更新记录: 增加 1280x720 内嵌波形 9px 水平滚动条回归测试
-* 描述: 离屏验证单一九协议树、默认折叠、键盘展开和红色异常波形。
+* 版本: v1.4
+* 更新记录: 增加关键行为摘要树与 Mismatch 正常/异常文案回归测试
+* 描述: 离屏验证九协议波形、关键行为摘要和红色异常波形。
 **********************************************************/
 
 #include <QApplication>
@@ -13,10 +13,10 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QTextStream>
+#include <QTreeWidget>
 #include <QWidget>
 
 #include "main_window_shell.h"
@@ -29,6 +29,35 @@ bool expect(const bool condition, const QString& message)
         QTextStream(stderr) << "FAIL: " << message << '\n';
     }
     return condition;
+}
+
+bool treeContainsText(const QTreeWidget* const tree, const QString& text)
+{
+    if (tree == nullptr) return false;
+    QList<QTreeWidgetItem*> pending;
+    for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+        pending.append(tree->topLevelItem(index));
+    }
+    while (!pending.isEmpty()) {
+        QTreeWidgetItem* const item = pending.takeFirst();
+        for (int column = 0; column < item->columnCount(); ++column) {
+            if (item->text(column).contains(text)) return true;
+        }
+        for (int index = 0; index < item->childCount(); ++index) {
+            pending.append(item->child(index));
+        }
+    }
+    return false;
+}
+
+QTreeWidgetItem* findTopLevelItem(const QTreeWidget* const tree, const QString& text)
+{
+    if (tree == nullptr) return nullptr;
+    for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+        QTreeWidgetItem* const item = tree->topLevelItem(index);
+        if (item->text(0) == text) return item;
+    }
+    return nullptr;
 }
 
 QString packedValueWithBit(const int bit)
@@ -173,8 +202,13 @@ int main(int argc, char* argv[])
             field.width = 8;
             group.fields.append(field);
             if (id == QStringLiteral("ahb")) {
-                group.transactions.append(QStringLiteral(
-                    "[1..2] ahb_transfer: AHB READ 0x00000010 DATA=0xCCCCCCCC RESP=0"));
+                for (int event = 0; event < 8; ++event) {
+                    group.transactions.append(QStringLiteral(
+                        "[%1..%2] ahb_transfer: AHB READ 0x%3 DATA=0xCCCCCCCC RESP=0")
+                        .arg(event * 2 + 1)
+                        .arg(event * 2 + 2)
+                        .arg(0x10 + event * 4, 8, 16, QLatin1Char('0')));
+                }
             } else if (id == QStringLiteral("jtag")) {
                 group.transactions.append(QStringLiteral("[200..201] jtag_cycle: TMS=1 TDI=1 TDO=0"));
             }
@@ -203,16 +237,21 @@ int main(int argc, char* argv[])
     QCoreApplication::processEvents();
 
     QWidget* const display = window.findChild<QWidget*>(QStringLiteral("waveform_display_widget"));
-    QPlainTextEdit* const protocolEvents =
-        window.findChild<QPlainTextEdit*>(QStringLiteral("protocol_key_behaviors_edit"));
+    QTreeWidget* const protocolEvents =
+        window.findChild<QTreeWidget*>(QStringLiteral("protocol_key_behaviors_tree"));
     QWidget* const analyzerPanel = window.findChild<QWidget*>(QStringLiteral("waveform_analyzer_panel"));
     QScrollBar* const timeScrollBar = display == nullptr ? nullptr
         : display->findChild<QScrollBar*>(QStringLiteral("waveform_time_scrollbar"));
     if (!expect(display != nullptr, QStringLiteral("waveform display exists")) ||
         !expect(protocolEvents != nullptr &&
-                    protocolEvents->property("protocolEventCount").toInt() == 1 &&
-                    protocolEvents->toPlainText().contains(QStringLiteral("AHB READ")),
-                QStringLiteral("protocol page displays aggregated protocol transactions")) ||
+                    protocolEvents->property("protocolEventCount").toInt() == 10 &&
+                    protocolEvents->property("activeProtocolCount").toInt() == 2 &&
+                    protocolEvents->property("mismatchDetected").toBool() &&
+                    treeContainsText(protocolEvents, QStringLiteral("AHB READ")) &&
+                    treeContainsText(protocolEvents, QStringLiteral("检测到处理器内 Mismatch")) &&
+                    findTopLevelItem(protocolEvents, QStringLiteral("AHB")) != nullptr &&
+                    findTopLevelItem(protocolEvents, QStringLiteral("AHB"))->childCount() <= 4,
+                QStringLiteral("protocol page prioritizes grouped activity and mismatch status")) ||
         !expect(analyzerPanel != nullptr && timeScrollBar != nullptr,
                 QStringLiteral("embedded waveform owns a horizontal time scrollbar")) ||
         !expect(timeScrollBar->height() == 9,
@@ -284,11 +323,20 @@ int main(int argc, char* argv[])
     saveScreenshotIfRequested(display);
 
     samples[1].time = 11;
+    groups.last().transactions.clear();
+    groups.last().status = QStringLiteral("complete");
     window.setWaveformTraceView(
         QStringLiteral("complete"), QStringLiteral("waveform/lockstep_trace.vcd"),
         QStringLiteral("0 .. 20 ns"), groups, samples, {}, {});
+    window.setProtocolAnalysisView(
+        QStringLiteral("complete"), QStringLiteral("evidence/protocol_analysis.json"),
+        {QStringLiteral("[1..2] ahb_transfer: AHB READ 0x00000010")}, {});
     if (!expect(display->accessibleDescription().contains(QStringLiteral("9 个协议组，0 个已展开")),
-                QStringLiteral("a newly imported VCD collapses all child signals again"))) {
+                QStringLiteral("a newly imported VCD collapses all child signals again")) ||
+        !expect(!protocolEvents->property("mismatchDetected").toBool() &&
+                    treeContainsText(protocolEvents, QStringLiteral("处理器内无Mismatch")) &&
+                    !treeContainsText(protocolEvents, QStringLiteral("已解析，未检测到协议事件")),
+                QStringLiteral("idle peripherals stay hidden and zero mismatch has a clear conclusion"))) {
         return 1;
     }
 

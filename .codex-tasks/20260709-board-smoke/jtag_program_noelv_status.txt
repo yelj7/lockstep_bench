@@ -1,1 +1,0 @@
-JTAG_BITSTREAM_PROGRAMMED device=xczu9_0 bitstream=D:/0_ongoing/LockStep-Novelv-CPU/designs/noelv-xilinx-zcu102/noelvmp.bit is_programmed=UNAVAILABLE

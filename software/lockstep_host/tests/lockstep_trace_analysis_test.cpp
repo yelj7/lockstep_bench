@@ -23,6 +23,7 @@
 
 #include "error_registry.h"
 #include "protocol_analysis.h"
+#include "test_temp_directory.h"
 #include "waveform_trace_viewer.h"
 
 namespace {
@@ -287,7 +288,7 @@ int main(int argc, char* argv[])
     QCoreApplication app(argc, argv);
     Q_UNUSED(app);
 
-    QTemporaryDir tempDir(QDir::tempPath() + QStringLiteral("/lockstep_trace_test_XXXXXX"));
+    QTemporaryDir tempDir(lockstepTestTemporaryTemplate(QStringLiteral("trace_analysis")));
     if (!expect(tempDir.isValid(), QStringLiteral("temporary directory is valid"))) {
         return 1;
     }
@@ -464,7 +465,7 @@ int main(int argc, char* argv[])
                     keyBehaviors.last().toObject().value(QStringLiteral("start_time")).toInteger(),
                 QStringLiteral("key_behaviors are ordered by capture time"))) return 1;
 
-    QTemporaryDir rawUartTask(QDir::tempPath() + QStringLiteral("/lockstep_raw_uart_XXXXXX"));
+    QTemporaryDir rawUartTask(lockstepTestTemporaryTemplate(QStringLiteral("raw_uart")));
     if (!expect(rawUartTask.isValid() && writeRawUartFixture(rawUartTask.path()),
                 QStringLiteral("raw UART fixture is writable"))) return 1;
     lockstep::protocol_analyzer::ProtocolAnalysisRequest rawUartRequest;
@@ -489,8 +490,7 @@ int main(int argc, char* argv[])
         !expect(!rawUartModel.samples.isEmpty() && rawUartModel.samples.last().time == 109000,
                 QStringLiteral("sample and event coordinates use the same ns scale"))) return 1;
 
-    QTemporaryDir invalidEventTask(
-        QDir::tempPath() + QStringLiteral("/lockstep_invalid_event_XXXXXX"));
+    QTemporaryDir invalidEventTask(lockstepTestTemporaryTemplate(QStringLiteral("invalid_event")));
     const QString invalidEvidence = QDir(invalidEventTask.path()).filePath(QStringLiteral("evidence"));
     if (!expect(invalidEventTask.isValid() && writeWideProtocolFixture(invalidEventTask.path()) &&
                     QDir().mkpath(invalidEvidence) &&
@@ -509,8 +509,7 @@ int main(int argc, char* argv[])
                         QStringLiteral("failed"),
                 QStringLiteral("missing sparse event evidence fails protocol analysis"))) return 1;
 
-    QTemporaryDir trustedOrderTask(
-        QDir::tempPath() + QStringLiteral("/lockstep_trusted_scalar_XXXXXX"));
+    QTemporaryDir trustedOrderTask(lockstepTestTemporaryTemplate(QStringLiteral("trusted_scalar")));
     if (!expect(trustedOrderTask.isValid() &&
                     writeTrustedScalarOrderFixture(trustedOrderTask.path()),
                 QStringLiteral("trusted product scalar-order fixture is writable"))) return 1;

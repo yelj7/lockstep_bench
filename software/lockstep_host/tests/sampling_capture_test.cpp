@@ -19,6 +19,7 @@
 #include <iostream>
 
 #include "sampling_capture.h"
+#include "test_temp_directory.h"
 
 namespace {
 
@@ -210,7 +211,7 @@ int main(int argc, char** argv)
     if (!expect(!session.configure(&oversizedStatusTransport, config, &error),
                 "configuration rejects an oversized STATUS_RSP")) return 1;
 
-    QTemporaryDir afterArmTask;
+    QTemporaryDir afterArmTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_after_arm")));
     FakeCaptureTransport afterArmTransport;
     SamplingCaptureRecord afterArmRecord;
     bool afterArmCalled = false;
@@ -231,7 +232,7 @@ int main(int argc, char** argv)
                     afterArmTransport.commands.indexOf(CaptureFrameType::ArmCapture) + 1,
                 "START_EVENT_STREAM is sent immediately after ARM ACK")) return 1;
 
-    QTemporaryDir recoveryTask;
+    QTemporaryDir recoveryTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_recovery")));
     FakeCaptureTransport timeoutTransport;
     SamplingCaptureRecord timeoutRecord;
     const CaptureSessionResult recoveredTimeout = session.runDetailed(
@@ -246,7 +247,7 @@ int main(int argc, char** argv)
                     QFileInfo::exists(QDir(recoveryTask.path()).filePath(QStringLiteral("evidence/capture_status.json"))),
                 "failed capture preserves raw and status evidence")) return 1;
 
-    QTemporaryDir failedRecoveryTask;
+    QTemporaryDir failedRecoveryTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_failed_recovery")));
     FakeCaptureTransport failedRecoveryTransport;
     failedRecoveryTransport.reopenSucceeds = false;
     SamplingCaptureRecord failedRecoveryRecord;
@@ -371,7 +372,7 @@ int main(int argc, char** argv)
                     v3Record.protocolEvents.first().payload == QByteArray::fromHex("55aa") &&
                     v3Record.eventEmittedTotal == 1U && v3Record.eventDroppedTotal == 0U,
                 "v3 event record and EVENT_END statistics assemble exactly")) return 1;
-    QTemporaryDir earlyEventTask;
+    QTemporaryDir earlyEventTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_early_event")));
     FakeCaptureTransport earlyEventTransport;
     earlyEventTransport.queueIncoming(v3Stream);
     SamplingCaptureRecord earlyEventRecord;
@@ -380,7 +381,7 @@ int main(int argc, char** argv)
                     earlyEventRecord.protocolEvents.size() == 1 &&
                     earlyEventRecord.samples.size() == 2,
                 "collect preserves EVENT_META/EVENT_DATA before CAPTURE_META")) return 1;
-    QTemporaryDir v3Task;
+    QTemporaryDir v3Task(lockstepTestTemporaryTemplate(QStringLiteral("capture_v3")));
     if (!expect(exportScalarVcd(v3Record, v3Task.path(), nullptr, nullptr, &error),
                 "v3 capture exports continuous VCD and sparse events") ||
         !expect(QFileInfo::exists(QDir(v3Task.path()).filePath(QStringLiteral("evidence/protocol_events.json"))),
@@ -463,7 +464,7 @@ int main(int argc, char** argv)
                     error.contains(QStringLiteral("drop_counts=[1,0,0,0,0,0,0,0,0]")),
                 "EVENT_END loss diagnostic preserves exact counters")) return 1;
 
-    QTemporaryDir task;
+    QTemporaryDir task(lockstepTestTemporaryTemplate(QStringLiteral("capture_main")));
     QString vcdPath;
     QString sidecarPath;
     if (!expect(exportScalarVcd(record, task.path(), &vcdPath, &sidecarPath, &error), "VCD export succeeds")) return 1;
@@ -480,7 +481,7 @@ int main(int argc, char** argv)
     if (!expect(sidecarObject.value("sample_word_bits").toInt() == 1024, "sidecar fixes 1024-bit contract")) return 1;
 
     if (argc >= 2) {
-        QTemporaryDir replayTask;
+        QTemporaryDir replayTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_replay")));
         const QString rawPath = QDir(replayTask.path()).filePath(QStringLiteral("fixture.dat"));
         QFile rawFile(rawPath);
         QProcess replay;
@@ -525,7 +526,7 @@ int main(int argc, char** argv)
                            kCaptureProtocolVersionV3) +
             encoder.encode(CaptureFrameType::CaptureEnd, end, 25U, 42U, 0U,
                            kCaptureProtocolVersion);
-        QTemporaryDir subsetReplayTask;
+        QTemporaryDir subsetReplayTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_subset_replay")));
         const QString subsetRawPath = QDir(subsetReplayTask.path()).filePath(
             QStringLiteral("subset_fixture.dat"));
         QFile subsetRaw(subsetRawPath);

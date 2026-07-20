@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-clang",
+      "displayName": "Windows Clang - D:\\tmp",
+      "generator": "Ninja",
+      "binaryDir": "D:/tmp/lockstep/cmake/lockstep_host",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "D:/Program Files/msys64/ucrt64/bin/clang++.exe",
+        "CMAKE_MAKE_PROGRAM": "D:/Program Files/msys64/ucrt64/bin/ninja.exe",
+        "Qt6_DIR": "D:/Program Files/msys64/ucrt64/lib/cmake/Qt6"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-clang",
+      "configurePreset": "windows-clang",
+      "jobs": 4
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-clang",
+      "configurePreset": "windows-clang",
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}

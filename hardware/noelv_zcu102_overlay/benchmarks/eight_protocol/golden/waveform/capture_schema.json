@@ -1,0 +1,8 @@
+{
+  "schema_version": "2.0",
+  "sample_width": 1024,
+  "physical_channels": 1024,
+  "sample_signal": "CH0..CH1023",
+  "trace_profile_id": "trace.noelv.lockstep_1024",
+  "fixture_kind": "simulation_only"
+}

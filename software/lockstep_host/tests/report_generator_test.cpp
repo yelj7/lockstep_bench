@@ -16,6 +16,7 @@
 #include <QTemporaryDir>
 
 #include "report_generator.h"
+#include "test_temp_directory.h"
 
 namespace {
 
@@ -120,7 +121,7 @@ bool inputDigestTracksFactsOnly()
 bool diskModelBuilderUsesPersistedFacts()
 {
     using namespace lockstep::reporting;
-    QTemporaryDir taskRoot;
+    QTemporaryDir taskRoot(lockstepTestTemporaryTemplate(QStringLiteral("report_generator")));
     if (!expect(taskRoot.isValid(), "disk model task directory should be available")) {
         return false;
     }
@@ -231,7 +232,7 @@ bool diskModelBuilderUsesPersistedFacts()
 bool generatesVersionedJsonAndHtmlArchive()
 {
     using namespace lockstep::reporting;
-    QTemporaryDir taskRoot;
+    QTemporaryDir taskRoot(lockstepTestTemporaryTemplate(QStringLiteral("report_persisted")));
     if (!expect(taskRoot.isValid(), "temporary task directory should be available")) {
         return false;
     }
