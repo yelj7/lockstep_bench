@@ -178,6 +178,14 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/product_python_dependency_test.cmake
 )
 
+if(WIN32)
+    add_test(
+        NAME lockstep_windows_usb_bootstrap_test
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_SOURCE_DIR}/packaging/windows/windows_usb_bootstrap_test.ps1
+    )
+endif()
+
 add_test(
     NAME lockstep_ui_preview_service_mode_test
     COMMAND $<TARGET_FILE:lockstep_ui_preview>

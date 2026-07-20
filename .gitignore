@@ -48,6 +48,8 @@ build.ninja
 /.codex-tasks/
 /software/lockstep_host/logs/
 /software/lockstep_host/tmp/
+/software/lockstep_host/packaging/windows/logs/
+/software/lockstep_host/packaging/windows/driver-backup/
 
 # Offline build environment and package deliverables
 /software/lockstep_host/debs/
