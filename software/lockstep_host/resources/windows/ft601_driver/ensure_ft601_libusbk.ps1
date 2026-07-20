@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: ensure_ft601_libusbk.ps1
 # * 日期: 2026-07-20
-# * 版本: 1.0
-# * 更新记录: 新增上位机启动时的 FT601 libusbK 自动绑定与自检。
+# * 版本: 1.2
+# * 更新记录: 增加 libusbK Zadig 隐藏执行、非提权判定和结构化错误返回。
 # * 描述: 仅处理专用 FT601 MI_00，自动提权、备份、绑定 libusbK 并运行产品自检。
 # **********************************************************/
 
@@ -117,6 +117,11 @@ function Write-Result([object]$value, [int]$exitCode) {
     exit $exitCode
 }
 
+trap {
+    Write-Result ([ordered]@{schema='lockstep-ft601-bootstrap-v1';success=$false;
+        status='failed';changed=$false;error=$_.Exception.Message}) 50
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ZadigPath)) { $ZadigPath = Join-Path $scriptRoot 'raw\zadig-2.9.exe' }
 if ($ZadigPath.Contains('"') -or $ProductExe.Contains('"')) { throw 'Executable paths must not contain quote characters.' }
@@ -194,7 +199,7 @@ function Find-ComboItem([IntPtr]$combo, [string]$pattern) {
     return -1
 }
 
-$process = Start-Process -FilePath $resolvedZadig -WorkingDirectory $scriptRoot -PassThru
+$process = Start-Process -FilePath $resolvedZadig -WorkingDirectory $scriptRoot -WindowStyle Hidden -PassThru
 try {
     [void]$process.WaitForInputIdle(15000)
     $deadline=(Get-Date).AddSeconds(30); $main=[IntPtr]::Zero

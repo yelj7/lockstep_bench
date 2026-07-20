@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: windows_ft601_driver_bootstrap_test.ps1
 # * 日期: 2026-07-20
-# * 版本: 1.0
-# * 更新记录: 新增 FT601 libusbK 自动绑定与 Vivado JTAG 隔离合同测试。
+# * 版本: 1.2
+# * 更新记录: 增加隐藏 Zadig、SetupAPI 故障关闭和特权结果管道回归测试。
 # * 描述: 离线验证设备范围、提权、自检、资源打包和禁止修改 HS2 的门禁。
 # **********************************************************/
 
@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 $helper = Join-Path $sourceRoot 'resources\windows\ft601_driver\ensure_ft601_libusbk.ps1'
+$zadigIni = Join-Path $sourceRoot 'resources\windows\ft601_driver\zadig.ini'
 $contractJson = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
     -File $helper -ExpectedSerial TEST-SERIAL -DescribeContract
 if ($LASTEXITCODE -ne 0) { throw 'FT601 bootstrap contract description failed.' }
@@ -23,6 +24,7 @@ if ($contract.vid -ne '0403' -or $contract.pid -ne '601F' -or $contract.mi -ne '
 }
 
 $helperText = Get-Content -Raw -Encoding UTF8 -LiteralPath $helper
+$zadigIniText = Get-Content -Raw -Encoding UTF8 -LiteralPath $zadigIni
 $uiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceRoot 'src\apps\ui_preview_main.cpp')
 $bootstrapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceRoot 'src\apps\ft601_driver_bootstrap.cpp')
 $cmakeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $sourceRoot 'src\apps\CMakeLists.txt')
@@ -32,26 +34,50 @@ if ($helperText -notmatch 'VID_0403&PID_601F&MI_00' -or
     $helperText -notmatch "Service -eq 'libusbK'" -or
     $helperText -match "-Verb RunAs" -or
     $helperText -notmatch "status='elevation_required'" -or
+    $helperText -notmatch "status='failed'" -or
+    $helperText -notmatch 'WindowStyle Hidden' -or
     $helperText -notmatch "Arguments = '--usb-status'" -or
     $helperText -notmatch '4ecaa95df3da3621486a043aef8b3050b8bafe7c901402871e816229ef82039b') {
     throw 'FT601 bootstrap implementation contract mismatch.'
 }
-if ($uiText -notmatch 'ensureFt601LibusbK' -or
-    $uiText -notmatch 'runElevatedFt601LibusbKBootstrap' -or
-    $bootstrapText -notmatch ':/ft601_driver/zadig-2.9.exe' -or
-    $bootstrapText -notmatch 'QTemporaryDir' -or
-    $bootstrapText -notmatch 'CreateDirectoryW' -or
-    $bootstrapText -notmatch 'ConvertStringSecurityDescriptorToSecurityDescriptorW' -or
-    $bootstrapText -notmatch 'GetFinalPathNameByHandleW' -or
-    $bootstrapText -notmatch 'GetDriveTypeW\(volumeRoot.c_str\(\)\) != DRIVE_FIXED' -or
-    $bootstrapText -notmatch 'QueryDosDeviceW' -or
-    $bootstrapText -notmatch 'D:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)' -or
-    $bootstrapText -match 'icacls' -or
-    $bootstrapText -notmatch 'ShellExecuteExW' -or
-    $bootstrapText -match 'LOCKSTEP_SKIP_FT601_DRIVER_BOOTSTRAP' -or
-    $cmakeText -notmatch 'qt_add_resources\(lockstep_ui_preview ft601_driver_bootstrap_resources' -or
-    $cmakeText -notmatch 'qt5_add_resources\(LOCKSTEP_FT601_RESOURCE_SOURCES') {
-    throw 'Product startup/resource integration is missing.'
+if ($zadigIniText -notmatch 'advanced_mode=true' -or $zadigIniText -notmatch 'list_all=true' -or
+    $zadigIniText -notmatch 'default_driver=2') {
+    throw 'Embedded Zadig configuration does not expose FT601 MI_00 with libusbK selected.'
+}
+$requiredPatterns = [ordered]@{
+    ui = @('ensureFt601LibusbK', 'runElevatedFt601LibusbKBootstrap')
+    bootstrap = @(
+        ':/ft601_driver/zadig-2.9.exe', ':/ft601_driver/zadig.ini', 'inspectNativeFt601Driver',
+        'enumerationFailed', '(?s)SPDRP_HARDWAREID.*?return NativeDriverState::Error',
+        'NativeDriverState::Error',
+        'CreateNamedPipeW', 'PIPE_REJECT_REMOTE_CLIENTS', 'GetNamedPipeClientProcessId',
+        'CancelIoEx', 'GetOverlappedResult', 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE',
+        'AssignProcessToJobObject', 'D:P\(A;;GA;;;SY\)\(A;;GA;;;BA\)', 'LockstepFt601-',
+        'parseElevatedResult', 'if \(!resultParsed\)', 'post_install_driver_check_failed',
+        'QTemporaryDir', 'CreateDirectoryW', 'ConvertStringSecurityDescriptorToSecurityDescriptorW',
+        'GetFinalPathNameByHandleW', 'GetDriveTypeW\(volumeRoot.c_str\(\)\) != DRIVE_FIXED',
+        'QueryDosDeviceW', 'D:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)', 'ShellExecuteExW'
+    )
+    cmake = @(
+        'qt_add_resources\(lockstep_ui_preview ft601_driver_bootstrap_resources',
+        'qt5_add_resources\(LOCKSTEP_FT601_RESOURCE_SOURCES'
+    )
+}
+$patternSources = @{ui=$uiText; bootstrap=$bootstrapText; cmake=$cmakeText}
+foreach ($sourceName in $requiredPatterns.Keys) {
+    foreach ($pattern in $requiredPatterns[$sourceName]) {
+        if ($patternSources[$sourceName] -notmatch $pattern) {
+            throw "Product startup/resource integration is missing: source=$sourceName pattern=$pattern"
+        }
+    }
+}
+if ($bootstrapText -match 'icacls' -or $bootstrapText -match 'LOCKSTEP_SKIP_FT601_DRIVER_BOOTSTRAP') {
+    throw 'Product bootstrap contains a forbidden insecure or bypass path.'
+}
+$nativeCheckPosition = $bootstrapText.IndexOf('inspectNativeFt601Driver(&result.message)')
+$slowPathPosition = $bootstrapText.IndexOf('QTemporaryDir bootstrapDir')
+if ($nativeCheckPosition -lt 0 -or $slowPathPosition -lt 0 -or $nativeCheckPosition -gt $slowPathPosition) {
+    throw 'SetupAPI fast path must run before resource extraction or PowerShell startup.'
 }
 if ($vivadoText -notmatch "Service -ne 'FTDIBUS'" -or $vivadoText -notmatch "ProviderName -notmatch '\^FTDI\$'" -or
     $vivadoText -notmatch 'ExpectedSha256' -or $vivadoText -notmatch 'tclargs.*\$Hs2Serial' -or
