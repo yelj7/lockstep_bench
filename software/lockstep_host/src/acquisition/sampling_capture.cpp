@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: sampling_capture.cpp
 * 日期: 2026-07-16
-* 版本: v3.1
-* 更新记录: 主分支恢复 D3XX 动态传输并保留 v3 事件采集和恢复逻辑。
+* 版本: v3.2
+* 更新记录: EVENT_END 失败时记录溢出位图、逐协议丢失和实收事件数。
 * 描述: 实现 v2/v3 线协议、D3XX 传输、1024-bit VCD 和事件 sidecar 输出。
 **********************************************************/
 
@@ -18,6 +18,7 @@
 #include <QLibrary>
 #include <QSaveFile>
 #include <QSharedPointer>
+#include <QStringList>
 #include <QtEndian>
 
 namespace lockstep::acquisition {
@@ -422,8 +423,11 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         record_.eventEmittedTotal = read32(data + 12);
         record_.eventDroppedTotal = read32(data + 16);
         quint32 droppedSum = 0U;
+        QStringList droppedCounts;
         for (int protocol = 0; protocol < 9; ++protocol) {
-            droppedSum += read32(data + 20 + protocol * 4);
+            const quint32 dropped = read32(data + 20 + protocol * 4);
+            droppedSum += dropped;
+            droppedCounts.append(QString::number(dropped));
         }
         const quint32 endEnabledSourceMask = read32(data + 56);
         const quint32 endImplementedSourceMask = read32(data + 60);
@@ -435,7 +439,24 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
             endImplementedSourceMask != record_.implementedSourceMask ||
             record_.eventDroppedTotal != 0U || record_.eventOverflowMask != 0U ||
             eventSequenceGap_) {
-            if (error != nullptr) *error = QStringLiteral("EVENT_END 统计、溢出或事件序号不一致");
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "EVENT_END 统计、溢出或事件序号不一致: overflow=0x%1, "
+                    "accepted=%2, emitted=%3, received=%4, dropped=%5, "
+                    "drop_counts=[%6], enabled=0x%7/0x%8, implemented=0x%9/0x%10, "
+                    "sequence_gap=%11")
+                    .arg(record_.eventOverflowMask, 3, 16, QLatin1Char('0'))
+                    .arg(record_.eventAcceptedTotal)
+                    .arg(record_.eventEmittedTotal)
+                    .arg(record_.protocolEvents.size())
+                    .arg(record_.eventDroppedTotal)
+                    .arg(droppedCounts.join(QLatin1Char(',')))
+                    .arg(endEnabledSourceMask, 3, 16, QLatin1Char('0'))
+                    .arg(record_.enabledSourceMask, 3, 16, QLatin1Char('0'))
+                    .arg(endImplementedSourceMask, 3, 16, QLatin1Char('0'))
+                    .arg(record_.implementedSourceMask, 3, 16, QLatin1Char('0'))
+                    .arg(eventSequenceGap_ ? QStringLiteral("true") : QStringLiteral("false"));
+            }
             return false;
         }
         hasEventEnd_ = true;

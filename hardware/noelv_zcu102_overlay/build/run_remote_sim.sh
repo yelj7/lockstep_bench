@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: run_remote_sim.sh
 # * 日期: 2026-07-19
-# * 版本: 1.2
-# * 更新记录: 门禁扩展为十三项，增加跨采集全局时间戳回归。
+# * 版本: 1.3
+# * 更新记录: 门禁扩展为十四项，增加 AHB/JTAG 并发突发容量回归。
 # * 描述: 对统一 overlay 运行 XSim，失败时不生成 pass gate。
 # **********************************************************/
 
@@ -43,6 +43,7 @@ TESTS=(
   tb_lockstep_ft601_hello
   tb_lockstep_protocol_probe_real_only
   tb_lockstep_event_capture_core
+  tb_lockstep_event_capture_capacity
   tb_lockstep_event_async_fifo
   tb_lockstep_event_capture_controller
   tb_lockstep_protocol_event_encoder

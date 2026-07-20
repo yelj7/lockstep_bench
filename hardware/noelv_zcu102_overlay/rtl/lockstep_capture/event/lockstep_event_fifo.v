@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_fifo.v
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新增协议事件独立同步 FIFO。
+* 版本: 1.1
+* 更新记录: 改为同步预取读口，支持 Block RAM 推断并保留满载同拍读写。
 * 描述: 保存固定宽度事件，支持同周期写入和读出并提供满时丢失脉冲。
 **********************************************************/
 
@@ -38,74 +38,89 @@ module lockstep_event_fifo (
   output [DATA_WIDTH-1:0] data_o;
   output [ADDR_WIDTH:0]   level_o;
 
-  reg [DATA_WIDTH-1:0] memory_r [0:DEPTH-1];
+  (* ram_style = "block" *) reg [DATA_WIDTH-1:0] memory_r [0:DEPTH-1];
   reg [ADDR_WIDTH-1:0] write_ptr_r;
   reg [ADDR_WIDTH-1:0] read_ptr_r;
-  reg [ADDR_WIDTH:0] count_r;
+  reg [ADDR_WIDTH:0] stored_count_r;
+  reg                  output_valid_r;
+  reg [DATA_WIDTH-1:0] output_data_r;
 
   wire pop_w;
   wire space_w;
   wire accept_w;
   wire drop_w;
+  wire bypass_push_w;
+  wire memory_write_w;
+  wire memory_read_w;
+  wire [ADDR_WIDTH:0] total_count_w;
 
-  assign valid_o = (count_r != {ADDR_WIDTH+1{1'b0}});
+  assign total_count_w = stored_count_r + {{ADDR_WIDTH{1'b0}}, output_valid_r};
+  assign valid_o = output_valid_r;
   assign pop_w = valid_o && ready_i;
-  assign space_w = (count_r < DEPTH) || pop_w;
+  assign space_w = (total_count_w < DEPTH) || pop_w;
   assign accept_w = push_i && (clear_i || space_w);
   assign drop_w = push_i && !clear_i && !space_w;
+  assign memory_read_w = pop_w && (stored_count_r != {ADDR_WIDTH+1{1'b0}});
+  assign bypass_push_w = accept_w && (!output_valid_r ||
+                         (pop_w && (stored_count_r == {ADDR_WIDTH+1{1'b0}})));
+  assign memory_write_w = accept_w && !bypass_push_w;
   assign accept_o = accept_w;
   assign drop_o = drop_w;
-  assign data_o = memory_r[read_ptr_r];
-  assign level_o = count_r;
+  assign data_o = output_data_r;
+  assign level_o = total_count_w;
 
-  // 事件存储器和写指针；满且同周期弹出时允许无损写入。
+  // 输出寄存器保存当前头项；其余项写入同步读 Block RAM。
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+      read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+      stored_count_r <= #UDLY {ADDR_WIDTH+1{1'b0}};
+      output_valid_r <= #UDLY 1'b0;
+      output_data_r <= #UDLY {DATA_WIDTH{1'b0}};
     end else if (clear_i) begin
+      write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+      read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+      stored_count_r <= #UDLY {ADDR_WIDTH+1{1'b0}};
       if (push_i) begin
-        memory_r[0] <= #UDLY data_i;
-        write_ptr_r <= #UDLY {{ADDR_WIDTH-1{1'b0}}, 1'b1};
+        output_valid_r <= #UDLY 1'b1;
+        output_data_r <= #UDLY data_i;
       end else begin
-        write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+        output_valid_r <= #UDLY 1'b0;
       end
-    end else if (accept_w) begin
-      memory_r[write_ptr_r] <= #UDLY data_i;
-      if (write_ptr_r == DEPTH - 1) begin
-        write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
-      end else begin
-        write_ptr_r <= #UDLY write_ptr_r + {{ADDR_WIDTH-1{1'b0}}, 1'b1};
-      end
-    end
-  end
-
-  // 读指针仅在下游握手时推进。
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
-    end else if (clear_i) begin
-      read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
-    end else if (pop_w) begin
-      if (read_ptr_r == DEPTH - 1) begin
-        read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
-      end else begin
-        read_ptr_r <= #UDLY read_ptr_r + {{ADDR_WIDTH-1{1'b0}}, 1'b1};
-      end
-    end
-  end
-
-  // 计数器覆盖写、读和同周期写读三种情况。
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      count_r <= #UDLY {ADDR_WIDTH+1{1'b0}};
-    end else if (clear_i) begin
-      count_r <= #UDLY push_i ? {{ADDR_WIDTH{1'b0}}, 1'b1} : {ADDR_WIDTH+1{1'b0}};
     end else begin
-      case ({accept_w, pop_w})
-        2'b10: count_r <= #UDLY count_r + {{ADDR_WIDTH{1'b0}}, 1'b1};
-        2'b01: count_r <= #UDLY count_r - {{ADDR_WIDTH{1'b0}}, 1'b1};
-        default: count_r <= #UDLY count_r;
+      if (memory_write_w) begin
+        if (write_ptr_r == DEPTH - 1) begin
+          write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+        end else begin
+          write_ptr_r <= #UDLY write_ptr_r + {{ADDR_WIDTH-1{1'b0}}, 1'b1};
+        end
+      end
+      if (memory_read_w) begin
+        output_data_r <= #UDLY memory_r[read_ptr_r];
+        output_valid_r <= #UDLY 1'b1;
+        if (read_ptr_r == DEPTH - 1) begin
+          read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
+        end else begin
+          read_ptr_r <= #UDLY read_ptr_r + {{ADDR_WIDTH-1{1'b0}}, 1'b1};
+        end
+      end else if (bypass_push_w) begin
+        output_data_r <= #UDLY data_i;
+        output_valid_r <= #UDLY 1'b1;
+      end else if (pop_w) begin
+        output_valid_r <= #UDLY 1'b0;
+      end
+      case ({memory_write_w, memory_read_w})
+        2'b10: stored_count_r <= #UDLY stored_count_r + {{ADDR_WIDTH{1'b0}}, 1'b1};
+        2'b01: stored_count_r <= #UDLY stored_count_r - {{ADDR_WIDTH{1'b0}}, 1'b1};
+        default: stored_count_r <= #UDLY stored_count_r;
       endcase
+    end
+  end
+
+  // RAM 本体不参与异步复位，确保 Vivado 推断为 Block RAM。
+  always @(posedge clk) begin
+    if (memory_write_w) begin
+      memory_r[write_ptr_r] <= #UDLY data_i;
     end
   end
 

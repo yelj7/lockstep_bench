@@ -457,7 +457,11 @@ int main(int argc, char** argv)
                     droppedEventAssembler.append(droppedEventDecoded.frames.at(0), &error) &&
                     droppedEventAssembler.append(droppedEventDecoded.frames.at(1), &error) &&
                     !droppedEventAssembler.append(droppedEventDecoded.frames.at(2), &error),
-                "EVENT_END rejects any reported event loss")) return 1;
+                "EVENT_END rejects any reported event loss") ||
+        !expect(error.contains(QStringLiteral("overflow=0x000")) &&
+                    error.contains(QStringLiteral("received=1")) &&
+                    error.contains(QStringLiteral("drop_counts=[1,0,0,0,0,0,0,0,0]")),
+                "EVENT_END loss diagnostic preserves exact counters")) return 1;
 
     QTemporaryDir task;
     QString vcdPath;

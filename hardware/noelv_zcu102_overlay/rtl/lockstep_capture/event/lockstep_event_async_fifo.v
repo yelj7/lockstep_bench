@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_async_fifo.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 修复满判断提前一项，确保 DEPTH 个存储项全部可用。
+* 版本: 1.2
+* 更新记录: 固化 Block RAM 推断属性，支持产品配置的 1024 条跨时钟缓冲。
 * 描述: 使用 Gray 指针同步和读域输出寄存器跨域传递固定宽度事件。
 **********************************************************/
 
@@ -38,7 +38,7 @@ module lockstep_event_async_fifo (
   input                   read_ready_i;
   output [DATA_WIDTH-1:0] read_data_o;
 
-  reg [DATA_WIDTH-1:0] memory_r [0:DEPTH-1];
+  (* ram_style = "block" *) reg [DATA_WIDTH-1:0] memory_r [0:DEPTH-1];
   reg [ADDR_WIDTH:0] write_binary_r;
   reg [ADDR_WIDTH:0] write_gray_r;
   reg [ADDR_WIDTH:0] read_binary_r;
@@ -85,10 +85,16 @@ module lockstep_event_async_fifo (
     end else begin
       write_drop_r <= #UDLY write_valid_i && !write_ready_o;
       if (write_fire_w) begin
-        memory_r[write_binary_r[ADDR_WIDTH-1:0]] <= #UDLY write_data_i;
         write_binary_r <= #UDLY write_binary_next_w;
         write_gray_r <= #UDLY write_gray_next_w;
       end
+    end
+  end
+
+  // RAM 本体不参与异步复位，确保 Vivado 推断为 Block RAM。
+  always @(posedge write_clk) begin
+    if (write_fire_w) begin
+      memory_r[write_binary_r[ADDR_WIDTH-1:0]] <= #UDLY write_data_i;
     end
   end
 

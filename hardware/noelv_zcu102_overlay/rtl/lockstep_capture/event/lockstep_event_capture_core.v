@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_capture_core.v
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新增九协议独立 FIFO、统计和公平输出核心。
+* 版本: 1.1
+* 更新记录: 支持按协议配置独立 FIFO 深度，避免高活动 AHB/JTAG 挤占低速协议。
 * 描述: 接收九路事件脉冲，分别缓存并通过轮询接口输出固定事件记录。
 **********************************************************/
 
@@ -30,6 +30,24 @@ module lockstep_event_capture_core (
   parameter integer DATA_WIDTH = 512;
   parameter integer FIFO_DEPTH = 8;
   parameter integer FIFO_ADDR_WIDTH = 3;
+  parameter integer AHB_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer AHB_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer UART_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer UART_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer SPI_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer SPI_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer CAN_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer CAN_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer I2C_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer I2C_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer ETH_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer ETH_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer USB_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer USB_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer JTAG_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer JTAG_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
+  parameter integer MISMATCH_FIFO_DEPTH = FIFO_DEPTH;
+  parameter integer MISMATCH_FIFO_ADDR_WIDTH = FIFO_ADDR_WIDTH;
 
   input                     clk;
   input                     rst_n;
@@ -57,6 +75,40 @@ module lockstep_event_capture_core (
   wire event_fire_w;
   reg [8:0] overflow_mask_r;
 
+  function integer source_fifo_depth;
+    input integer source;
+    begin
+      case (source)
+        0: source_fifo_depth = AHB_FIFO_DEPTH;
+        1: source_fifo_depth = UART_FIFO_DEPTH;
+        2: source_fifo_depth = SPI_FIFO_DEPTH;
+        3: source_fifo_depth = CAN_FIFO_DEPTH;
+        4: source_fifo_depth = I2C_FIFO_DEPTH;
+        5: source_fifo_depth = ETH_FIFO_DEPTH;
+        6: source_fifo_depth = USB_FIFO_DEPTH;
+        7: source_fifo_depth = JTAG_FIFO_DEPTH;
+        default: source_fifo_depth = MISMATCH_FIFO_DEPTH;
+      endcase
+    end
+  endfunction
+
+  function integer source_fifo_addr_width;
+    input integer source;
+    begin
+      case (source)
+        0: source_fifo_addr_width = AHB_FIFO_ADDR_WIDTH;
+        1: source_fifo_addr_width = UART_FIFO_ADDR_WIDTH;
+        2: source_fifo_addr_width = SPI_FIFO_ADDR_WIDTH;
+        3: source_fifo_addr_width = CAN_FIFO_ADDR_WIDTH;
+        4: source_fifo_addr_width = I2C_FIFO_ADDR_WIDTH;
+        5: source_fifo_addr_width = ETH_FIFO_ADDR_WIDTH;
+        6: source_fifo_addr_width = USB_FIFO_ADDR_WIDTH;
+        7: source_fifo_addr_width = JTAG_FIFO_ADDR_WIDTH;
+        default: source_fifo_addr_width = MISMATCH_FIFO_ADDR_WIDTH;
+      endcase
+    end
+  endfunction
+
   assign fifo_push_w = source_push_i & source_enable_mask_i;
   assign source_accept_o = fifo_accept_w;
   assign source_drop_o = fifo_drop_w | (source_push_i & !source_enable_mask_i);
@@ -66,15 +118,17 @@ module lockstep_event_capture_core (
   genvar source_index;
   generate
     for (source_index = 0; source_index < 9; source_index = source_index + 1) begin : g_source_fifo
-      wire [FIFO_ADDR_WIDTH:0] fifo_level_w;
+      localparam integer SOURCE_FIFO_DEPTH = source_fifo_depth(source_index);
+      localparam integer SOURCE_FIFO_ADDR_WIDTH = source_fifo_addr_width(source_index);
+      wire [SOURCE_FIFO_ADDR_WIDTH:0] fifo_level_w;
       reg [31:0] accepted_count_r;
       reg [31:0] emitted_count_r;
       reg [31:0] dropped_count_r;
 
       lockstep_event_fifo #(
         .DATA_WIDTH (DATA_WIDTH),
-        .DEPTH      (FIFO_DEPTH),
-        .ADDR_WIDTH (FIFO_ADDR_WIDTH)
+        .DEPTH      (SOURCE_FIFO_DEPTH),
+        .ADDR_WIDTH (SOURCE_FIFO_ADDR_WIDTH)
       ) u_event_fifo (
         .clk      (clk),
         .rst_n    (rst_n),

@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: run_lockstep_capture_sim.ps1
 # * 日期: 2026-07-17
-# * 版本: 1.0
-# * 更新记录: 新增采集 RTL 仿真摘要和日志 FAIL 门禁。
+# * 版本: 1.1
+# * 更新记录: 增加 AHB/JTAG 并发突发容量回归。
 # * 描述: 编译并运行当前 1024-bit 采集回归，生成 simulation_gate.json。
 # **********************************************************/
 
@@ -28,6 +28,7 @@ $tests = @(
     "tb_lockstep_ft601_hello",
     "tb_lockstep_protocol_probe_real_only",
     "tb_lockstep_event_capture_core",
+    "tb_lockstep_event_capture_capacity",
     "tb_lockstep_event_async_fifo",
     "tb_lockstep_event_capture_controller",
     "tb_lockstep_protocol_event_encoder",

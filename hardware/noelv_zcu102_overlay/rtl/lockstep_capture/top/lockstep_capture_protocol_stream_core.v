@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_capture_protocol_stream_core.v
 * 日期: 2026-07-17
-* 版本: 1.4
-* 更新记录: 使用独立自由运行计数器提供跨采集连续的 64-bit 时间戳。
+* 版本: 1.5
+* 更新记录: 扩展协议独立 FIFO 和跨时钟 FIFO，覆盖 AHB/JTAG 板级突发。
 * 描述: 复用命令解析、帧仲裁和发送器，交错上传连续窗口与稀疏事件。
 **********************************************************/
 
@@ -487,7 +487,26 @@ module lockstep_capture_protocol_stream_core (
     .source_record_o      (event_source_record_w)
   );
 
-  lockstep_event_capture_core u_event_capture_core (
+  lockstep_event_capture_core #(
+    .AHB_FIFO_DEPTH           (2048),
+    .AHB_FIFO_ADDR_WIDTH      (11),
+    .UART_FIFO_DEPTH          (1024),
+    .UART_FIFO_ADDR_WIDTH     (10),
+    .SPI_FIFO_DEPTH           (1024),
+    .SPI_FIFO_ADDR_WIDTH      (10),
+    .CAN_FIFO_DEPTH           (1024),
+    .CAN_FIFO_ADDR_WIDTH      (10),
+    .I2C_FIFO_DEPTH           (1024),
+    .I2C_FIFO_ADDR_WIDTH      (10),
+    .ETH_FIFO_DEPTH           (2),
+    .ETH_FIFO_ADDR_WIDTH      (1),
+    .USB_FIFO_DEPTH           (2),
+    .USB_FIFO_ADDR_WIDTH      (1),
+    .JTAG_FIFO_DEPTH          (1024),
+    .JTAG_FIFO_ADDR_WIDTH     (10),
+    .MISMATCH_FIFO_DEPTH      (256),
+    .MISMATCH_FIFO_ADDR_WIDTH (8)
+  ) u_event_capture_core (
     .clk                  (sample_clk),
     .rst_n                (sample_rst_n),
     .capture_start_i      (wide_trigger_pulse_sample_w),
@@ -506,7 +525,10 @@ module lockstep_capture_protocol_stream_core (
     .dropped_count_o      (event_dropped_sample_w)
   );
 
-  lockstep_event_async_fifo u_event_async_fifo (
+  lockstep_event_async_fifo #(
+    .ADDR_WIDTH (10),
+    .DEPTH      (1024)
+  ) u_event_async_fifo (
     .write_clk     (sample_clk),
     .write_rst_n   (sample_rst_n),
     .write_valid_i (event_arb_valid_w),
