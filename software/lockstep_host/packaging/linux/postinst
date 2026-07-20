@@ -14,7 +14,6 @@ getent group dialout >/dev/null 2>&1 || groupadd --system dialout
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules || true
     udevadm trigger --subsystem-match=hidraw || true
-    udevadm trigger --subsystem-match=usb || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

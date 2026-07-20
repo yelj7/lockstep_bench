@@ -1,9 +1,9 @@
 {
   "schema_version": "2.0",
   "board": "NOEL-V ZCU102 FT601",
-  "capture_protocol": "FT601 capture frame protocol v2",
+  "capture_protocol": "FT601 capture frame protocol v1",
   "sample_word_bits": 1024,
   "physical_channels": 1024,
-  "ft601": {"vid":"0x0403","pid":"0x601f","interface":"auto_by_bulk_endpoints","expected_interface":1,"out_endpoint":"0x02","in_endpoint":"0x82","transport":"libusb bulk"},
+  "ft601": {"vid":"0x0403","pid":"0x601f","interface":0,"out_endpoint":"0x02","in_endpoint":"0x82","transport":"libusb bulk"},
   "vcd": "waveform/capture.vcd"
 }

@@ -50,7 +50,6 @@ fi
 if command -v udevadm >/dev/null 2>&1; then
     ${privilege_command} udevadm control --reload-rules || true
     ${privilege_command} udevadm trigger --subsystem-match=hidraw || true
-    ${privilege_command} udevadm trigger --subsystem-match=usb || true
 fi
 
 echo "安装完成。请重新登录后从应用菜单启动“锁步研发测试系统”，或运行 lockstep-host。"

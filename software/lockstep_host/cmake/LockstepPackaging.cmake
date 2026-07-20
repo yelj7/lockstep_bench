@@ -10,34 +10,11 @@ if(NOT UNIX OR APPLE)
     return()
 endif()
 
-option(LOCKSTEP_KYLIN_PACKAGE "Build the validated Kylin V10 SP1 offline DEB" OFF)
-set(LOCKSTEP_INSTALL_ROOT "opt/lockstep-host")
-
-if(NOT LOCKSTEP_KYLIN_PACKAGE)
-    install(TARGETS lockstep_ui_preview
-        RUNTIME DESTINATION "/${LOCKSTEP_INSTALL_ROOT}/bin"
-    )
-    install(DIRECTORY "${LOCKSTEP_PACKAGED_RESOURCES_DIR}/"
-        DESTINATION "/${LOCKSTEP_INSTALL_ROOT}/resources"
-    )
-    install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/lockstep-host"
-        DESTINATION "/usr/bin"
-    )
-    install(FILES
-        "${CMAKE_SOURCE_DIR}/packaging/linux/99-lockstep-cmsis-dap.rules"
-        "${CMAKE_SOURCE_DIR}/packaging/linux/99-lockstep-ft601.rules"
-        DESTINATION "/etc/udev/rules.d"
-    )
-    install(FILES "${CMAKE_SOURCE_DIR}/docs/FT601_LIBUSB_CROSS_PLATFORM.md"
-        DESTINATION "/${LOCKSTEP_INSTALL_ROOT}/share/doc"
-    )
-    return()
-endif()
-
 if(NOT QT_VERSION_MAJOR EQUAL 5 OR NOT Qt5Core_VERSION VERSION_EQUAL "5.15.2")
     message(FATAL_ERROR "银河麒麟离线包必须使用 Qt 5.15.2，当前版本为 ${Qt5Core_VERSION}")
 endif()
 
+set(LOCKSTEP_INSTALL_ROOT "opt/lockstep-host")
 set(LOCKSTEP_RUNTIME_ROOT "${CMAKE_BINARY_DIR}/linux-runtime")
 
 set_target_properties(lockstep_ui_preview PROPERTIES
@@ -89,9 +66,6 @@ install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/lockstep-host.desktop"
     DESTINATION "usr/share/applications"
 )
 install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/99-lockstep-cmsis-dap.rules"
-    DESTINATION "etc/udev/rules.d"
-)
-install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/99-lockstep-ft601.rules"
     DESTINATION "etc/udev/rules.d"
 )
 install(FILES
