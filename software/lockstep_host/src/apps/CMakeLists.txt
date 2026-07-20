@@ -141,29 +141,22 @@ if(WIN32)
             set_source_files_properties(
                 "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1"
                 PROPERTIES QT_RESOURCE_ALIAS "ensure_ft601_libusbk.ps1")
-            set_source_files_properties(
-                "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/zadig.ini"
-                PROPERTIES QT_RESOURCE_ALIAS "zadig.ini")
             set_source_files_properties("${LOCKSTEP_ZADIG_EXECUTABLE}"
                 PROPERTIES QT_RESOURCE_ALIAS "zadig-2.9.exe")
             qt_add_resources(lockstep_ui_preview ft601_driver_bootstrap_resources
                 PREFIX "/ft601_driver"
                 FILES
                     "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1"
-                    "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/zadig.ini"
                     "${LOCKSTEP_ZADIG_EXECUTABLE}"
             )
         else()
             file(TO_CMAKE_PATH "${LOCKSTEP_ZADIG_EXECUTABLE}" LOCKSTEP_ZADIG_QRC_PATH)
             set(LOCKSTEP_HELPER_QRC_PATH
                 "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1")
-            set(LOCKSTEP_ZADIG_INI_QRC_PATH
-                "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/zadig.ini")
             set(LOCKSTEP_FT601_QRC "${CMAKE_CURRENT_BINARY_DIR}/ft601_driver_bootstrap.qrc")
             file(WRITE "${LOCKSTEP_FT601_QRC}"
                 "<RCC><qresource prefix=\"/ft601_driver\">"
                 "<file alias=\"ensure_ft601_libusbk.ps1\">${LOCKSTEP_HELPER_QRC_PATH}</file>"
-                "<file alias=\"zadig.ini\">${LOCKSTEP_ZADIG_INI_QRC_PATH}</file>"
                 "<file alias=\"zadig-2.9.exe\">${LOCKSTEP_ZADIG_QRC_PATH}</file>"
                 "</qresource></RCC>")
             qt5_add_resources(LOCKSTEP_FT601_RESOURCE_SOURCES "${LOCKSTEP_FT601_QRC}")
@@ -172,7 +165,7 @@ if(WIN32)
     else()
         message(FATAL_ERROR "Validated Zadig 2.9 is required for the Windows product")
     endif()
-    target_link_libraries(lockstep_ui_preview PRIVATE advapi32 cfgmgr32 setupapi shell32)
+    target_link_libraries(lockstep_ui_preview PRIVATE advapi32 shell32)
 endif()
 
 if(MSVC)

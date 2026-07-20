@@ -467,10 +467,8 @@ int main(int argc, char* argv[])
 {
     const QString productExecutable = QFileInfo(QString::fromLocal8Bit(argv[0])).absoluteFilePath();
     for (int index = 1; index < argc; ++index) {
-        const QString argument = QString::fromLocal8Bit(argv[index]);
-        const QString elevatedPrefix = QStringLiteral("--elevated-ft601-driver-bootstrap=");
-        if (argument.startsWith(elevatedPrefix)) {
-            return lockstep::apps::runElevatedFt601LibusbKBootstrap(argument.mid(elevatedPrefix.size()));
+        if (QString::fromLocal8Bit(argv[index]) == QStringLiteral("--elevated-ft601-driver-bootstrap")) {
+            return lockstep::apps::runElevatedFt601LibusbKBootstrap();
         }
     }
     const auto ensureHardwareAccess = [&productExecutable]() {
