@@ -2,8 +2,8 @@
 /**********************************************************
 * 文件名: FT601_LIBUSBK_DISTRIBUTION.md
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新建 FT601 libusbK Windows 可分发包说明。
+* 版本: 1.1
+* 更新记录: 改为随上位机启动的序列号锁定自动绑定与自检。
 * 描述: 说明驱动来源、安装、验证、许可和正式签名边界。
 **********************************************************/
 -->
@@ -12,23 +12,19 @@
 
 本包不包含自研内核驱动。Windows 内核驱动为开源 libusbK 3.1.0.0，产品仅通过 `libusb-1.0.dll` 调用 libusb API，不加载或分发 D3XX。
 
-## 安装
+## 自动安装
 
-1. 连接 FT601，并关闭其他可能占用 FT601 的程序。
-2. 以管理员 PowerShell 运行：
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\install_ft601_libusbk.ps1
-```
+连接 FT601 后启动 `lockstep_ui_preview.exe`。助手和 Zadig 已嵌入 EXE；产品只在需要改变驱动时提升自身，并从仅 SYSTEM/Administrators 可写的受保护目录执行绑定。包内单独的 `ensure_ft601_libusbk.ps1` 仅用于源码审计和非提权合同检查，不应作为管理员脚本直接运行。
 
 安装脚本只接受以下目标，任一字段不匹配都会停止：
 
 - 设备名称：`FTDI SuperSpeed-FIFO Bridge (Interface 0)`
 - VID/PID：`0403:601F`
 - MI：`00`
+- 序列号：`000000000001`
 - 目标驱动：`libusbK`
 
-脚本明确排除 Digilent JTAG `0403:6014`、CMSIS-DAP 和 CP2108。驱动安装是一次性部署动作，正常启动和 STOP 恢复不会重复安装、reset 或 cycle USB port。
+脚本没有 Digilent JTAG `0403:6014`、CMSIS-DAP 或 CP2108 的安装路径。HS2 必须保持 FTDI 原厂驱动并由 Vivado 使用。正确绑定后普通启动只执行驱动和 USB 自检，不重复安装、reset 或 cycle USB port。
 
 ## 验证
 
@@ -49,7 +45,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\verify_ft601_libusbk.ps1 `
 
 ## 文件说明
 
-- `install_ft601_libusbk.ps1`：已在当前 FT601 上验证的精确绑定助手。
+- `ensure_ft601_libusbk.ps1`：嵌入上位机的精确绑定逻辑源码；由产品受控特权模式调用。
 - `verify_ft601_libusbk.ps1`：安装后驱动和产品入口验证。
 - `raw/zadig-2.9.exe`：Akeo 官方签名的 Zadig 2.9。
 - `raw/zadig.ini`：启用复合设备枚举并把 libusbK 设为默认目标的已验证配置。

@@ -1,13 +1,15 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
 # * 日期: 2026-07-14
-# * 版本: v2.2
-# * 更新记录: 增加工作台确认弹窗模块
+# * 版本: v2.3
+# * 更新记录: 将 FT601 libusbK 自动绑定助手和 Zadig 嵌入 Windows 产品。
 # * 描述: 构建 lockstep_ui_preview、确认弹窗模块并复制 libusb 与运行资源。
 # **********************************************************/
 
 set(LOCKSTEP_UI_PREVIEW_SOURCES
     ui_preview_main.cpp
+    ft601_driver_bootstrap.cpp
+    ft601_driver_bootstrap.h
     workbench_controller.cpp
     workbench_controller.h
     debug_service_main.cpp
@@ -126,6 +128,44 @@ if(WIN32)
     else()
         message(FATAL_ERROR "libusb-1.0.dll is required for the Windows product")
     endif()
+
+    find_file(LOCKSTEP_ZADIG_EXECUTABLE
+        NAMES zadig-2.9.exe
+        PATHS
+            "D:/tool"
+            "${CMAKE_SOURCE_DIR}/packaging/windows/raw"
+        NO_DEFAULT_PATH
+    )
+    if(LOCKSTEP_ZADIG_EXECUTABLE)
+        if(QT_VERSION_MAJOR GREATER_EQUAL 6)
+            set_source_files_properties(
+                "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1"
+                PROPERTIES QT_RESOURCE_ALIAS "ensure_ft601_libusbk.ps1")
+            set_source_files_properties("${LOCKSTEP_ZADIG_EXECUTABLE}"
+                PROPERTIES QT_RESOURCE_ALIAS "zadig-2.9.exe")
+            qt_add_resources(lockstep_ui_preview ft601_driver_bootstrap_resources
+                PREFIX "/ft601_driver"
+                FILES
+                    "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1"
+                    "${LOCKSTEP_ZADIG_EXECUTABLE}"
+            )
+        else()
+            file(TO_CMAKE_PATH "${LOCKSTEP_ZADIG_EXECUTABLE}" LOCKSTEP_ZADIG_QRC_PATH)
+            set(LOCKSTEP_HELPER_QRC_PATH
+                "${CMAKE_SOURCE_DIR}/resources/windows/ft601_driver/ensure_ft601_libusbk.ps1")
+            set(LOCKSTEP_FT601_QRC "${CMAKE_CURRENT_BINARY_DIR}/ft601_driver_bootstrap.qrc")
+            file(WRITE "${LOCKSTEP_FT601_QRC}"
+                "<RCC><qresource prefix=\"/ft601_driver\">"
+                "<file alias=\"ensure_ft601_libusbk.ps1\">${LOCKSTEP_HELPER_QRC_PATH}</file>"
+                "<file alias=\"zadig-2.9.exe\">${LOCKSTEP_ZADIG_QRC_PATH}</file>"
+                "</qresource></RCC>")
+            qt5_add_resources(LOCKSTEP_FT601_RESOURCE_SOURCES "${LOCKSTEP_FT601_QRC}")
+            target_sources(lockstep_ui_preview PRIVATE ${LOCKSTEP_FT601_RESOURCE_SOURCES})
+        endif()
+    else()
+        message(FATAL_ERROR "Validated Zadig 2.9 is required for the Windows product")
+    endif()
+    target_link_libraries(lockstep_ui_preview PRIVATE advapi32 shell32)
 endif()
 
 if(MSVC)

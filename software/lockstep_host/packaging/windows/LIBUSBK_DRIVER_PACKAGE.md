@@ -2,15 +2,15 @@
 /**********************************************************
 * 文件名: LIBUSBK_DRIVER_PACKAGE.md
 * 日期: 2026-07-19
-* 版本: 1.2
-* 更新记录: 标记 libusbK 包为兼容路径，新增 WinUSB 2.0 首选迁移入口。
+* 版本: 1.3
+* 更新记录: libusbK 恢复为 FT601 唯一 Windows 后端，并明确 HS2 原厂驱动隔离。
 * 描述: 约束一次性自动部署所需的签名、匹配范围和验收证据。
 **********************************************************/
 -->
 
 # Windows libusbK 驱动包门禁
 
-> 新部署首选 `LOCKSTEP_WINUSB_DISTRIBUTION.md` 和 `lockstep-winusb-windows-2.0.zip`。本文件保留给已安装 libusbK 的兼容环境；上位机仍只调用 libusb API。
+> Windows 产品固定使用 libusbK 访问专用 FT601。旧的 WinUSB/HS2/OpenOCD 联合部署入口已停用；JTAG 保持 FTDI 原厂驱动并使用 Vivado。
 
 产品不得嵌入或调用闭源 FTDI USB 运行时。Windows 自动部署只能在取得经过目标 Windows 10/11 与 Secure Boot 验证的 libusbK 驱动包后启用，不得以测试证书或静默加入受信任根代替正式签名。
 
