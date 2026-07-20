@@ -825,7 +825,7 @@ QList<LibusbDeviceInfo> LibusbRuntime::enumerate(QString* error) const
     libusb_free_device_list(list, 1);
     if (devices.isEmpty() && error != nullptr) {
         *error = QStringLiteral(
-            "未枚举到 FT601 libusb 设备 (VID=0x0403 PID=0x601f)；Windows 请确认自动绑定的 libusbK 驱动已通过自检");
+            "未枚举到 FT601 libusb 设备 (VID=0x0403 PID=0x601f)；Windows 请确认设备已绑定 WinUSB/libusbK 驱动");
     }
     return devices;
 }

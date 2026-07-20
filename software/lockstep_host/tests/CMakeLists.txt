@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: CMakeLists.txt
 # * 日期: 2026-07-08
-# * 版本: v1.3
-# * 更新记录: 增加 Windows FT601 自动绑定、HS2 隔离和 Vivado 烧写合同测试。
+# * 版本: v1.2
+# * 更新记录: 增加任务加载、配置保存和删除确认弹窗测试
 # * 描述: 定义软件领域模块与工作台交互的 CTest 测试
 # **********************************************************/
 
@@ -180,10 +180,9 @@ add_test(
 
 if(WIN32)
     add_test(
-        NAME lockstep_windows_ft601_driver_bootstrap_test
+        NAME lockstep_windows_usb_bootstrap_test
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-            -File ${CMAKE_SOURCE_DIR}/packaging/windows/windows_ft601_driver_bootstrap_test.ps1
-            -ProductExe $<TARGET_FILE:lockstep_ui_preview>
+            -File ${CMAKE_SOURCE_DIR}/packaging/windows/windows_usb_bootstrap_test.ps1
     )
 endif()
 

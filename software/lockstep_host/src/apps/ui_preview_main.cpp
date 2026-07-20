@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_preview_main.cpp
 * 日期: 2026-07-13
-* 版本: v2.5
-* 更新记录: GUI 启动时强制执行 FT601 libusbK 自动绑定和 USB 自检。
+* 版本: v2.4
+* 更新记录: ARM 后并行执行 run 请求与 FT601 采集，避免事件 FIFO 积压。
 * 描述: 按参数启动界面、调试服务、离线回放或实时采集模式。
 **********************************************************/
 
@@ -14,7 +14,6 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QMessageBox>
 #include <QProcess>
 #include <QSaveFile>
 #include <QStringList>
@@ -22,7 +21,6 @@
 #include <QTimer>
 
 #include "debug_service_entry.h"
-#include "ft601_driver_bootstrap.h"
 #include "protocol_analysis.h"
 #include "report_generator.h"
 #include "sampling_capture.h"
@@ -228,13 +226,6 @@ int runLiveCapture(int argc, char* argv[])
         &argumentsValid);
     if (!argumentsValid) return 21;
 
-    const lockstep::apps::Ft601DriverBootstrapResult driverBootstrap =
-        lockstep::apps::ensureFt601LibusbK(QCoreApplication::applicationFilePath());
-    if (!driverBootstrap.success) {
-        QTextStream(stderr) << driverBootstrap.message << Qt::endl;
-        return 33;
-    }
-
     QString error;
     lockstep::acquisition::LibusbRuntime transport;
     if (!transport.initialize(&error)) {
@@ -402,7 +393,7 @@ int runCaptureDiagnostic(int argc, char* argv[])
         output.insert(QStringLiteral("error"), error.isEmpty() ? QStringLiteral("未枚举到 FT601 设备") : error);
 #if defined(Q_OS_WIN)
         output.insert(QStringLiteral("access_hint"),
-                      QStringLiteral("确认专用 FT601 已自动绑定 libusbK，且 JTAG 仍使用 FTDI 原厂驱动"));
+                      QStringLiteral("确认目标 FT601 已绑定 WinUSB（兼容已有 libusbK 绑定），且未误改 JTAG/CMSIS-DAP 驱动"));
 #else
         output.insert(QStringLiteral("access_hint"),
                       QStringLiteral("检查 99-lockstep-ft601.rules、uaccess/plugdev 权限和接口占用"));
@@ -465,20 +456,6 @@ lockstep::ui::UiMode parseMode(const QStringList& arguments)
 
 int main(int argc, char* argv[])
 {
-    const QString productExecutable = QFileInfo(QString::fromLocal8Bit(argv[0])).absoluteFilePath();
-    for (int index = 1; index < argc; ++index) {
-        if (QString::fromLocal8Bit(argv[index]) == QStringLiteral("--elevated-ft601-driver-bootstrap")) {
-            return lockstep::apps::runElevatedFt601LibusbKBootstrap();
-        }
-    }
-    const auto ensureHardwareAccess = [&productExecutable]() {
-        const lockstep::apps::Ft601DriverBootstrapResult bootstrap =
-            lockstep::apps::ensureFt601LibusbK(productExecutable);
-        if (!bootstrap.success) {
-            QTextStream(stderr) << bootstrap.message << Qt::endl;
-        }
-        return bootstrap.success;
-    };
     for (int index = 1; index < argc; ++index) {
         const QString argument = QString::fromLocal8Bit(argv[index]);
         if (argument == QStringLiteral("--offline-capture") || argument.startsWith(QStringLiteral("--offline-capture="))) {
@@ -491,7 +468,6 @@ int main(int argc, char* argv[])
             argument == QStringLiteral("--capture-stop") ||
             argument == QStringLiteral("--capture-smoke") ||
             argument == QStringLiteral("--usb-status")) {
-            if (!ensureHardwareAccess()) return 33;
             return runCaptureDiagnostic(argc, argv);
         }
     }
@@ -511,15 +487,6 @@ int main(int argc, char* argv[])
     QGuiApplication::setApplicationDisplayName(QStringLiteral("锁步研发测试系统"));
     application.setQuitOnLastWindowClosed(false);
 
-    const lockstep::apps::Ft601DriverBootstrapResult driverBootstrap =
-        lockstep::apps::ensureFt601LibusbK(QCoreApplication::applicationFilePath());
-    if (!driverBootstrap.success) {
-        QMessageBox::critical(nullptr,
-                              QStringLiteral("FT601 驱动自检失败"),
-                              driverBootstrap.message);
-        return 33;
-    }
-
     const lockstep::ui::UiMode mode = parseMode(application.arguments());
     lockstep::ui::MainWindowShell window;
     lockstep::ui::SplashWidget splash;
@@ -530,14 +497,6 @@ int main(int argc, char* argv[])
     state.topStatus.targetStatusText = QStringLiteral("目标: 未连接");
     state.topStatus.programStatusText = QStringLiteral("程序: 未选择");
     window.setWorkbenchState(state);
-    window.appendLog(
-        lockstep::ui::LogChannel::Operation,
-        driverBootstrap.connected ? lockstep::ui::LogLevel::Info : lockstep::ui::LogLevel::Warning,
-        QStringLiteral("FT601"),
-        driverBootstrap.connected
-            ? (driverBootstrap.changed ? QStringLiteral("已自动绑定 libusbK 并通过 USB 自检")
-                                       : QStringLiteral("libusbK 与 USB 自检通过"))
-            : QStringLiteral("FT601 未连接，启动时未执行驱动绑定"));
 
     splash.resize(860, 500);
     splash.show();
