@@ -393,7 +393,7 @@ int runCaptureDiagnostic(int argc, char* argv[])
         output.insert(QStringLiteral("error"), error.isEmpty() ? QStringLiteral("未枚举到 FT601 设备") : error);
 #if defined(Q_OS_WIN)
         output.insert(QStringLiteral("access_hint"),
-                      QStringLiteral("确认目标 FT601 已绑定 WinUSB（兼容已有 libusbK 绑定），且未误改 JTAG/CMSIS-DAP 驱动"));
+                      QStringLiteral("确认目标 FT601 已绑定 libusbK，且未误改 JTAG/CMSIS-DAP 驱动"));
 #else
         output.insert(QStringLiteral("access_hint"),
                       QStringLiteral("检查 99-lockstep-ft601.rules、uaccess/plugdev 权限和接口占用"));

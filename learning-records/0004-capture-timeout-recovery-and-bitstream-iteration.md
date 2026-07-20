@@ -10,4 +10,4 @@
 
 # 采集超时必须可恢复且先用状态定位
 
-无触发不能让硬件永久停留在 capturing。ARM 后失败统一执行“查询状态、STOP、等待 CONFIGURED、关闭并通过 libusb 重新打开、再次查询”，失败时保留 raw 和 status 证据并提示 PL 复位，不能自动重烧。RTL 微调先依靠模块/顶层 XSim、常驻状态计数和固定 ILA 探针定位，再用 routed DCP 增量实现；只有最终验收执行一次无 ILA 的干净发布构建。
+无触发不能让硬件永久停留在 capturing。ARM 后失败统一执行“查询状态、STOP、等待 CONFIGURED、D3XX 重连、再次查询”，失败时保留 raw 和 status 证据并提示 PL 复位，不能自动重烧。RTL 微调先依靠模块/顶层 XSim、常驻状态计数和固定 ILA 探针定位，再用 routed DCP 增量实现；只有最终验收执行一次无 ILA 的干净发布构建。
