@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: noelv_eight_protocol_benchmark.c
 * 日期: 2026-07-20
-* 版本: v1.0
-* 更新记录: 初版，建立 NOEL-V 八协议协同 benchmark 的板上固件部分
+* 版本: v1.2
+* 更新记录: 扩展 48 事务行为矩阵、AHB 压力访问及真实 I2C repeated START
 * 描述: 产生 AHB、UART、SPI、CAN、I2C 行为；ETH/USB 默认禁用，JTAG 由主机编排
 **********************************************************/
 
@@ -73,8 +73,10 @@
 #define CAN_SELF_TEST 0x04U
 #define CAN_SELF_RX   0x10U
 #define CAN_RELEASE_RX 0x04U
+#define CAN_RX_READY  0x01U
 #define CAN_TX_FREE   0x04U
 #define CAN_TX_DONE   0x08U
+#define CAN_TX_IDLE   (CAN_TX_FREE | CAN_TX_DONE)
 
 #define GRETH_CONTROL 0x00U
 #define GRETH_MAC_MSB 0x08U
@@ -86,13 +88,22 @@
 #define GRETH_DESC_EN 0x00000800U
 #define GRETH_DESC_WRAP 0x00001000U
 
-#define BENCH_TIMEOUT 2000000U
-#define BENCH_PROTOCOL_ITERATIONS 32U
+#define BENCH_TIMEOUT 100000U
+#define BENCH_PROTOCOL_ITERATIONS 48U
+#define BENCH_CAN_ITERATIONS      32U
+#define BENCH_AHB_WORDS           128U
 
 extern uint8_t __bss_start;
 extern uint8_t __bss_end;
 
-static volatile uint32_t ahb_scratch[64];
+static volatile uint32_t ahb_scratch[BENCH_AHB_WORDS];
+static const uint32_t ahb_patterns[] = {
+    0x00000000U, 0xffffffffU, 0xaaaaaaaaU, 0x55555555U,
+    0x80000000U, 0x7fffffffU, 0x01010101U, 0xfefefefeU
+};
+static const uint8_t protocol_patterns[] = {
+    0x00U, 0xffU, 0xa5U, 0x5aU, 0x80U, 0x7fU, 0x01U, 0xfeU
+};
 
 #if BENCH_ENABLE_ETH
 struct greth_descriptor {
@@ -157,12 +168,32 @@ static void uart_init(void)
 
 static int benchmark_ahb(void)
 {
-    uint32_t checksum = 0U;
-    for (uint32_t index = 0U; index < 64U; ++index) {
-        ahb_scratch[index] = 0x5a000000U ^ (index * 0x01010101U);
+    uint32_t expected = 0U;
+    uint32_t observed = 0U;
+    volatile uint8_t *const bytes = (volatile uint8_t *)ahb_scratch;
+    volatile uint16_t *const halfwords = (volatile uint16_t *)ahb_scratch;
+    for (uint32_t index = 0U; index < BENCH_AHB_WORDS; ++index) {
+        const uint32_t value = ahb_patterns[index & 0x7U] ^ (index * 0x00010101U);
+        ahb_scratch[index] = value;
+        expected ^= value;
     }
-    for (uint32_t index = 0U; index < 64U; ++index) checksum ^= ahb_scratch[index];
-    return checksum == 0U ? 0 : -1;
+    for (uint32_t index = 0U; index < BENCH_AHB_WORDS; ++index) {
+        observed ^= ahb_scratch[index];
+    }
+    if (observed != expected) return -1;
+    for (uint32_t index = 0U; index < 64U; ++index) {
+        bytes[index] = (uint8_t)(protocol_patterns[index & 0x7U] ^ index);
+    }
+    for (uint32_t index = 0U; index < 64U; ++index) {
+        if (bytes[index] != (uint8_t)(protocol_patterns[index & 0x7U] ^ index)) return -1;
+    }
+    for (uint32_t index = 0U; index < 32U; ++index) {
+        halfwords[64U + index] = (uint16_t)(0xa500U ^ (index * 0x0101U));
+    }
+    for (uint32_t index = 0U; index < 32U; ++index) {
+        if (halfwords[64U + index] != (uint16_t)(0xa500U ^ (index * 0x0101U))) return -1;
+    }
+    return 0;
 }
 
 static int spi_transfer(uint32_t mode, uint32_t value)
@@ -186,7 +217,7 @@ static int benchmark_spi(void)
 {
     int result = 0;
     for (uint32_t index = 0U; index < BENCH_PROTOCOL_ITERATIONS; ++index) {
-        const uint32_t value = 0xa5U ^ (index * 0x13U);
+        const uint32_t value = protocol_patterns[index & 0x7U];
         if (spi_transfer(index & 0x3U, value) != 0) result = -1;
     }
     return result;
@@ -194,7 +225,7 @@ static int benchmark_spi(void)
 
 static int benchmark_can(void)
 {
-    uint8_t frame[] = {0x02U, 0x24U, 0x60U, 0x11U, 0x22U, 0x33U};
+    uint8_t frame[11] = {0U};
     uint32_t timeout = BENCH_TIMEOUT;
     int result = 0;
     can_write8(CAN_MODE, CAN_RESET);
@@ -203,21 +234,38 @@ static int benchmark_can(void)
     can_write8(CAN_BTR1, 0x34U);
     can_write8(CAN_OCR, 0x1aU);
     can_write8(CAN_MODE, CAN_SELF_TEST);
-    for (uint32_t transaction = 0U; transaction < BENCH_PROTOCOL_ITERATIONS; ++transaction) {
+    can_write8(CAN_COMMAND, CAN_RELEASE_RX);
+    for (uint32_t transaction = 0U; transaction < BENCH_CAN_ITERATIONS; ++transaction) {
+        const uint8_t dlc = (uint8_t)(transaction % 9U);
+        const uint16_t identifier = transaction == (BENCH_CAN_ITERATIONS - 1U)
+            ? 0x7ffU : (uint16_t)(0x120U + transaction);
         timeout = BENCH_TIMEOUT;
         while ((can_read8(CAN_STATUS) & CAN_TX_FREE) == 0U && timeout-- != 0U) {
         }
-        frame[3] = (uint8_t)transaction;
-        frame[4] = (uint8_t)(transaction ^ 0x5aU);
-        frame[5] = (uint8_t)(transaction ^ 0xa5U);
-        for (uint32_t index = 0U; index < sizeof(frame); ++index) {
+        if (timeout == 0U) {
+            result = -1;
+            break;
+        }
+        if ((can_read8(CAN_STATUS) & CAN_RX_READY) != 0U) {
+            can_write8(CAN_COMMAND, CAN_RELEASE_RX);
+        }
+        frame[0] = dlc;
+        frame[1] = (uint8_t)(identifier >> 3);
+        frame[2] = (uint8_t)((identifier & 0x7U) << 5);
+        for (uint32_t index = 0U; index < dlc; ++index) {
+            frame[3U + index] = (uint8_t)(protocol_patterns[index] ^ transaction);
+        }
+        for (uint32_t index = 0U; index < (uint32_t)dlc + 3U; ++index) {
             can_write8(CAN_BUFFER + index, frame[index]);
         }
         can_write8(CAN_COMMAND, CAN_SELF_RX);
         timeout = BENCH_TIMEOUT;
-        while ((can_read8(CAN_STATUS) & CAN_TX_DONE) == 0U && timeout-- != 0U) {
+        while ((can_read8(CAN_STATUS) & CAN_RX_READY) == 0U && timeout-- != 0U) {
         }
-        if (timeout == 0U) result = -1;
+        if (timeout == 0U) {
+            result = -1;
+            break;
+        }
         can_write8(CAN_COMMAND, CAN_RELEASE_RX);
     }
     return result;
@@ -258,13 +306,17 @@ static int benchmark_i2c(void)
     write32(I2C_BASE + I2C_PRESCALE, 31U);
     write32(I2C_BASE + I2C_CONTROL, I2C_ENABLE);
     for (uint32_t transaction = 0U; transaction < BENCH_PROTOCOL_ITERATIONS; ++transaction) {
-        if (i2c_write_command(0xa0U, I2C_START | I2C_WRITE) != 0) result = -1;
+        const uint8_t writeAddress = (transaction & 1U) == 0U ? 0xa0U : 0xa4U;
+        const int readBack = (transaction & 0x3U) == 0x3U;
+        if (i2c_write_command(writeAddress, I2C_START | I2C_WRITE) != 0) result = -1;
         if (i2c_write_command((uint8_t)transaction, I2C_WRITE) != 0) result = -1;
-        if (i2c_write_command((uint8_t)(transaction ^ 0x5aU), I2C_WRITE | I2C_STOP) != 0) {
+        if (i2c_write_command(
+                (uint8_t)(transaction ^ 0x5aU),
+                I2C_WRITE | (readBack != 0 ? 0U : I2C_STOP)) != 0) {
             result = -1;
         }
-        if ((transaction & 0x7U) == 0x7U) {
-            if (i2c_write_command(0xa1U, I2C_START | I2C_WRITE) != 0) result = -1;
+        if (readBack != 0) {
+            if (i2c_write_command((uint8_t)(writeAddress | 1U), I2C_START | I2C_WRITE) != 0) result = -1;
             if (i2c_clear_irq() != 0) result = -1;
             write32(I2C_BASE + I2C_COMMAND, I2C_READ | I2C_NACK | I2C_STOP);
             if (i2c_wait_done() != 0) result = -1;
@@ -349,6 +401,7 @@ int benchmark_main(void) __attribute__((used, noinline));
 int benchmark_main(void)
 {
     int failures = 0;
+    int result;
     for (uint8_t *cursor = &__bss_start; cursor < &__bss_end; ++cursor) *cursor = 0U;
 
     checkpoint(0x8b00U);
@@ -357,29 +410,41 @@ int benchmark_main(void)
 
     checkpoint(0x8b01U);
     if (benchmark_ahb() != 0) failures |= 1 << 0;
-    uart_puts("AHB: READ WRITE BURST COMPLETE\n");
+    uart_puts("AHB: 448 WORD BYTE HALFWORD READ WRITE COMPLETE\n");
 
     checkpoint(0x8b02U);
-    uart_puts("UART: 32 FRAMES 55 A3 00 FF 11 22 33 44 55 A3 00 FF 11 22 33 44\n");
-    uart_puts("UART: 55 A3 00 FF 11 22 33 44 55 A3 00 FF 11 22 33 44\n");
+    uart_puts("UART: BINARY 48 BEGIN\n");
+    for (uint32_t transaction = 0U; transaction < BENCH_PROTOCOL_ITERATIONS; ++transaction) {
+        uart_putc((char)protocol_patterns[transaction & 0x7U]);
+    }
+    uart_puts("\nUART: BINARY 48 END\n");
 
 #if BENCH_ENABLE_SPI
     checkpoint(0x8b03U);
-    if (benchmark_spi() != 0) failures |= 1 << 2;
+    result = benchmark_spi();
+    if (result != 0) failures |= 1 << 2;
+    uart_puts(result == 0 ? "SPI: 48 MODE0-3 BOUNDARY PASS\n" : "SPI: 48 MODE0-3 BOUNDARY PARTIAL\n");
 #endif
 #if BENCH_ENABLE_CAN
     checkpoint(0x8b04U);
-    if (benchmark_can() != 0) failures |= 1 << 3;
+    result = benchmark_can();
+    if (result != 0) failures |= 1 << 3;
+    uart_puts(result == 0 ? "CAN: 32 DLC0-8 ID120-7FF PASS\n" : "CAN: 32 DLC0-8 ID120-7FF PARTIAL\n");
 #endif
 #if BENCH_ENABLE_I2C
     checkpoint(0x8b05U);
-    if (benchmark_i2c() != 0) failures |= 1 << 4;
+    result = benchmark_i2c();
+    if (result != 0) failures |= 1 << 4;
+    uart_puts(result == 0 ? "I2C: 48 WRITE 12 REPEATED-START READ PASS\n"
+                          : "I2C: 48 WRITE 12 REPEATED-START READ PARTIAL\n");
 #endif
     checkpoint(0x8b06U);
     if (benchmark_eth() != 0) failures |= 1 << 5;
     if (benchmark_usb() != 0) failures |= 1 << 6;
+    uart_puts("ETH: UNAVAILABLE DESIGN_GAP\n");
+    uart_puts("USB: UNAVAILABLE DESIGN_GAP\n");
 
-    uart_puts("JTAG: HOST ACTION REQUIRED\n");
+    uart_puts("JTAG: 48 IR-DR SCANS HOST ACTION REQUIRED\n");
     uart_puts(failures == 0 ? "LOCKSTEP_8_PROTOCOL_BENCHMARK: PASS\n"
                            : "LOCKSTEP_8_PROTOCOL_BENCHMARK: PARTIAL\n");
     uart_puts("PROGRAM_RUN_DONE\n");

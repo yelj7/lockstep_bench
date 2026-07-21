@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: eight_protocol_benchmark_test.cpp
 * 日期: 2026-07-20
-* 版本: v1.0
-* 更新记录: 初版，验证八协议 golden 波形和协议解析结果
+* 版本: v1.1
+* 更新记录: 增加扩展行为矩阵、事务数量和 repeated START 合同门禁
 * 描述: 重放仿真 golden VCD，核对八协议常见行为及零 Mismatch 合同
 **********************************************************/
 
@@ -184,6 +184,7 @@ int main(int argc, char* argv[])
     const bool updateGolden = argc >= 3 && QString::fromLocal8Bit(argv[2]) == QStringLiteral("--update-golden");
     QJsonObject expected;
     QJsonObject manifest;
+    QJsonObject behaviorMatrix;
     if (!expect(readJson(QDir(benchmarkRoot).filePath(QStringLiteral("expected_protocols.json")), &expected),
                 QStringLiteral("expected protocol contract is readable")) ||
         !expect(readJson(QDir(benchmarkRoot).filePath(QStringLiteral("benchmark_manifest.json")), &manifest),
@@ -196,6 +197,27 @@ int main(int argc, char* argv[])
                         "firmware/noelv_eight_protocol_benchmark.c")),
                         QByteArrayLiteral("PROGRAM_RUN_DONE")),
                 QStringLiteral("firmware and manifest expose the host program-done marker")) ||
+        !expect(manifest.value(QStringLiteral("minimum_complete_transactions_per_protocol")).toInt() == 48 &&
+                    manifest.value(QStringLiteral("expected_ahb_transactions")).toInt() == 256,
+                QStringLiteral("manifest fixes the expanded golden transaction counts")) ||
+        !expect((behaviorMatrix = manifest.value(QStringLiteral("board_behavior_matrix")).toObject())
+                        .value(QStringLiteral("ahb")).toObject()
+                        .value(QStringLiteral("explicit_accesses")).toInt() == 448 &&
+                    behaviorMatrix.value(QStringLiteral("uart")).toObject()
+                        .value(QStringLiteral("binary_bytes")).toInt() == 48 &&
+                    behaviorMatrix.value(QStringLiteral("spi")).toObject()
+                        .value(QStringLiteral("transfers")).toInt() == 48 &&
+                    behaviorMatrix.value(QStringLiteral("can")).toObject()
+                        .value(QStringLiteral("attempted_frames")).toInt() == 32 &&
+                    behaviorMatrix.value(QStringLiteral("i2c")).toObject()
+                        .value(QStringLiteral("repeated_start_reads")).toInt() == 12 &&
+                    behaviorMatrix.value(QStringLiteral("jtag")).toObject()
+                        .value(QStringLiteral("host_scans")).toInt() == 48,
+                QStringLiteral("manifest exposes the expanded board behavior matrix")) ||
+        !expect(fileContains(QDir(benchmarkRoot).filePath(QStringLiteral(
+                        "firmware/noelv_eight_protocol_benchmark.c")),
+                        QByteArrayLiteral("I2C_WRITE | (readBack != 0 ? 0U : I2C_STOP)")),
+                QStringLiteral("firmware keeps the bus active before repeated START reads")) ||
         !expect(verifySrec(QDir(benchmarkRoot).filePath(
                     QStringLiteral("firmware/noelv_eight_protocol_benchmark.srec"))),
                 QStringLiteral("firmware SREC checksums and 0x0 termination entry are valid"))) {

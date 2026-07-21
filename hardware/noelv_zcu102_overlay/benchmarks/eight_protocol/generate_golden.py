@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: generate_golden.py
 # * 日期: 2026-07-20
-# * 版本: v1.0
-# * 更新记录: 初版，生成八协议 1024-bit golden VCD
+# * 版本: v1.1
+# * 更新记录: 扩展到 48 事务、256 AHB 事务并增加边界值和 JTAG DR scan
 # * 描述: 生成仅用于解析器回归的确定性仿真波形、schema 和 sidecar
 # **********************************************************/
 
@@ -13,8 +13,8 @@ from pathlib import Path
 
 WIDTH = 1024
 STEP_NS = 10
-PROTOCOL_TRANSACTIONS = 32
-AHB_TRANSACTIONS = 128
+PROTOCOL_TRANSACTIONS = 48
+AHB_TRANSACTIONS = 256
 
 
 class TraceBuilder:
@@ -38,12 +38,12 @@ class TraceBuilder:
         self.emit()
 
 
-def emit_ahb(builder, address, write, data, response=0, stalls=0):
+def emit_ahb(builder, address, write, data, size=2, burst=0, response=0, stalls=0):
     builder.set(32, 32, address)
     builder.set(416, 1, int(write))
     builder.set(417, 2, 2)
-    builder.set(419, 3, 2)
-    builder.set(422, 3, 0)
+    builder.set(419, 3, size)
+    builder.set(422, 3, burst)
     builder.set(429, 1, 0 if stalls else 1)
     builder.set(430, 2, response)
     builder.set(64 if write else 192, 32, data)
@@ -161,11 +161,21 @@ def jtag_cycle(builder, tms, tdi=0, tdo=0):
     builder.emit()
 
 
-def emit_jtag_scan(builder):
+def emit_jtag_ir_scan(builder):
     for tms in [1, 1, 1, 1, 1, 0, 1, 1, 0, 0]:
         jtag_cycle(builder, tms)
     for index, bit in enumerate([1, 0, 1, 0]):
         jtag_cycle(builder, 1 if index == 3 else 0, bit, bit ^ 1)
+    jtag_cycle(builder, 1)
+    jtag_cycle(builder, 0)
+
+
+def emit_jtag_dr_scan(builder):
+    for tms in [1, 1, 1, 1, 1, 0, 1, 0, 0]:
+        jtag_cycle(builder, tms)
+    for index in range(8):
+        bit = (0xA5 >> index) & 1
+        jtag_cycle(builder, 1 if index == 7 else 0, bit, bit ^ 1)
     jtag_cycle(builder, 1)
     jtag_cycle(builder, 0)
 
@@ -184,59 +194,63 @@ def main():
         builder.set(idle_high)
     builder.emit()
 
+    ahb_values = [0x00000000, 0xFFFFFFFF, 0xAAAAAAAA, 0x55555555,
+                  0x80000000, 0x7FFFFFFF, 0x01010101, 0xFEFEFEFE]
     for transaction in range(AHB_TRANSACTIONS):
         emit_ahb(
             builder,
-            0x00000100 + transaction * 4,
+            0x00000100 + (transaction % 128) * 4,
             bool(transaction & 1),
-            0x12340000 ^ (transaction * 0x01010101),
-            response=1 if transaction in (31, 95) else 0,
-            stalls=transaction % 3,
+            ahb_values[transaction % len(ahb_values)] ^ (transaction << 8),
+            size=transaction % 3,
+            burst=1 if transaction % 8 >= 4 else 0,
+            response=1 if transaction in (31, 127, 223) else 0,
+            stalls=[0, 1, 2, 4][transaction % 4],
         )
     uart_values = [0x55, 0xA3, 0x00, 0xFF, 0x11, 0x22, 0x33, 0x44]
+    spi_values = [0x00, 0xFF, 0xA5, 0x5A, 0x80, 0x7F, 0x01, 0xFE]
     for transaction in range(PROTOCOL_TRANSACTIONS):
         emit_uart_hint(builder, "tx" if transaction % 2 == 0 else "rx", uart_values[transaction % 8])
         emit_spi(
             builder,
             transaction & 0x3,
-            0xA5 ^ transaction,
-            0x3C ^ (transaction * 3),
+            spi_values[transaction % len(spi_values)],
+            spi_values[(transaction + 3) % len(spi_values)],
         )
         emit_can(
             builder,
-            0x120 + transaction,
+            0x7FF if transaction == PROTOCOL_TRANSACTIONS - 1 else 0x120 + transaction,
             transaction & 0xF,
-            error=transaction in (15, 31),
+            error=transaction in (15, 31, 47),
         )
 
-    i2c_start(builder)
-    i2c_byte(builder, 0xA0)
-    i2c_byte(builder, 0x00)
-    i2c_byte(builder, 0x5A)
-    i2c_start(builder, repeated=True)
-    i2c_byte(builder, 0xA1)
-    i2c_byte(builder, 0xC3, ack=False)
-    i2c_stop(builder)
-    for transaction in range(1, PROTOCOL_TRANSACTIONS):
+    for transaction in range(PROTOCOL_TRANSACTIONS):
         i2c_start(builder)
         i2c_byte(builder, 0xA0)
         i2c_byte(builder, transaction)
-        i2c_byte(builder, transaction ^ 0x5A, ack=transaction != 31)
+        i2c_byte(builder, transaction ^ 0x5A)
+        if transaction % 8 == 7:
+            i2c_start(builder, repeated=True)
+            i2c_byte(builder, 0xA1)
+            i2c_byte(builder, transaction ^ 0xC3, ack=False)
         i2c_stop(builder)
 
     for transaction in range(PROTOCOL_TRANSACTIONS):
         emit_eth(
             builder,
             tx=transaction % 2 == 0,
-            ethertype=0x0800 if transaction % 2 == 0 else 0x0806,
-            error=transaction in (15, 31),
+            ethertype=[0x0800, 0x0806, 0x88B5][transaction % 3],
+            error=transaction in (15, 31, 47),
         )
     builder.pulse(735)
     for transaction in range(PROTOCOL_TRANSACTIONS):
-        emit_usb(builder, 0xD if transaction % 2 == 0 else 0x3,
+        emit_usb(builder, [0xD, 0x3, 0xB, 0x2][transaction % 4],
                  1 + transaction % 4, 0x5A ^ transaction)
-    for _ in range(PROTOCOL_TRANSACTIONS):
-        emit_jtag_scan(builder)
+    for transaction in range(PROTOCOL_TRANSACTIONS):
+        if transaction % 2 == 0:
+            emit_jtag_ir_scan(builder)
+        else:
+            emit_jtag_dr_scan(builder)
 
     vcd = [
         "$timescale 1 ns $end",

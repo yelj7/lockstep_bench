@@ -169,6 +169,7 @@ int main(int argc, char** argv)
     QString error;
     if (!expect(config.validate(&error), "default 1024 capture config is valid") ||
         !expect(config.sampleRateHz == 120'000'000U, "default config matches live 120 MHz hardware") ||
+        !expect(config.eventLimit == 0U, "default event stream is independent of the 4096-sample window") ||
         !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract") ||
         !expect(config.toEventPayload().size() == 16, "event config uses explicit v3 16-byte wire contract")) return 1;
 

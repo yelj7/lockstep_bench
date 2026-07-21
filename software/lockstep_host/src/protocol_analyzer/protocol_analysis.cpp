@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: protocol_analysis.cpp
 * 日期: 2026-07-19
-* 版本: v3.0
-* 更新记录: 合并 v3 稀疏事件归档，并由 design_gap mask 约束来源状态。
+* 版本: v3.2
+* 更新记录: 基于全局时间戳重建稀疏 UART 115200 8N1 字节流。
 * 描述: 实现 1024 路 VCD 与稀疏事件的统一时间轴、协议解析和分析输出。
 **********************************************************/
 
@@ -848,6 +848,11 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
     const bool uartHintDataAvailable = std::any_of(samples.cbegin(), samples.cend(), [p](const VcdSample& value) {
         return sampleValue(value, p(118, 520), 8) != 0U || sampleValue(value, p(126, 528), 8) != 0U;
     });
+    const bool i2cHintAvailable = wide && std::any_of(
+        samples.cbegin(), samples.cend(), [p](const VcdSample& value) {
+            return sampleBit(value, p(210, 610)) || sampleBit(value, p(211, 611)) ||
+                sampleBit(value, p(214, 614));
+        });
     const qint64 samplePeriodPs = samples.size() > 1
         ? (samples.at(1).time - samples.at(0).time) * timeUnitPs : 0;
     const qint64 uartBitSamples = sampleRateHz > 0U && samplePeriodPs > 0
@@ -1030,12 +1035,18 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
         const bool i2cSda = sampleBit(sample, p(209, 609));
         const bool previousI2cScl = sampleBit(previous, p(208, 608));
         const bool previousI2cSda = sampleBit(previous, p(209, 609));
-        const bool i2cStartCondition = i2cScl && previousI2cSda && !i2cSda;
-        const bool i2cStopCondition = i2cScl && !previousI2cSda && i2cSda;
+        const bool i2cStartCondition = i2cHintAvailable
+            ? sampleBit(sample, p(210, 610))
+            : i2cScl && previousI2cSda && !i2cSda;
+        const bool i2cStopCondition = i2cHintAvailable
+            ? sampleBit(sample, p(211, 611))
+            : i2cScl && !previousI2cSda && i2cSda;
+        const bool i2cSclRise = i2cHintAvailable
+            ? sampleBit(sample, p(214, 614))
+            : i2cScl && !previousI2cScl;
         const bool i2cKnown = !sampleRangeUnknown(sample, p(208, 608), 32) &&
             !sampleRangeUnknown(previous, p(208, 608), 32);
-        if (i2cReal && i2cKnown && (i2cStartCondition ||
-                        (sampleBit(sample, p(210, 610)) && !sampleBit(previous, p(210, 610))))) {
+        if (i2cReal && i2cKnown && i2cStartCondition) {
             if (i2cOpen && !i2cBytes.isEmpty()) {
                 const quint64 addressByte = i2cBytes.first();
                 append(QStringLiteral("i2c"), QStringLiteral("i2c_segment"),
@@ -1052,7 +1063,7 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
             i2cBytes.clear();
             i2cAcks.clear();
         }
-        if (i2cOpen && i2cKnown && i2cScl && !previousI2cScl && !i2cStartCondition) {
+        if (i2cOpen && i2cKnown && i2cSclRise && !i2cStartCondition) {
             if ((i2cBitCount % 9) < 8) {
                 i2cByte = (i2cByte << 1U) | (i2cSda ? 1U : 0U);
             } else {
@@ -1069,8 +1080,7 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
             }
             ++i2cBitCount;
         }
-        if (i2cOpen && i2cKnown &&
-            (i2cStopCondition || sampleBit(sample, p(211, 611)))) {
+        if (i2cOpen && i2cKnown && i2cStopCondition) {
             const quint64 addressByte = i2cBytes.isEmpty()
                 ? sampleValue(i2cStart, p(216, 616), 7) << 1U : i2cBytes.first();
             const bool read = (addressByte & 1U) != 0U;
@@ -1253,7 +1263,17 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
     bool* const archiveValid,
     QList<ProtocolDiagnostic>* const diagnostics)
 {
+    struct SparseLineEvent final {
+        quint64 timestamp = 0U;
+        quint16 state = 0U;
+        QJsonObject record;
+    };
+
     QList<ProtocolEvent> result;
+    QList<SparseLineEvent> uartEdges;
+    QList<SparseLineEvent> spiEdges;
+    QList<SparseLineEvent> i2cEdges;
+    QList<SparseLineEvent> jtagEdges;
     if (designGapMask != nullptr) *designGapMask = 0U;
     if (archiveValid != nullptr) *archiveValid = true;
     const QString relativePath = captureSidecar.value(QStringLiteral("protocol_events")).toString();
@@ -1324,7 +1344,352 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
         event.fields = item;
         event.fields.insert(QStringLiteral("evidence"), relativePath);
         result.append(event);
+
+        if (protocolId == 1 && sourceKind == 0) {
+            const QByteArray payload = QByteArray::fromHex(
+                item.value(QStringLiteral("payload_hex")).toString().toLatin1());
+            if (!payload.isEmpty()) {
+                SparseLineEvent edge;
+                edge.timestamp = timestamp;
+                edge.state = static_cast<quint8>(payload.at(0));
+                edge.record = item;
+                uartEdges.append(edge);
+            }
+        }
+        if (protocolId == 2 && sourceKind == 0) {
+            const QByteArray payload = QByteArray::fromHex(
+                item.value(QStringLiteral("payload_hex")).toString().toLatin1());
+            if (!payload.isEmpty()) {
+                SparseLineEvent edge;
+                edge.timestamp = timestamp;
+                edge.state = static_cast<quint8>(payload.at(0));
+                edge.record = item;
+                spiEdges.append(edge);
+            }
+        }
+        if (protocolId == 4 && sourceKind == 0) {
+            const QByteArray payload = QByteArray::fromHex(
+                item.value(QStringLiteral("payload_hex")).toString().toLatin1());
+            if (!payload.isEmpty()) {
+                SparseLineEvent edge;
+                edge.timestamp = timestamp;
+                edge.state = static_cast<quint8>(payload.at(0));
+                edge.record = item;
+                i2cEdges.append(edge);
+            }
+        }
+        if (protocolId == 7 && sourceKind == 0) {
+            const QByteArray payload = QByteArray::fromHex(
+                item.value(QStringLiteral("payload_hex")).toString().toLatin1());
+            if (!payload.isEmpty()) {
+                SparseLineEvent edge;
+                edge.timestamp = timestamp;
+                edge.state = static_cast<quint8>(payload.at(0));
+                if (payload.size() > 1) {
+                    edge.state |= quint16(static_cast<quint8>(payload.at(1))) << 8U;
+                }
+                edge.record = item;
+                jtagEdges.append(edge);
+            }
+        }
     }
+
+    if (!uartEdges.isEmpty()) {
+        std::sort(uartEdges.begin(), uartEdges.end(), [](const SparseLineEvent& left,
+                                                        const SparseLineEvent& right) {
+            return left.timestamp < right.timestamp;
+        });
+        constexpr quint64 uartBaud = 115'200ULL;
+        const quint64 nominalBitTicks = qMax<quint64>(1U, (timebaseHz + uartBaud / 2U) / uartBaud);
+        quint64 bitTicks = nominalBitTicks;
+        quint64 bestDistance = std::numeric_limits<quint64>::max();
+        for (int index = 1; index < uartEdges.size(); ++index) {
+            const quint64 delta = uartEdges.at(index).timestamp - uartEdges.at(index - 1).timestamp;
+            if (delta == 0U || delta > nominalBitTicks * 12U) continue;
+            const quint64 multiple = qMax<quint64>(1U, (delta + nominalBitTicks / 2U) / nominalBitTicks);
+            const quint64 candidate = qMax<quint64>(1U, delta / multiple);
+            const quint64 distance = candidate > nominalBitTicks
+                ? candidate - nominalBitTicks : nominalBitTicks - candidate;
+            if (distance * 20U <= nominalBitTicks && distance < bestDistance) {
+                bitTicks = candidate;
+                bestDistance = distance;
+            }
+        }
+        const auto lineAt = [&uartEdges](const quint64 timestamp, const quint8 lineMask) {
+            bool level = true;
+            for (const SparseLineEvent& edge : uartEdges) {
+                if (edge.timestamp > timestamp) break;
+                level = (edge.state & lineMask) != 0U;
+            }
+            return level;
+        };
+        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
+            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
+            return static_cast<qint64>(
+                (static_cast<long double>(relativeTicks) * 1.0e12L) /
+                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        };
+        const auto decodeLine = [&](const quint8 lineMask, const quint8 fallingMask,
+                                    const QString& direction) {
+            quint64 nextAllowedTimestamp = 0U;
+            for (const SparseLineEvent& edge : uartEdges) {
+                if ((edge.state & fallingMask) == 0U || edge.timestamp < nextAllowedTimestamp) continue;
+                const quint64 startSample = edge.timestamp + bitTicks / 2U;
+                if (lineAt(startSample, lineMask)) continue;
+                quint8 data = 0U;
+                for (int bit = 0; bit < 8; ++bit) {
+                    const quint64 sampleTimestamp = edge.timestamp +
+                        ((3U + quint64(bit) * 2U) * bitTicks) / 2U;
+                    if (lineAt(sampleTimestamp, lineMask)) data |= quint8(1U << bit);
+                }
+                const quint64 stopTimestamp = edge.timestamp + (19U * bitTicks) / 2U;
+                const bool stopHigh = lineAt(stopTimestamp, lineMask);
+                ProtocolEvent frame;
+                frame.groupId = QStringLiteral("uart");
+                frame.type = QStringLiteral("uart_frame");
+                frame.startTime = ticksToVcdTime(edge.timestamp);
+                frame.endTime = ticksToVcdTime(edge.timestamp + 10U * bitTicks);
+                frame.summary = QStringLiteral("UART %1 %2").arg(direction, hexValue(data, 8));
+                frame.severity = stopHigh ? QString() : QStringLiteral("error");
+                frame.fields.insert(QStringLiteral("direction"), direction);
+                frame.fields.insert(QStringLiteral("data"), hexValue(data, 8));
+                frame.fields.insert(QStringLiteral("baud"), static_cast<qint64>(uartBaud));
+                frame.fields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
+                frame.fields.insert(QStringLiteral("frame_error"), !stopHigh);
+                frame.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_timestamp_edges"));
+                frame.fields.insert(QStringLiteral("capture_id"), edge.record.value(QStringLiteral("capture_id")));
+                frame.fields.insert(QStringLiteral("evidence"), relativePath);
+                result.append(frame);
+                nextAllowedTimestamp = edge.timestamp + 10U * bitTicks;
+            }
+        };
+        decodeLine(0x01U, 0x10U, QStringLiteral("TX"));
+        decodeLine(0x02U, 0x20U, QStringLiteral("RX"));
+    }
+    if (!spiEdges.isEmpty()) {
+        std::sort(spiEdges.begin(), spiEdges.end(), [](const SparseLineEvent& left,
+                                                      const SparseLineEvent& right) {
+            return left.timestamp < right.timestamp;
+        });
+        quint64 edgeInterval = std::numeric_limits<quint64>::max();
+        for (int index = 1; index < spiEdges.size(); ++index) {
+            const quint64 delta = spiEdges.at(index).timestamp - spiEdges.at(index - 1).timestamp;
+            if (delta > 0U) edgeInterval = qMin(edgeInterval, delta);
+        }
+        if (edgeInterval == std::numeric_limits<quint64>::max()) edgeInterval = 1U;
+        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
+            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
+            return static_cast<qint64>(
+                (static_cast<long double>(relativeTicks) * 1.0e12L) /
+                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        };
+        const auto appendTransfer = [&](const QList<SparseLineEvent>& transfer) {
+            if (transfer.isEmpty() || transfer.size() > 64) return;
+            quint64 txData = 0U;
+            quint64 rxData = 0U;
+            for (const SparseLineEvent& edge : transfer) {
+                txData = (txData << 1U) | ((edge.state & 0x02U) != 0U ? 1U : 0U);
+                rxData = (rxData << 1U) | ((edge.state & 0x04U) != 0U ? 1U : 0U);
+            }
+            ProtocolEvent event;
+            event.groupId = QStringLiteral("spi");
+            event.type = QStringLiteral("spi_transfer");
+            event.startTime = ticksToVcdTime(transfer.first().timestamp);
+            event.endTime = ticksToVcdTime(transfer.last().timestamp);
+            event.summary = QStringLiteral("SPI %1 bits TX=%2 RX=%3")
+                .arg(transfer.size()).arg(hexValue(txData, transfer.size()),
+                                          hexValue(rxData, transfer.size()));
+            event.fields.insert(QStringLiteral("tx_data"), hexValue(txData, transfer.size()));
+            event.fields.insert(QStringLiteral("rx_data"), hexValue(rxData, transfer.size()));
+            event.fields.insert(QStringLiteral("bit_count"), transfer.size());
+            event.fields.insert(QStringLiteral("mode_available"), false);
+            event.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_rising_edges"));
+            event.fields.insert(QStringLiteral("evidence"), relativePath);
+            result.append(event);
+        };
+        QList<SparseLineEvent> transfer;
+        for (const SparseLineEvent& edge : spiEdges) {
+            const bool newTransfer = !transfer.isEmpty() &&
+                edge.timestamp - transfer.last().timestamp > edgeInterval * 8U;
+            if (newTransfer) {
+                appendTransfer(transfer);
+                transfer.clear();
+            }
+            if ((edge.state & 0x20U) != 0U && (edge.state & 0x08U) == 0U) transfer.append(edge);
+        }
+        appendTransfer(transfer);
+    }
+    if (!i2cEdges.isEmpty()) {
+        std::sort(i2cEdges.begin(), i2cEdges.end(), [](const SparseLineEvent& left,
+                                                      const SparseLineEvent& right) {
+            return left.timestamp < right.timestamp;
+        });
+        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
+            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
+            return static_cast<qint64>(
+                (static_cast<long double>(relativeTicks) * 1.0e12L) /
+                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        };
+        bool active = false;
+        quint64 startTimestamp = 0U;
+        int bitCount = 0;
+        quint8 currentByte = 0U;
+        QList<quint8> bytes;
+        QList<bool> acks;
+        const auto appendTransfer = [&](const quint64 endTimestamp, const bool complete,
+                                        const QString& endReason) {
+            if (!active || (bytes.isEmpty() && bitCount == 0)) return;
+            QJsonArray byteArray;
+            QStringList byteTexts;
+            for (const quint8 byte : bytes) {
+                const QString text = hexValue(byte, 8);
+                byteArray.append(text);
+                byteTexts.append(text);
+            }
+            QJsonArray ackArray;
+            for (const bool ack : acks) ackArray.append(ack ? QStringLiteral("ACK") : QStringLiteral("NACK"));
+            ProtocolEvent event;
+            event.groupId = QStringLiteral("i2c");
+            event.type = complete ? QStringLiteral("i2c_transfer") : QStringLiteral("i2c_segment");
+            event.startTime = ticksToVcdTime(startTimestamp);
+            event.endTime = ticksToVcdTime(endTimestamp);
+            event.summary = QStringLiteral("I2C %1 bytes=[%2]")
+                .arg(endReason, byteTexts.join(QStringLiteral(", ")));
+            event.fields.insert(QStringLiteral("bytes"), byteArray);
+            event.fields.insert(QStringLiteral("acks"), ackArray);
+            event.fields.insert(QStringLiteral("trailing_partial_bits"), bitCount);
+            event.fields.insert(QStringLiteral("end_reason"), endReason);
+            event.fields.insert(QStringLiteral("complete"), complete);
+            event.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_scl_rising_edges"));
+            event.fields.insert(QStringLiteral("evidence"), relativePath);
+            if (!complete) event.severity = QStringLiteral("warning");
+            result.append(event);
+        };
+        for (const SparseLineEvent& edge : i2cEdges) {
+            const bool start = (edge.state & 0x04U) != 0U;
+            const bool stop = (edge.state & 0x08U) != 0U;
+            const bool sclRise = (edge.state & 0x40U) != 0U;
+            if (start) {
+                if (active) appendTransfer(edge.timestamp, false, QStringLiteral("REPEATED_START"));
+                active = true;
+                startTimestamp = edge.timestamp;
+                bitCount = 0;
+                currentByte = 0U;
+                bytes.clear();
+                acks.clear();
+            }
+            if (active && sclRise) {
+                const bool sda = (edge.state & 0x02U) != 0U;
+                if (bitCount < 8) {
+                    currentByte = quint8((currentByte << 1U) | (sda ? 1U : 0U));
+                    ++bitCount;
+                } else {
+                    bytes.append(currentByte);
+                    acks.append(!sda);
+                    bitCount = 0;
+                    currentByte = 0U;
+                }
+            }
+            if (active && stop) {
+                const bool complete = !bytes.isEmpty() && bytes.size() == acks.size() && bitCount <= 1;
+                appendTransfer(edge.timestamp, complete, QStringLiteral("STOP"));
+                active = false;
+                bitCount = 0;
+                currentByte = 0U;
+                bytes.clear();
+                acks.clear();
+            }
+        }
+        if (active) appendTransfer(i2cEdges.last().timestamp, false, QStringLiteral("INCOMPLETE"));
+    }
+    if (!jtagEdges.isEmpty()) {
+        std::sort(jtagEdges.begin(), jtagEdges.end(), [](const SparseLineEvent& left,
+                                                        const SparseLineEvent& right) {
+            return left.timestamp < right.timestamp;
+        });
+        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
+            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
+            return static_cast<qint64>(
+                (static_cast<long double>(relativeTicks) * 1.0e12L) /
+                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        };
+        TapState tapState = TapState::TestLogicReset;
+        bool scanOpen = false;
+        bool scanIsIr = false;
+        quint64 scanStartTimestamp = 0U;
+        QString tdiBits;
+        QString tdoBits;
+        for (const SparseLineEvent& edge : jtagEdges) {
+            const bool rvJtag = (edge.record.value(QStringLiteral("flags")).toInt() & 1) != 0 ||
+                (edge.state & 0x0200U) != 0U;
+            const quint16 risingMask = rvJtag ? 0x0200U : 0x0100U;
+            if ((edge.state & risingMask) == 0U) continue;
+            const quint16 tmsMask = rvJtag ? 0x0020U : 0x0002U;
+            const quint16 tdiMask = rvJtag ? 0x0040U : 0x0004U;
+            const quint16 tdoMask = rvJtag ? 0x0080U : 0x0008U;
+            const bool tms = (edge.state & tmsMask) != 0U;
+            const bool tdi = (edge.state & tdiMask) != 0U;
+            const bool tdo = (edge.state & tdoMask) != 0U;
+            const bool currentIsShift = tapState == TapState::ShiftDr || tapState == TapState::ShiftIr;
+            const TapState nextState = nextTapState(tapState, tms);
+            const bool nextIsShift = nextState == TapState::ShiftDr || nextState == TapState::ShiftIr;
+            if (!currentIsShift && nextIsShift) {
+                scanOpen = true;
+                scanIsIr = nextState == TapState::ShiftIr;
+                scanStartTimestamp = edge.timestamp;
+                tdiBits.clear();
+                tdoBits.clear();
+            } else if (currentIsShift && scanOpen) {
+                tdiBits.append(tdi ? QLatin1Char('1') : QLatin1Char('0'));
+                tdoBits.append(tdo ? QLatin1Char('1') : QLatin1Char('0'));
+                if (!nextIsShift) {
+                    ProtocolEvent scan;
+                    scan.groupId = QStringLiteral("jtag");
+                    scan.type = QStringLiteral("jtag_scan");
+                    scan.startTime = ticksToVcdTime(scanStartTimestamp);
+                    scan.endTime = ticksToVcdTime(edge.timestamp);
+                    scan.summary = QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
+                        .arg(scanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
+                        .arg(tdiBits.size()).arg(tdiBits, tdoBits);
+                    scan.fields.insert(QStringLiteral("register"),
+                                       scanIsIr ? QStringLiteral("ir") : QStringLiteral("dr"));
+                    scan.fields.insert(QStringLiteral("tdi_bits"), tdiBits);
+                    scan.fields.insert(QStringLiteral("tdo_bits"), tdoBits);
+                    scan.fields.insert(QStringLiteral("bit_count"), tdiBits.size());
+                    scan.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_tap_cycles"));
+                    scan.fields.insert(QStringLiteral("jtag_path"),
+                                       rvJtag ? QStringLiteral("rv_jtag") : QStringLiteral("primary_jtag"));
+                    scan.fields.insert(QStringLiteral("evidence"), relativePath);
+                    result.append(scan);
+                    scanOpen = false;
+                    tdiBits.clear();
+                    tdoBits.clear();
+                }
+            }
+            ProtocolEvent cycle;
+            cycle.groupId = QStringLiteral("jtag");
+            cycle.type = QStringLiteral("jtag_cycle");
+            cycle.startTime = ticksToVcdTime(edge.timestamp);
+            cycle.endTime = cycle.startTime + 1;
+            cycle.summary = QStringLiteral("JTAG STATE=%1 TMS=%2 TDI=%3 TDO=%4")
+                .arg(tapStateName(nextState), tms ? QStringLiteral("1") : QStringLiteral("0"),
+                     tdi ? QStringLiteral("1") : QStringLiteral("0"),
+                     tdo ? QStringLiteral("1") : QStringLiteral("0"));
+            cycle.fields.insert(QStringLiteral("state"), tapStateName(nextState));
+            cycle.fields.insert(QStringLiteral("tms"), tms);
+            cycle.fields.insert(QStringLiteral("tdi"), tdi);
+            cycle.fields.insert(QStringLiteral("tdo"), tdo);
+            cycle.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_tap_cycles"));
+            cycle.fields.insert(QStringLiteral("evidence"), relativePath);
+            result.append(cycle);
+            tapState = nextState;
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const ProtocolEvent& left, const ProtocolEvent& right) {
+        if (left.startTime != right.startTime) return left.startTime < right.startTime;
+        if (left.endTime != right.endTime) return left.endTime < right.endTime;
+        return left.type < right.type;
+    });
     return result;
 }
 
@@ -1413,14 +1778,20 @@ QJsonArray defaultGroups(
             continue;
         }
         QJsonArray transactions;
+        bool hasDecodedTransaction = false;
         for (const ProtocolEvent& event : protocolEvents) {
             if (event.groupId == definitions.at(index).id) {
                 transactions.append(protocolEventToJson(event));
+                hasDecodedTransaction = hasDecodedTransaction ||
+                    event.type != QStringLiteral("raw_line_event");
             }
         }
         if (!transactions.isEmpty()) {
-            group.insert(QStringLiteral("status"), QStringLiteral("event_detected"));
-            group.insert(QStringLiteral("reason"), QStringLiteral("检测到真实协议事务"));
+            group.insert(QStringLiteral("status"), hasDecodedTransaction
+                ? QStringLiteral("event_detected") : QStringLiteral("limited"));
+            group.insert(QStringLiteral("reason"), hasDecodedTransaction
+                ? QStringLiteral("检测到真实协议事务")
+                : QStringLiteral("检测到真实线级活动，但现有字段不足以重建完整协议事务"));
             group.insert(QStringLiteral("transactions"), transactions);
         }
         groups.append(group);
@@ -1556,6 +1927,27 @@ QJsonObject buildAnalysisObject(
     const QList<ProtocolDiagnostic>& diagnostics,
     const quint32 designGapMask = 0U)
 {
+    QByteArray uartTxBytes;
+    for (const ProtocolEvent& event : protocolEvents) {
+        if (event.groupId != QStringLiteral("uart") || event.type != QStringLiteral("uart_frame") ||
+            event.fields.value(QStringLiteral("direction")).toString() != QStringLiteral("TX") ||
+            event.fields.value(QStringLiteral("frame_error")).toBool()) {
+            continue;
+        }
+        const QString dataText = event.fields.value(QStringLiteral("data")).toString();
+        bool ok = false;
+        const uint data = dataText.startsWith(QStringLiteral("0x"))
+            ? dataText.mid(2).toUInt(&ok, 16) : dataText.toUInt(&ok, 16);
+        if (ok && data <= 0xffU) uartTxBytes.append(static_cast<char>(data));
+    }
+    const QString uartTxText = QString::fromLatin1(uartTxBytes);
+    QString programDoneMarker;
+    if (uartTxText.contains(QStringLiteral("PROGRAM_RUN_DONE"), Qt::CaseInsensitive)) {
+        programDoneMarker = QStringLiteral("PROGRAM_RUN_DONE");
+    } else if (uartTxText.contains(QStringLiteral("LOCKSTEP_RUN_DONE"), Qt::CaseInsensitive)) {
+        programDoneMarker = QStringLiteral("LOCKSTEP_RUN_DONE");
+    }
+
     QJsonObject input;
     input.insert(QStringLiteral("vcd_file"), fixedWaveformRelativePath());
     input.insert(QStringLiteral("schema_file"), fixedTraceSchemaRelativePath());
@@ -1578,6 +1970,9 @@ QJsonObject buildAnalysisObject(
     analysis.insert(QStringLiteral("groups"),
                     defaultGroups(protocolEvents, mismatchEvents, parseResult.samples, designGapMask));
     analysis.insert(QStringLiteral("protocol_events"), protocolEventsToJson(protocolEvents));
+    analysis.insert(QStringLiteral("uart_tx_text"), uartTxText);
+    analysis.insert(QStringLiteral("program_done_marker"), programDoneMarker);
+    analysis.insert(QStringLiteral("program_done_marker_detected"), !programDoneMarker.isEmpty());
     analysis.insert(QStringLiteral("samples"), samplesToJson(parseResult.samples));
     analysis.insert(QStringLiteral("key_behaviors"), keyBehaviorsToJson(protocolEvents, mismatchEvents));
     analysis.insert(QStringLiteral("diagnostic_summary"), diagnosticsToJson(diagnostics));

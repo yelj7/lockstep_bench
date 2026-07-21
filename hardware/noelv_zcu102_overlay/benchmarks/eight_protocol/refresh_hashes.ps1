@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: refresh_hashes.ps1
 # * 日期: 2026-07-20
-# * 版本: v1.0
-# * 更新记录: 初版，刷新 benchmark 关键产物 SHA-256
+# * 版本: v1.1
+# * 更新记录: 将板级证据门禁脚本纳入关键产物摘要
 # * 描述: 生成可移植的 SHA256SUMS
 # **********************************************************/
 
@@ -11,6 +11,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $relativePaths = @(
     "benchmark_manifest.json",
     "expected_protocols.json",
+    "validate_board_evidence.ps1",
     "firmware/noelv_eight_protocol_benchmark.c",
     "firmware/noelv_eight_protocol_benchmark.srec",
     "golden/waveform/capture.vcd",

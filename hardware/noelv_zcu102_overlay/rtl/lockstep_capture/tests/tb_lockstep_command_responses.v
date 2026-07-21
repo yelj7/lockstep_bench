@@ -35,6 +35,7 @@ module tb_lockstep_command_responses;
   wire [31:0] payload_word_count_o;
   wire [31:0] device_state_o;
   wire [31:0] cfg_event_enable_mask_o;
+  wire [31:0] cfg_event_limit_o;
   wire [31:0] cfg_event_watchdog_ticks_o;
   wire [31:0] cfg_event_hard_timeout_ticks_o;
   integer     failures_r;
@@ -90,7 +91,7 @@ module tb_lockstep_command_responses;
     .cfg_mode_o(),
     .cfg_trigger_timeout_samples_o(),
     .cfg_event_enable_mask_o(cfg_event_enable_mask_o),
-    .cfg_event_limit_o(),
+    .cfg_event_limit_o(cfg_event_limit_o),
     .cfg_event_watchdog_ticks_o(cfg_event_watchdog_ticks_o),
     .cfg_event_hard_timeout_ticks_o(cfg_event_hard_timeout_ticks_o),
     .cfg_error_valid_i(1'b0),
@@ -220,6 +221,7 @@ module tb_lockstep_command_responses;
     #1;
     if (frame_type_o !== 16'h8005 || payload0_o !== 32'd2 || payload1_o !== 32'd2 ||
         cfg_event_enable_mask_o !== 32'h19f ||
+        cfg_event_limit_o !== 32'd0 ||
         cfg_event_watchdog_ticks_o !== 32'd12000000 ||
         cfg_event_hard_timeout_ticks_o !== 32'd240000000) begin
       fail_check("CONFIG_EVENTS did not latch v3 event configuration");

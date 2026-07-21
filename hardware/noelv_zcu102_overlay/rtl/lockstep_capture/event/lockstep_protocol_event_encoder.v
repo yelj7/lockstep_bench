@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_protocol_event_encoder.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 事件记录始终保留输入的 64-bit 全局样本索引时间戳。
+* 版本: 1.2
+* 更新记录: I2C 仅记录 START、STOP 和 SCL 上升沿，避免无解码价值的下降沿耗尽 FIFO。
 * 描述: 生成 AHB、UART、SPI、CAN、I2C、JTAG 和 mismatch 事件，ETH/USB 保持空。
 **********************************************************/
 
@@ -44,6 +44,8 @@ module lockstep_protocol_event_encoder (
 
   reg [31:0] local_sequence_r [0:8];
   reg [4:0] mismatch_prev_r;
+  reg ahb_read_valid_r;
+  reg [65:0] ahb_read_signature_r;
   wire [8:0] source_push_w;
   wire [255:0] ahb_payload_w;
   wire [255:0] uart_payload_w;
@@ -55,21 +57,29 @@ module lockstep_protocol_event_encoder (
   wire [4:0] mismatch_current_w;
   wire [4:0] mismatch_change_w;
   wire [63:0] event_timestamp_w;
+  wire ahb_data_transfer_w;
+  wire [65:0] ahb_read_signature_w;
+  wire ahb_read_changed_w;
   integer sequence_index;
 
   assign mismatch_current_w = sample_i[506:502];
   assign mismatch_change_w = mismatch_current_w ^ mismatch_prev_r;
   assign event_timestamp_w = timestamp_i;
+  assign ahb_data_transfer_w = sample_i[442] && sample_i[429] && sample_i[425];
+  assign ahb_read_signature_w = {sample_i[431:430], sample_i[223:192], sample_i[63:32]};
+  assign ahb_read_changed_w = capture_start_i || !ahb_read_valid_r ||
+                              (ahb_read_signature_w != ahb_read_signature_r);
   assign source_push_w[0] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[0] &&
-                            sample_i[442] && sample_i[429];
+                            ahb_data_transfer_w && (sample_i[416] || ahb_read_changed_w);
   assign source_push_w[1] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[1] &&
                             (sample_i[UART_BASE+6] || sample_i[UART_BASE+7]);
   assign source_push_w[2] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[2] &&
-                            sample_i[SPI_BASE+31];
+                            sample_i[SPI_BASE+5];
   assign source_push_w[3] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[3] &&
                             sample_i[CAN_BASE+31];
   assign source_push_w[4] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[4] &&
-                            sample_i[I2C_BASE+29];
+                            (sample_i[I2C_BASE+2] || sample_i[I2C_BASE+3] ||
+                             sample_i[I2C_BASE+6]);
   assign source_push_w[5] = 1'b0;
   assign source_push_w[6] = 1'b0;
   assign source_push_w[7] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[7] &&
@@ -147,17 +157,25 @@ module lockstep_protocol_event_encoder (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       mismatch_prev_r <= #UDLY 5'd0;
+      ahb_read_valid_r <= #UDLY 1'b0;
+      ahb_read_signature_r <= #UDLY 66'd0;
       for (sequence_index = 0; sequence_index < 9; sequence_index = sequence_index + 1) begin
         local_sequence_r[sequence_index] <= #UDLY 32'd0;
       end
     end else if (capture_start_i) begin
       mismatch_prev_r <= #UDLY mismatch_current_w;
+      ahb_read_valid_r <= #UDLY ahb_data_transfer_w && !sample_i[416];
+      ahb_read_signature_r <= #UDLY ahb_read_signature_w;
       for (sequence_index = 0; sequence_index < 9; sequence_index = sequence_index + 1) begin
         local_sequence_r[sequence_index] <= #UDLY
           (source_push_w[sequence_index] ? 32'd1 : 32'd0);
       end
     end else begin
       mismatch_prev_r <= #UDLY mismatch_current_w;
+      if (capture_active_i && sample_valid_i && ahb_data_transfer_w && !sample_i[416]) begin
+        ahb_read_valid_r <= #UDLY 1'b1;
+        ahb_read_signature_r <= #UDLY ahb_read_signature_w;
+      end
       for (sequence_index = 0; sequence_index < 9; sequence_index = sequence_index + 1) begin
         if (source_push_w[sequence_index]) begin
           local_sequence_r[sequence_index] <= #UDLY local_sequence_r[sequence_index] + 32'd1;

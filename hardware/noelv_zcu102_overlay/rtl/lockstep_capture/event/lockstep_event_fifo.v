@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_fifo.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 改为同步预取读口，支持 Block RAM 推断并保留满载同拍读写。
+* 版本: 1.2
+* 更新记录: 隔离 RAM 读数据与旁路数据寄存器，确保 Vivado 推断 Block RAM。
 * 描述: 保存固定宽度事件，支持同周期写入和读出并提供满时丢失脉冲。
 **********************************************************/
 
@@ -43,7 +43,9 @@ module lockstep_event_fifo (
   reg [ADDR_WIDTH-1:0] read_ptr_r;
   reg [ADDR_WIDTH:0] stored_count_r;
   reg                  output_valid_r;
-  reg [DATA_WIDTH-1:0] output_data_r;
+  reg                  output_from_memory_r;
+  reg [DATA_WIDTH-1:0] memory_data_r;
+  reg [DATA_WIDTH-1:0] bypass_data_r;
 
   wire pop_w;
   wire space_w;
@@ -66,7 +68,7 @@ module lockstep_event_fifo (
   assign memory_write_w = accept_w && !bypass_push_w;
   assign accept_o = accept_w;
   assign drop_o = drop_w;
-  assign data_o = output_data_r;
+  assign data_o = output_from_memory_r ? memory_data_r : bypass_data_r;
   assign level_o = total_count_w;
 
   // 输出寄存器保存当前头项；其余项写入同步读 Block RAM。
@@ -76,16 +78,19 @@ module lockstep_event_fifo (
       read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
       stored_count_r <= #UDLY {ADDR_WIDTH+1{1'b0}};
       output_valid_r <= #UDLY 1'b0;
-      output_data_r <= #UDLY {DATA_WIDTH{1'b0}};
+      output_from_memory_r <= #UDLY 1'b0;
+      bypass_data_r <= #UDLY {DATA_WIDTH{1'b0}};
     end else if (clear_i) begin
       write_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
       read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
       stored_count_r <= #UDLY {ADDR_WIDTH+1{1'b0}};
       if (push_i) begin
         output_valid_r <= #UDLY 1'b1;
-        output_data_r <= #UDLY data_i;
+        output_from_memory_r <= #UDLY 1'b0;
+        bypass_data_r <= #UDLY data_i;
       end else begin
         output_valid_r <= #UDLY 1'b0;
+        output_from_memory_r <= #UDLY 1'b0;
       end
     end else begin
       if (memory_write_w) begin
@@ -96,16 +101,17 @@ module lockstep_event_fifo (
         end
       end
       if (memory_read_w) begin
-        output_data_r <= #UDLY memory_r[read_ptr_r];
         output_valid_r <= #UDLY 1'b1;
+        output_from_memory_r <= #UDLY 1'b1;
         if (read_ptr_r == DEPTH - 1) begin
           read_ptr_r <= #UDLY {ADDR_WIDTH{1'b0}};
         end else begin
           read_ptr_r <= #UDLY read_ptr_r + {{ADDR_WIDTH-1{1'b0}}, 1'b1};
         end
       end else if (bypass_push_w) begin
-        output_data_r <= #UDLY data_i;
         output_valid_r <= #UDLY 1'b1;
+        output_from_memory_r <= #UDLY 1'b0;
+        bypass_data_r <= #UDLY data_i;
       end else if (pop_w) begin
         output_valid_r <= #UDLY 1'b0;
       end
@@ -117,10 +123,13 @@ module lockstep_event_fifo (
     end
   end
 
-  // RAM 本体不参与异步复位，确保 Vivado 推断为 Block RAM。
+  // RAM 读写口只保留标准同步时序，不参与复位或旁路赋值。
   always @(posedge clk) begin
     if (memory_write_w) begin
-      memory_r[write_ptr_r] <= #UDLY data_i;
+      memory_r[write_ptr_r] <= data_i;
+    end
+    if (memory_read_w) begin
+      memory_data_r <= memory_r[read_ptr_r];
     end
   end
 

@@ -1,8 +1,8 @@
 ﻿/**********************************************************
 * 文件名: debug_service_main.cpp
 * 日期: 2026-07-09
-* 版本: 1.0.0.1
-* 更新记录: 合并为 lockstep_ui_preview 的调试服务模式
+* 版本: 1.0.0.3
+* 更新记录: 修正 reset-halt/resume 状态并将有界 JTAG 证据扫描上限扩展到 64
 * 描述: 解析统一产品程序的调试请求并执行自研板卡传输层。
 **********************************************************/
 
@@ -98,9 +98,11 @@ constexpr quint32 kDmSbData0 = 0x3CU;
 constexpr quint32 kDmSbData1 = 0x3DU;
 
 constexpr quint32 kDmControlDmActive = 0x00000001U;
+constexpr quint32 kDmControlClearResetHaltReq = 0x00000004U;
 constexpr quint32 kDmControlSetResetHaltReq = 0x00000008U;
 constexpr quint32 kDmControlHaltReq = 0x80000000U;
 constexpr quint32 kDmControlResumeReq = 0x40000000U;
+constexpr quint32 kDmControlHartReset = 0x20000000U;
 constexpr quint32 kDmControlAckHaveReset = 0x10000000U;
 constexpr quint32 kDmControlHartSelMask = 0x03FFFFC0U;
 
@@ -114,6 +116,7 @@ constexpr quint32 kDmStatusAllNonexistent = 0x00008000U;
 constexpr quint32 kDmStatusAnyResumeAck = 0x00010000U;
 constexpr quint32 kDmStatusAllResumeAck = 0x00020000U;
 constexpr quint32 kDmStatusAnyHaveReset = 0x00040000U;
+constexpr quint32 kDmStatusAllHaveReset = 0x00080000U;
 
 constexpr quint32 kAbstractCsBusy = 0x00001000U;
 constexpr quint32 kAbstractCsCommandErrorMask = 0x00000700U;
@@ -126,7 +129,9 @@ constexpr quint32 kAbstractCommandAarSize64 = 0x00300000U;
 constexpr quint32 kRiscvCsrMepc = 0x0341U;
 constexpr quint32 kRiscvCsrMcause = 0x0342U;
 constexpr quint32 kRiscvCsrMtval = 0x0343U;
+constexpr quint32 kRiscvCsrDcsr = 0x07B0U;
 constexpr quint32 kRiscvCsrDpc = 0x07B1U;
+constexpr int kMaxJtagEvidenceScanCount = 64;
 
 constexpr quint32 kSbCsBusyError = 0x00400000U;
 constexpr quint32 kSbCsBusy = 0x00200000U;
@@ -175,6 +180,7 @@ struct DebugServiceRequest final {
     QString dataPath;
     QList<MemorySegmentRequest> segments;
     QString strategy;
+    int jtagEvidenceScanCount = 0;
 };
 
 struct TransportResult final {
@@ -1341,6 +1347,32 @@ public:
             errorMessage);
     }
 
+    bool resetHaltHart(QString* const errorMessage)
+    {
+        if (!initializeDebugModule(errorMessage)) {
+            return false;
+        }
+        if (!dmiWrite(kDmControl, baseDmControl() | kDmControlSetResetHaltReq, errorMessage) ||
+            !dmiWrite(kDmControl, baseDmControl() | kDmControlHartReset, errorMessage) ||
+            !dmiWrite(kDmControl, baseDmControl(), errorMessage)) {
+            return false;
+        }
+        if (!pollDmStatusFor(
+                kDmStatusAllHaveReset | kDmStatusAnyHaveReset,
+                QStringLiteral("hart reset"),
+                errorMessage) ||
+            !pollDmStatusFor(
+                kDmStatusAllHalted | kDmStatusAnyHalted,
+                QStringLiteral("reset halt"),
+                errorMessage)) {
+            return false;
+        }
+        if (!dmiWrite(kDmControl, baseDmControl() | kDmControlAckHaveReset, errorMessage)) {
+            return false;
+        }
+        return dmiWrite(kDmControl, baseDmControl(), errorMessage);
+    }
+
     bool disconnect(QString* const errorMessage)
     {
         QByteArray request;
@@ -1609,7 +1641,21 @@ public:
         if (!writeDpc(entryAddress, errorMessage)) {
             return false;
         }
-        return resumeHart(errorMessage);
+        if (!resumeHart(errorMessage)) {
+            captureCsrSnapshot();
+            return false;
+        }
+        return true;
+    }
+
+    bool runJtagEvidenceScans(const int scanCount, QString* const errorMessage)
+    {
+        for (int scan = 0; scan < scanCount; ++scan) {
+            if (!selectIr(targetConfig_.idcodeIr, errorMessage)) return false;
+            QByteArray captured;
+            if (!scanDr(packedBitsFromU64(0U, 32), 32, &captured, errorMessage)) return false;
+        }
+        return true;
     }
 
     bool haltTarget(QString* const errorMessage)
@@ -2212,16 +2258,26 @@ private:
 
     bool resumeHart(QString* const errorMessage)
     {
+        if (!dmiWrite(kDmControl, baseDmControl() | kDmControlClearResetHaltReq, errorMessage) ||
+            !dmiWrite(kDmControl, baseDmControl(), errorMessage)) {
+            return false;
+        }
         if (!dmiWrite(kDmControl, baseDmControl() | kDmControlResumeReq, errorMessage)) {
             return false;
         }
         if (!pollDmStatusFor(
-                kDmStatusAllResumeAck | kDmStatusAnyResumeAck | kDmStatusAllRunning | kDmStatusAnyRunning,
-                QStringLiteral("resume"),
+                kDmStatusAllResumeAck | kDmStatusAnyResumeAck,
+                QStringLiteral("resume acknowledge"),
                 errorMessage)) {
             return false;
         }
-        return dmiWrite(kDmControl, baseDmControl(), errorMessage);
+        if (!dmiWrite(kDmControl, baseDmControl(), errorMessage)) {
+            return false;
+        }
+        return pollDmStatusFor(
+            kDmStatusAllRunning | kDmStatusAnyRunning,
+            QStringLiteral("resume running"),
+            errorMessage);
     }
 
     bool clearAbstractCommandError(QString* const errorMessage)
@@ -2345,6 +2401,7 @@ private:
             const char* name;
             quint32 csr;
         } items[] = {
+            {"dcsr", kRiscvCsrDcsr},
             {"dpc", kRiscvCsrDpc},
             {"mepc", kRiscvCsrMepc},
             {"mcause", kRiscvCsrMcause},
@@ -2896,6 +2953,13 @@ bool parseRequest(
     parsed.dataPath = object.value(QStringLiteral("data_path")).toString().trimmed();
     parsed.progressPath = object.value(QStringLiteral("progress_path")).toString().trimmed();
     parsed.strategy = object.value(QStringLiteral("strategy")).toString().trimmed();
+    parsed.jtagEvidenceScanCount = object.value(QStringLiteral("jtag_evidence_scan_count")).toInt(0);
+    if (parsed.jtagEvidenceScanCount < 0 ||
+        parsed.jtagEvidenceScanCount > kMaxJtagEvidenceScanCount) {
+        setError(errorCode, QStringLiteral("INVALID_JTAG_EVIDENCE_SCAN_COUNT"));
+        setError(errorMessage, QStringLiteral("jtag_evidence_scan_count 必须在 0..64 范围内。"));
+        return false;
+    }
     const QJsonArray segments = object.value(QStringLiteral("segments")).toArray();
     for (const QJsonValue& segmentValue : segments) {
         const QJsonObject segmentObject = segmentValue.toObject();
@@ -3190,19 +3254,7 @@ public:
             ? request.profile.value(QStringLiteral("reset_strategy")).toString().trimmed().toLower()
             : request.strategy.trimmed().toLower();
         if (resetStrategy == QStringLiteral("reset halt")) {
-            if (!session->setHaltOnReset(&error)) {
-                TransportResult result = hardwareFailure(QStringLiteral("RESET_HALT_REQUEST_FAILED"), error, request);
-                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
-                session_.reset();
-                return result;
-            }
-            if (!session->resetTarget(&error)) {
-                TransportResult result = hardwareFailure(QStringLiteral("RESET_FAILED"), error, request);
-                result.snapshot = session->snapshot(request, QStringLiteral("connected"));
-                session_.reset();
-                return result;
-            }
-            if (!session->haltTarget(&error)) {
+            if (!session->resetHaltHart(&error)) {
                 TransportResult result = hardwareFailure(QStringLiteral("RESET_HALT_FAILED"), error, request);
                 result.snapshot = session->snapshot(request, QStringLiteral("connected"));
                 session_.reset();
@@ -3246,11 +3298,18 @@ public:
             session_.reset();
             return result;
         }
+        if (!session->runJtagEvidenceScans(request.jtagEvidenceScanCount, &error)) {
+            TransportResult result = hardwareFailure(QStringLiteral("JTAG_EVIDENCE_SCAN_FAILED"), error, request);
+            result.snapshot = session->snapshot(request, QStringLiteral("running"));
+            session_.reset();
+            return result;
+        }
 
         TransportResult result;
         result.success = true;
         result.errorCode = QStringLiteral("OK");
         result.snapshot = session->snapshot(request, QStringLiteral("running"));
+        result.snapshot.insert(QStringLiteral("jtag_evidence_scan_count"), request.jtagEvidenceScanCount);
         return result;
     }
 

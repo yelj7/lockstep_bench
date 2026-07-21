@@ -7,8 +7,8 @@
 # **********************************************************/
 
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$BaselineRoot,
+    [string]$BaselineRoot = '',
+    [switch]$ReuseBaselineFromLock,
     [string]$OutputPath = ''
 )
 
@@ -16,10 +16,21 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $PSScriptRoot 'source_lock.csv'
 }
-$baseline = (Resolve-Path -LiteralPath $BaselineRoot).Path
 $overlay = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $manifestPath = Join-Path $PSScriptRoot 'baseline_source_manifest.txt'
 $rows = [System.Collections.Generic.List[object]]::new()
+$baselineRows = @{}
+if ($ReuseBaselineFromLock) {
+    if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
+        throw "source lock does not exist for baseline reuse: $OutputPath"
+    }
+    foreach ($row in Import-Csv -LiteralPath $OutputPath -Encoding UTF8) {
+        if ($row.ownership -eq 'baseline') { $baselineRows[$row.relative_path] = $row.sha256 }
+    }
+} else {
+    if ([string]::IsNullOrWhiteSpace($BaselineRoot)) { throw 'BaselineRoot is required without ReuseBaselineFromLock.' }
+    $baseline = (Resolve-Path -LiteralPath $BaselineRoot).Path
+}
 
 foreach ($line in Get-Content -LiteralPath $manifestPath -Encoding UTF8) {
     if ([string]::IsNullOrWhiteSpace($line) -or $line.Contains('=')) { continue }
@@ -28,14 +39,22 @@ foreach ($line in Get-Content -LiteralPath $manifestPath -Encoding UTF8) {
     $markerIndex = $normalized.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
     if ($markerIndex -lt 0) { throw "manifest path has no hardware_source marker: $line" }
     $relative = $normalized.Substring($markerIndex + $marker.Length)
-    $candidate = Join-Path $baseline $relative
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-        throw "baseline source missing: $relative"
+    if ($ReuseBaselineFromLock) {
+        if (-not $baselineRows.ContainsKey($relative)) {
+            throw "baseline source is missing from existing lock: $relative"
+        }
+        $baselineHash = $baselineRows[$relative]
+    } else {
+        $candidate = Join-Path $baseline $relative
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "baseline source missing: $relative"
+        }
+        $baselineHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $rows.Add([pscustomobject]@{
         ownership = 'baseline'
         relative_path = $relative
-        sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = $baselineHash
     })
 }
 

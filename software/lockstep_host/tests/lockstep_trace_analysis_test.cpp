@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_trace_analysis_test.cpp
 * 日期: 2026-07-19
-* 版本: v3.0
-* 更新记录: 增加稀疏事件时间轴合并和 ETH/USB design_gap mask 回归。
+* 版本: v3.2
+* 更新记录: 增加基于全局时间戳的稀疏 UART 8N1 字节流重建回归。
 * 描述: 验证九协议、稀疏事件、mismatch 和共享时间轴进入展示模型。
 **********************************************************/
 
@@ -128,7 +128,9 @@ bool writeWideProtocolFixture(const QString& taskRootPath)
     setPackedValue(&bits, 579, 1, 0U);
 
     setPackedValue(&bits, 609, 1, 0U);
+    setPackedValue(&bits, 610, 1, 1U);
     emitSample(bits);
+    setPackedValue(&bits, 610, 1, 0U);
     const QList<quint8> i2cBytes = {quint8(0xA0U), quint8(0x5AU)};
     for (int byteIndex = 0; byteIndex < i2cBytes.size(); ++byteIndex) {
         const quint8 byte = i2cBytes.at(byteIndex);
@@ -137,21 +139,29 @@ bool writeWideProtocolFixture(const QString& taskRootPath)
             setPackedValue(&bits, 609, 1, (byte >> bit) & 1U);
             emitSample(bits);
             setPackedValue(&bits, 608, 1, 1U);
+            setPackedValue(&bits, 614, 1, 1U);
             emitSample(bits);
+            setPackedValue(&bits, 614, 1, 0U);
         }
         setPackedValue(&bits, 608, 1, 0U);
         setPackedValue(&bits, 609, 1, 0U);
         emitSample(bits);
         setPackedValue(&bits, 608, 1, 1U);
+        setPackedValue(&bits, 614, 1, 1U);
         emitSample(bits);
+        setPackedValue(&bits, 614, 1, 0U);
         if (byteIndex == 0) {
             setPackedValue(&bits, 608, 1, 0U);
             setPackedValue(&bits, 609, 1, 1U);
             emitSample(bits);
             setPackedValue(&bits, 608, 1, 1U);
+            setPackedValue(&bits, 614, 1, 1U);
             emitSample(bits);
+            setPackedValue(&bits, 614, 1, 0U);
             setPackedValue(&bits, 609, 1, 0U);
+            setPackedValue(&bits, 610, 1, 1U);
             emitSample(bits);
+            setPackedValue(&bits, 610, 1, 0U);
         }
     }
     setPackedValue(&bits, 608, 1, 0U);
@@ -160,7 +170,9 @@ bool writeWideProtocolFixture(const QString& taskRootPath)
     setPackedValue(&bits, 608, 1, 1U);
     emitSample(bits);
     setPackedValue(&bits, 609, 1, 1U);
+    setPackedValue(&bits, 611, 1, 1U);
     emitSample(bits);
+    setPackedValue(&bits, 611, 1, 0U);
 
     setPackedValue(&bits, 646, 1, 1U);
     setPackedValue(&bits, 688, 16, 0x0800U);
@@ -199,6 +211,209 @@ bool writeSparseEventFixture(const QString& taskRootPath)
         "\"event_reason_mask\":2,\"payload_hex\":\"41\"}]}\n");
     return writeTextFile(QDir(evidencePath).filePath(QStringLiteral("capture_sidecar.json")), sidecar) &&
         writeTextFile(QDir(evidencePath).filePath(QStringLiteral("protocol_events.json")), events);
+}
+
+bool writeSparseUartMarkerFixture(const QString& taskRootPath)
+{
+    const QString evidencePath = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidencePath)) return false;
+
+    constexpr quint64 timebaseHz = 120'000'000ULL;
+    constexpr quint64 bitTicks = 1040ULL;
+    quint64 tick = 100'000ULL;
+    quint32 sequence = 0U;
+    bool tx = true;
+    QJsonArray events;
+    const QByteArray text = QByteArrayLiteral("PROGRAM_RUN_DONE\n");
+    for (const char rawByte : text) {
+        const quint8 byte = static_cast<quint8>(rawByte);
+        QList<bool> levels;
+        levels.append(false);
+        for (int bit = 0; bit < 8; ++bit) levels.append(((byte >> bit) & 1U) != 0U);
+        levels.append(true);
+        for (int bit = 0; bit < levels.size(); ++bit) {
+            const bool level = levels.at(bit);
+            if (level != tx) {
+                tx = level;
+                QJsonObject event;
+                event.insert(QStringLiteral("timestamp_ticks"), QString::number(tick + quint64(bit) * bitTicks));
+                event.insert(QStringLiteral("capture_id"), 77);
+                event.insert(QStringLiteral("local_sequence"), static_cast<qint64>(sequence++));
+                event.insert(QStringLiteral("protocol_id"), 1);
+                event.insert(QStringLiteral("event_type"), 1);
+                event.insert(QStringLiteral("source_kind"), 0);
+                event.insert(QStringLiteral("flags"), 0);
+                event.insert(QStringLiteral("event_reason_mask"), 2);
+                event.insert(QStringLiteral("payload_hex"), tx ? QStringLiteral("47") : QStringLiteral("56"));
+                events.append(event);
+            }
+        }
+        tick += 10ULL * bitTicks;
+    }
+
+    QJsonObject archive;
+    archive.insert(QStringLiteral("schema"), QStringLiteral("lockstep-protocol-events-v3"));
+    archive.insert(QStringLiteral("capture_id"), 77);
+    archive.insert(QStringLiteral("timebase_hz"), static_cast<qint64>(timebaseHz));
+    archive.insert(QStringLiteral("implemented_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("enabled_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("design_gap_mask"), 0x060);
+    archive.insert(QStringLiteral("events"), events);
+
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-sidecar-v3"));
+    sidecar.insert(QStringLiteral("sample_rate_hz"), static_cast<qint64>(timebaseHz));
+    sidecar.insert(QStringLiteral("window_start_index"), 0);
+    sidecar.insert(QStringLiteral("protocol_events"), QStringLiteral("evidence/protocol_events.json"));
+    return writeTextFile(
+               QDir(evidencePath).filePath(QStringLiteral("capture_sidecar.json")),
+               QString::fromUtf8(QJsonDocument(sidecar).toJson(QJsonDocument::Compact))) &&
+        writeTextFile(
+               QDir(evidencePath).filePath(QStringLiteral("protocol_events.json")),
+               QString::fromUtf8(QJsonDocument(archive).toJson(QJsonDocument::Compact)));
+}
+
+bool writeSparseSpiFixture(const QString& taskRootPath)
+{
+    const QString evidencePath = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidencePath)) return false;
+    constexpr quint32 tx = 0xa5c33c5aU;
+    constexpr quint32 rx = 0x3cc3a55aU;
+    QJsonArray events;
+    for (int bit = 31; bit >= 0; --bit) {
+        const quint8 state = quint8(0x21U | (((tx >> bit) & 1U) << 1U) |
+                                    (((rx >> bit) & 1U) << 2U));
+        QJsonObject event;
+        event.insert(QStringLiteral("timestamp_ticks"), QString::number(200'000ULL + quint64(31 - bit) * 4ULL));
+        event.insert(QStringLiteral("capture_id"), 78);
+        event.insert(QStringLiteral("local_sequence"), 31 - bit);
+        event.insert(QStringLiteral("protocol_id"), 2);
+        event.insert(QStringLiteral("event_type"), 1);
+        event.insert(QStringLiteral("source_kind"), 0);
+        event.insert(QStringLiteral("flags"), 0);
+        event.insert(QStringLiteral("event_reason_mask"), 4);
+        event.insert(QStringLiteral("payload_hex"), QStringLiteral("%1").arg(state, 2, 16, QLatin1Char('0')));
+        events.append(event);
+    }
+    QJsonObject archive;
+    archive.insert(QStringLiteral("schema"), QStringLiteral("lockstep-protocol-events-v3"));
+    archive.insert(QStringLiteral("capture_id"), 78);
+    archive.insert(QStringLiteral("timebase_hz"), 120'000'000);
+    archive.insert(QStringLiteral("implemented_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("enabled_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("design_gap_mask"), 0x060);
+    archive.insert(QStringLiteral("events"), events);
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-sidecar-v3"));
+    sidecar.insert(QStringLiteral("sample_rate_hz"), 120'000'000);
+    sidecar.insert(QStringLiteral("window_start_index"), 0);
+    sidecar.insert(QStringLiteral("protocol_events"), QStringLiteral("evidence/protocol_events.json"));
+    return writeTextFile(QDir(evidencePath).filePath(QStringLiteral("capture_sidecar.json")),
+                         QString::fromUtf8(QJsonDocument(sidecar).toJson(QJsonDocument::Compact))) &&
+        writeTextFile(QDir(evidencePath).filePath(QStringLiteral("protocol_events.json")),
+                      QString::fromUtf8(QJsonDocument(archive).toJson(QJsonDocument::Compact)));
+}
+
+bool writeSparseI2cFixture(const QString& taskRootPath)
+{
+    const QString evidencePath = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidencePath)) return false;
+    QJsonArray events;
+    quint32 sequence = 0U;
+    quint64 tick = 300'000ULL;
+    const auto appendEvent = [&](const quint8 state) {
+        QJsonObject event;
+        event.insert(QStringLiteral("timestamp_ticks"), QString::number(tick));
+        event.insert(QStringLiteral("capture_id"), 79);
+        event.insert(QStringLiteral("local_sequence"), static_cast<qint64>(sequence++));
+        event.insert(QStringLiteral("protocol_id"), 4);
+        event.insert(QStringLiteral("event_type"), 1);
+        event.insert(QStringLiteral("source_kind"), 0);
+        event.insert(QStringLiteral("flags"), 0);
+        event.insert(QStringLiteral("event_reason_mask"), 0x10);
+        event.insert(QStringLiteral("payload_hex"), QStringLiteral("%1").arg(state, 2, 16, QLatin1Char('0')));
+        events.append(event);
+        tick += 180ULL;
+    };
+    appendEvent(0x05U);
+    for (const quint8 byte : {quint8(0xa0U), quint8(0x5aU)}) {
+        for (int bit = 7; bit >= 0; --bit) appendEvent(quint8(0x41U | (((byte >> bit) & 1U) << 1U)));
+        appendEvent(0x43U);
+    }
+    appendEvent(0x0bU);
+    QJsonObject archive;
+    archive.insert(QStringLiteral("schema"), QStringLiteral("lockstep-protocol-events-v3"));
+    archive.insert(QStringLiteral("capture_id"), 79);
+    archive.insert(QStringLiteral("timebase_hz"), 120'000'000);
+    archive.insert(QStringLiteral("implemented_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("enabled_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("design_gap_mask"), 0x060);
+    archive.insert(QStringLiteral("events"), events);
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-sidecar-v3"));
+    sidecar.insert(QStringLiteral("sample_rate_hz"), 120'000'000);
+    sidecar.insert(QStringLiteral("window_start_index"), 0);
+    sidecar.insert(QStringLiteral("protocol_events"), QStringLiteral("evidence/protocol_events.json"));
+    return writeTextFile(QDir(evidencePath).filePath(QStringLiteral("capture_sidecar.json")),
+                         QString::fromUtf8(QJsonDocument(sidecar).toJson(QJsonDocument::Compact))) &&
+        writeTextFile(QDir(evidencePath).filePath(QStringLiteral("protocol_events.json")),
+                      QString::fromUtf8(QJsonDocument(archive).toJson(QJsonDocument::Compact)));
+}
+
+bool writeSparseJtagFixture(const QString& taskRootPath)
+{
+    const QString evidencePath = QDir(taskRootPath).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidencePath)) return false;
+    QJsonArray events;
+    quint32 sequence = 0U;
+    quint64 tick = 400'000ULL;
+    const auto appendCycle = [&](const bool tms, const bool tdi, const bool tdo) {
+        const quint16 state = quint16(0x0a10U | (tms ? 0x20U : 0U) |
+                                      (tdi ? 0x40U : 0U) | (tdo ? 0x80U : 0U));
+        QJsonObject event;
+        event.insert(QStringLiteral("timestamp_ticks"), QString::number(tick));
+        event.insert(QStringLiteral("capture_id"), 80);
+        event.insert(QStringLiteral("local_sequence"), static_cast<qint64>(sequence++));
+        event.insert(QStringLiteral("protocol_id"), 7);
+        event.insert(QStringLiteral("event_type"), 1);
+        event.insert(QStringLiteral("source_kind"), 0);
+        event.insert(QStringLiteral("flags"), 1);
+        event.insert(QStringLiteral("event_reason_mask"), 0x80);
+        event.insert(QStringLiteral("payload_hex"),
+                     QStringLiteral("%1%2").arg(state & 0xffU, 2, 16, QLatin1Char('0'))
+                                                .arg((state >> 8U) & 0xffU, 2, 16, QLatin1Char('0')));
+        events.append(event);
+        tick += 55ULL;
+    };
+    for (int cycle = 0; cycle < 5; ++cycle) appendCycle(true, false, false);
+    appendCycle(false, false, false);
+    appendCycle(true, false, false);
+    appendCycle(false, false, false);
+    appendCycle(false, false, false);
+    constexpr quint8 tdiData = 0xa5U;
+    constexpr quint8 tdoData = 0x3cU;
+    for (int bit = 0; bit < 8; ++bit) {
+        appendCycle(bit == 7, ((tdiData >> bit) & 1U) != 0U, ((tdoData >> bit) & 1U) != 0U);
+    }
+    appendCycle(true, false, false);
+    appendCycle(false, false, false);
+    QJsonObject archive;
+    archive.insert(QStringLiteral("schema"), QStringLiteral("lockstep-protocol-events-v3"));
+    archive.insert(QStringLiteral("capture_id"), 80);
+    archive.insert(QStringLiteral("timebase_hz"), 120'000'000);
+    archive.insert(QStringLiteral("implemented_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("enabled_source_mask"), 0x19f);
+    archive.insert(QStringLiteral("design_gap_mask"), 0x060);
+    archive.insert(QStringLiteral("events"), events);
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("schema"), QStringLiteral("lockstep-capture-sidecar-v3"));
+    sidecar.insert(QStringLiteral("sample_rate_hz"), 120'000'000);
+    sidecar.insert(QStringLiteral("window_start_index"), 0);
+    sidecar.insert(QStringLiteral("protocol_events"), QStringLiteral("evidence/protocol_events.json"));
+    return writeTextFile(QDir(evidencePath).filePath(QStringLiteral("capture_sidecar.json")),
+                         QString::fromUtf8(QJsonDocument(sidecar).toJson(QJsonDocument::Compact))) &&
+        writeTextFile(QDir(evidencePath).filePath(QStringLiteral("protocol_events.json")),
+                      QString::fromUtf8(QJsonDocument(archive).toJson(QJsonDocument::Compact)));
 }
 
 bool writeRawUartFixture(const QString& taskRootPath)
@@ -489,6 +704,120 @@ int main(int argc, char* argv[])
                 QStringLiteral("picosecond UI axis truncates the final three digits to ns")) ||
         !expect(!rawUartModel.samples.isEmpty() && rawUartModel.samples.last().time == 109000,
                 QStringLiteral("sample and event coordinates use the same ns scale"))) return 1;
+
+    QTemporaryDir sparseUartTask(lockstepTestTemporaryTemplate(QStringLiteral("sparse_uart")));
+    if (!expect(sparseUartTask.isValid() && writeWideProtocolFixture(sparseUartTask.path()) &&
+                    writeSparseUartMarkerFixture(sparseUartTask.path()),
+                QStringLiteral("sparse UART marker fixture is writable"))) return 1;
+    lockstep::protocol_analyzer::ProtocolAnalysisRequest sparseUartRequest;
+    sparseUartRequest.taskRootPath = sparseUartTask.path();
+    sparseUartRequest.taskId = QStringLiteral("sparse_uart_test");
+    sparseUartRequest.reportDiagnosticsToErrorRegistry = false;
+    const auto sparseUartResult = analyzer.analyzeTask(sparseUartRequest);
+    QByteArray sparseUartText;
+    bool sparseUartFrameError = false;
+    for (const QJsonValue& value : sparseUartResult.analysis.value(QStringLiteral("protocol_events")).toArray()) {
+        const QJsonObject event = value.toObject();
+        const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+        if (event.value(QStringLiteral("group_id")).toString() != QStringLiteral("uart") ||
+            event.value(QStringLiteral("type")).toString() != QStringLiteral("uart_frame") ||
+            fields.value(QStringLiteral("direction")).toString() != QStringLiteral("TX") ||
+            fields.value(QStringLiteral("source")).toString() != QStringLiteral("sparse_timestamp_edges")) {
+            continue;
+        }
+        bool ok = false;
+        const int byte = fields.value(QStringLiteral("data")).toString().mid(2).toInt(&ok, 16);
+        if (ok) sparseUartText.append(static_cast<char>(byte));
+        sparseUartFrameError = sparseUartFrameError || fields.value(QStringLiteral("frame_error")).toBool();
+    }
+    if (!expect(sparseUartResult.success && sparseUartText == QByteArrayLiteral("PROGRAM_RUN_DONE\n") &&
+                    !sparseUartFrameError,
+                QStringLiteral("sparse timestamped UART edges reconstruct PROGRAM_RUN_DONE"))) {
+        QTextStream(stderr) << "decoded=" << sparseUartText.toHex()
+                            << " frame_error=" << sparseUartFrameError << '\n';
+        return 1;
+    }
+    if (!expect(sparseUartResult.analysis.value(QStringLiteral("uart_tx_text")).toString()
+                        .contains(QStringLiteral("PROGRAM_RUN_DONE")) &&
+                    sparseUartResult.analysis.value(
+                        QStringLiteral("program_done_marker_detected")).toBool(),
+                QStringLiteral("protocol analysis exposes the UART program completion marker"))) return 1;
+
+    QTemporaryDir sparseSpiTask(lockstepTestTemporaryTemplate(QStringLiteral("sparse_spi")));
+    if (!expect(sparseSpiTask.isValid() && writeWideProtocolFixture(sparseSpiTask.path()) &&
+                    writeSparseSpiFixture(sparseSpiTask.path()),
+                QStringLiteral("sparse SPI fixture is writable"))) return 1;
+    lockstep::protocol_analyzer::ProtocolAnalysisRequest sparseSpiRequest;
+    sparseSpiRequest.taskRootPath = sparseSpiTask.path();
+    sparseSpiRequest.taskId = QStringLiteral("sparse_spi_test");
+    sparseSpiRequest.reportDiagnosticsToErrorRegistry = false;
+    const auto sparseSpiResult = analyzer.analyzeTask(sparseSpiRequest);
+    bool sparseSpiDecoded = false;
+    for (const QJsonValue& value : sparseSpiResult.analysis.value(QStringLiteral("protocol_events")).toArray()) {
+        const QJsonObject event = value.toObject();
+        const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+        sparseSpiDecoded = sparseSpiDecoded ||
+            (event.value(QStringLiteral("group_id")).toString() == QStringLiteral("spi") &&
+             event.value(QStringLiteral("type")).toString() == QStringLiteral("spi_transfer") &&
+             fields.value(QStringLiteral("source")).toString() == QStringLiteral("sparse_rising_edges") &&
+             fields.value(QStringLiteral("bit_count")).toInt() == 32 &&
+             fields.value(QStringLiteral("tx_data")).toString() == QStringLiteral("0xA5C33C5A") &&
+             fields.value(QStringLiteral("rx_data")).toString() == QStringLiteral("0x3CC3A55A"));
+    }
+    if (!expect(sparseSpiResult.success && sparseSpiDecoded,
+                QStringLiteral("sparse SPI rising edges reconstruct a 32-bit transfer"))) return 1;
+
+    QTemporaryDir sparseI2cTask(lockstepTestTemporaryTemplate(QStringLiteral("sparse_i2c")));
+    if (!expect(sparseI2cTask.isValid() && writeWideProtocolFixture(sparseI2cTask.path()) &&
+                    writeSparseI2cFixture(sparseI2cTask.path()),
+                QStringLiteral("sparse I2C fixture is writable"))) return 1;
+    lockstep::protocol_analyzer::ProtocolAnalysisRequest sparseI2cRequest;
+    sparseI2cRequest.taskRootPath = sparseI2cTask.path();
+    sparseI2cRequest.taskId = QStringLiteral("sparse_i2c_test");
+    sparseI2cRequest.reportDiagnosticsToErrorRegistry = false;
+    const auto sparseI2cResult = analyzer.analyzeTask(sparseI2cRequest);
+    bool sparseI2cDecoded = false;
+    for (const QJsonValue& value : sparseI2cResult.analysis.value(QStringLiteral("protocol_events")).toArray()) {
+        const QJsonObject event = value.toObject();
+        const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+        const QJsonArray bytes = fields.value(QStringLiteral("bytes")).toArray();
+        const QJsonArray acks = fields.value(QStringLiteral("acks")).toArray();
+        sparseI2cDecoded = sparseI2cDecoded ||
+            (event.value(QStringLiteral("group_id")).toString() == QStringLiteral("i2c") &&
+             event.value(QStringLiteral("type")).toString() == QStringLiteral("i2c_transfer") &&
+             fields.value(QStringLiteral("source")).toString() == QStringLiteral("sparse_scl_rising_edges") &&
+             bytes.size() == 2 && bytes.at(0).toString() == QStringLiteral("0xA0") &&
+             bytes.at(1).toString() == QStringLiteral("0x5A") &&
+             acks.size() == 2 && acks.at(0).toString() == QStringLiteral("NACK") &&
+             acks.at(1).toString() == QStringLiteral("NACK"));
+    }
+    if (!expect(sparseI2cResult.success && sparseI2cDecoded,
+                QStringLiteral("sparse I2C edges reconstruct bytes and real NACKs"))) return 1;
+
+    QTemporaryDir sparseJtagTask(lockstepTestTemporaryTemplate(QStringLiteral("sparse_jtag")));
+    if (!expect(sparseJtagTask.isValid() && writeWideProtocolFixture(sparseJtagTask.path()) &&
+                    writeSparseJtagFixture(sparseJtagTask.path()),
+                QStringLiteral("sparse JTAG fixture is writable"))) return 1;
+    lockstep::protocol_analyzer::ProtocolAnalysisRequest sparseJtagRequest;
+    sparseJtagRequest.taskRootPath = sparseJtagTask.path();
+    sparseJtagRequest.taskId = QStringLiteral("sparse_jtag_test");
+    sparseJtagRequest.reportDiagnosticsToErrorRegistry = false;
+    const auto sparseJtagResult = analyzer.analyzeTask(sparseJtagRequest);
+    bool sparseJtagDecoded = false;
+    for (const QJsonValue& value : sparseJtagResult.analysis.value(QStringLiteral("protocol_events")).toArray()) {
+        const QJsonObject event = value.toObject();
+        const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+        sparseJtagDecoded = sparseJtagDecoded ||
+            (event.value(QStringLiteral("group_id")).toString() == QStringLiteral("jtag") &&
+             event.value(QStringLiteral("type")).toString() == QStringLiteral("jtag_scan") &&
+             fields.value(QStringLiteral("source")).toString() == QStringLiteral("sparse_tap_cycles") &&
+             fields.value(QStringLiteral("register")).toString() == QStringLiteral("dr") &&
+             fields.value(QStringLiteral("bit_count")).toInt() == 8 &&
+             fields.value(QStringLiteral("tdi_bits")).toString() == QStringLiteral("10100101") &&
+             fields.value(QStringLiteral("tdo_bits")).toString() == QStringLiteral("00111100"));
+    }
+    if (!expect(sparseJtagResult.success && sparseJtagDecoded,
+                QStringLiteral("sparse JTAG TAP cycles reconstruct a complete DR scan"))) return 1;
 
     QTemporaryDir invalidEventTask(lockstepTestTemporaryTemplate(QStringLiteral("invalid_event")));
     const QString invalidEvidence = QDir(invalidEventTask.path()).filePath(QStringLiteral("evidence"));

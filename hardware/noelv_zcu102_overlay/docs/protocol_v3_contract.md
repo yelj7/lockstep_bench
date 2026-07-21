@@ -44,11 +44,13 @@
 | 偏移 | 宽度 | 字段 |
 |---:|---:|---|
 | 0 | 4 | `event_enable_mask` |
-| 4 | 4 | `event_limit`，当前固定为 0 |
+| 4 | 4 | `event_limit`，当前固定为 0，表示事件流不受 4096 点周期窗口限制 |
 | 8 | 4 | `event_watchdog_ticks`，必须非 0 |
 | 12 | 4 | `event_hard_timeout_ticks`，必须不小于 watchdog |
 
 设备回显 `implemented_source_mask`、`enabled_source_mask` 和 `design_gap_mask`。当前 ETH/USB 对应位必须在 `design_gap_mask` 中置位，且不得产生事件记录。
+
+`event_limit=0` 时，事件流持续到 `program_done`、STOP、watchdog、hard timeout 或 overflow，且九路独立 FIFO 通过公平轮询上传；AHB/JTAG 高频活动不得耗尽 4096 点周期窗口对应的全局配额。
 
 ## 事件流释放
 

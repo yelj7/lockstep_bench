@@ -1,14 +1,15 @@
 /**********************************************************
 * 文件名: ui_preview_main.cpp
 * 日期: 2026-07-13
-* 版本: v2.4
-* 更新记录: ARM 后并行执行 run 请求与 FT601 采集，避免事件 FIFO 积压。
+* 版本: v2.5
+* 更新记录: 实时采集支持同步归档板载 UART 文本并强制校验程序结束标志。
 * 描述: 按参数启动界面、调试服务、离线回放或实时采集模式。
 **********************************************************/
 
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -16,6 +17,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QSaveFile>
+#include <QSerialPort>
 #include <QStringList>
 #include <QTextStream>
 #include <QTimer>
@@ -82,6 +84,64 @@ quint32 unsignedArgument(const QStringList& arguments, const QString& name, cons
     return ok ? value : fallback;
 }
 
+QString programDoneMarker(const QByteArray& output)
+{
+    const QByteArray normalized = output.toLower();
+    if (normalized.contains(QByteArrayLiteral("program_run_done"))) {
+        return QStringLiteral("PROGRAM_RUN_DONE");
+    }
+    if (normalized.contains(QByteArrayLiteral("lockstep_run_done"))) {
+        return QStringLiteral("LOCKSTEP_RUN_DONE");
+    }
+    return QString();
+}
+
+bool saveSerialEvidence(const QString& taskRoot, const QString& portName, const quint32 baudRate,
+                        const QByteArray& output, const QString& openError, QString* const error)
+{
+    const QString evidenceDir = QDir(taskRoot).filePath(QStringLiteral("evidence"));
+    if (!QDir().mkpath(evidenceDir)) {
+        if (error != nullptr) *error = QStringLiteral("无法创建 UART 证据目录");
+        return false;
+    }
+    QSaveFile transcript(QDir(evidenceDir).filePath(QStringLiteral("uart_serial.txt")));
+    if (!transcript.open(QIODevice::WriteOnly) || transcript.write(output) != output.size() ||
+        !transcript.commit()) {
+        if (error != nullptr) *error = QStringLiteral("无法写入 UART 串口文本");
+        return false;
+    }
+    const QString marker = programDoneMarker(output);
+    QJsonObject status;
+    status.insert(QStringLiteral("schema"), QStringLiteral("lockstep-uart-serial-evidence-v1"));
+    status.insert(QStringLiteral("generated_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    status.insert(QStringLiteral("port"), portName);
+    status.insert(QStringLiteral("baud"), static_cast<qint64>(baudRate));
+    status.insert(QStringLiteral("format"), QStringLiteral("8N1"));
+    status.insert(QStringLiteral("bytes"), output.size());
+    status.insert(QStringLiteral("opened"), openError.isEmpty());
+    if (!openError.isEmpty()) status.insert(QStringLiteral("open_error"), openError);
+    status.insert(QStringLiteral("program_done_marker"), marker);
+    status.insert(QStringLiteral("program_done_marker_detected"), !marker.isEmpty());
+    QSaveFile statusFile(QDir(evidenceDir).filePath(QStringLiteral("uart_serial_status.json")));
+    const QByteArray statusBytes = QJsonDocument(status).toJson(QJsonDocument::Indented);
+    if (!statusFile.open(QIODevice::WriteOnly) || statusFile.write(statusBytes) != statusBytes.size() ||
+        !statusFile.commit()) {
+        if (error != nullptr) *error = QStringLiteral("无法写入 UART 串口状态");
+        return false;
+    }
+    return true;
+}
+
+bool protocolAnalysisHasProgramDoneMarker(const QString& taskRoot)
+{
+    QFile file(QDir(taskRoot).filePath(QStringLiteral("evidence/protocol_analysis.json")));
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    return parseError.error == QJsonParseError::NoError && document.isObject() &&
+        document.object().value(QStringLiteral("program_done_marker_detected")).toBool();
+}
+
 int finalizeCaptureTask(const QString& taskRoot, const QString& taskId)
 {
     const QString evidenceDir = QDir(taskRoot).filePath(QStringLiteral("evidence"));
@@ -123,6 +183,8 @@ int finalizeCaptureTask(const QString& taskRoot, const QString& taskId)
     appendIfPresent(QStringLiteral("capture_status"), QStringLiteral("evidence/capture_status.json"));
     appendIfPresent(QStringLiteral("capture_error"), QStringLiteral("evidence/capture_error.json"));
     appendIfPresent(QStringLiteral("fault_injection"), QStringLiteral("evidence/fault_injection.json"));
+    appendIfPresent(QStringLiteral("uart_serial"), QStringLiteral("evidence/uart_serial.txt"));
+    appendIfPresent(QStringLiteral("uart_serial_status"), QStringLiteral("evidence/uart_serial_status.json"));
     QJsonObject artifactRoot;
     artifactRoot.insert(QStringLiteral("schema"), QStringLiteral("lockstep-artifacts-v1"));
     artifactRoot.insert(QStringLiteral("artifacts"), artifacts);
@@ -199,6 +261,7 @@ int runLiveCapture(int argc, char* argv[])
     const QString taskId = argumentValue(arguments, QStringLiteral("--task-id"));
     const QString runRequest = argumentValue(arguments, QStringLiteral("--run-request"));
     if (taskRoot.isEmpty()) return 20;
+    if (!QDir().mkpath(taskRoot)) return 20;
     bool argumentsValid = true;
     lockstep::acquisition::SamplingCaptureConfig config;
     config.sampleRateHz = unsignedArgument(arguments, QStringLiteral("--sample-rate"), config.sampleRateHz,
@@ -225,6 +288,41 @@ int runLiveCapture(int argc, char* argv[])
         arguments, QStringLiteral("--trigger-timeout-samples"), config.triggerTimeoutSamples,
         &argumentsValid);
     if (!argumentsValid) return 21;
+    config.eventLimit = unsignedArgument(
+        arguments, QStringLiteral("--event-limit"), config.eventLimit, &argumentsValid);
+    if (!argumentsValid) return 21;
+    const QString serialPortName = argumentValue(arguments, QStringLiteral("--serial-port"));
+    const quint32 serialBaud = unsignedArgument(
+        arguments, QStringLiteral("--serial-baud"), 115'200U, &argumentsValid);
+    if (!argumentsValid || serialBaud == 0U) return 21;
+    const bool requireProgramDoneMarker =
+        arguments.contains(QStringLiteral("--require-program-done-marker"));
+    const bool requireFtUartMarker =
+        arguments.contains(QStringLiteral("--require-ft-uart-marker"));
+
+    QSerialPort serialPort;
+    QString serialOpenError;
+    if (!serialPortName.isEmpty()) {
+        serialPort.setPortName(serialPortName);
+        serialPort.setBaudRate(static_cast<qint32>(serialBaud));
+        serialPort.setDataBits(QSerialPort::Data8);
+        serialPort.setParity(QSerialPort::NoParity);
+        serialPort.setStopBits(QSerialPort::OneStop);
+        serialPort.setFlowControl(QSerialPort::NoFlowControl);
+        if (!serialPort.open(QIODevice::ReadOnly)) {
+            serialOpenError = serialPort.errorString();
+            if (requireProgramDoneMarker) {
+                writeLiveCaptureFailure(taskRoot, QStringLiteral("uart_open"), serialOpenError, 26);
+                return 26;
+            }
+        } else {
+            serialPort.clear(QSerialPort::Input);
+        }
+    } else if (requireProgramDoneMarker) {
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("uart_config"),
+                                QStringLiteral("要求程序结束标志但未指定 --serial-port"), 26);
+        return 26;
+    }
 
     QString error;
     lockstep::acquisition::D3xxRuntime transport;
@@ -300,7 +398,30 @@ int runLiveCapture(int argc, char* argv[])
             }
         }
     }
+    QByteArray serialOutput;
+    if (serialPort.isOpen()) {
+        QElapsedTimer quietTimer;
+        quietTimer.start();
+        while (quietTimer.elapsed() < 500) {
+            if (serialPort.waitForReadyRead(100)) {
+                const QByteArray chunk = serialPort.readAll();
+                if (!chunk.isEmpty()) {
+                    serialOutput.append(chunk);
+                    quietTimer.restart();
+                }
+            }
+        }
+        serialOutput.append(serialPort.readAll());
+        serialPort.close();
+    }
     transport.close();
+    QString serialEvidenceError;
+    if (!serialPortName.isEmpty() &&
+        !saveSerialEvidence(taskRoot, serialPortName, serialBaud, serialOutput,
+                            serialOpenError, &serialEvidenceError)) {
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("uart_evidence"), serialEvidenceError, 26);
+        return 26;
+    }
     if (!captureResult.success) {
         writeLiveCaptureFailure(taskRoot, captureResult.phase, captureResult.message, 25);
         QTextStream(stderr) << QStringLiteral("FT601 实时采集失败: ")
@@ -312,7 +433,21 @@ int runLiveCapture(int argc, char* argv[])
         QTextStream(stderr) << runRequestError << Qt::endl;
         return 25;
     }
-    return finalizeCaptureTask(taskRoot, taskId);
+    const int finalizeResult = finalizeCaptureTask(taskRoot, taskId);
+    if (finalizeResult != 0) return finalizeResult;
+    if (requireFtUartMarker && !protocolAnalysisHasProgramDoneMarker(taskRoot)) {
+        const QString message = QStringLiteral("FT601 UART 稀疏事件未恢复出程序结束标志");
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("ft_uart_marker"), message, 27);
+        QTextStream(stderr) << message << Qt::endl;
+        return 27;
+    }
+    if (requireProgramDoneMarker && programDoneMarker(serialOutput).isEmpty()) {
+        const QString message = QStringLiteral("UART 未检测到 PROGRAM_RUN_DONE/LOCKSTEP_RUN_DONE");
+        writeLiveCaptureFailure(taskRoot, QStringLiteral("uart_marker"), message, 26);
+        QTextStream(stderr) << message << Qt::endl;
+        return 26;
+    }
+    return 0;
 }
 
 QJsonObject captureStatusJson(const lockstep::acquisition::CaptureStatusV2& status)

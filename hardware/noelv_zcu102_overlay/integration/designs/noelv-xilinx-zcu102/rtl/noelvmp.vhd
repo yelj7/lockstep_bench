@@ -1,8 +1,8 @@
 -------------------------------------------------------------------------------
 -- 文件名: noelvmp.vhd
 -- 日期: 2026-07-15
--- 版本: 1.1
--- 更新记录: 接入 1024-bit LOCKSTEP 采样，并按实际配置标记协议真实来源。
+-- 版本: 1.2
+-- 更新记录: 固定关闭板级 dmbreak，避免按键电平阻止自动化 JTAG resume。
 -- 描述: ZCU102 NOEL-V 顶层及 FT601 采集链路集成。
 -------------------------------------------------------------------------------
 
@@ -571,10 +571,8 @@ begin
   --  port map (switch(2), dmen);
   dmen <= '1';
 
-  -- Button 2,3,4 are still to be assigned
-  dmbreak_pad : inpad
-    generic map (tech => padtech, level => cmos, voltage => x18v)
-    port map (button(4), dmbreak);
+  -- 自动化调试只允许通过 RISC-V JTAG halt/resume 控制处理器。
+  dmbreak <= '0';
 
   --ndreset_pad : outpad
   --  generic map (tech => padtech, level => cmos, voltage => x18v)

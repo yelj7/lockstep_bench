@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: tb_lockstep_protocol_event_encoder.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 增加触发周期保留全局 64-bit 时间戳回归。
-* 描述: 验证 AHB/UART/JTAG/mismatch 同周期事件及 ETH/USB design gap。
+* 版本: 1.2
+* 更新记录: 增加 I2C START、STOP、SCL 上升沿准入和普通边沿抑制回归。
+* 描述: 验证各真实事件的准入、时间戳和 ETH/USB design gap。
 **********************************************************/
 
 `timescale 1ns/1ps
@@ -65,6 +65,7 @@ module tb_lockstep_protocol_event_encoder;
 
     sample[442] = 1'b1;
     sample[429] = 1'b1;
+    sample[425] = 1'b1;
     sample[63:32] = 32'h80000100;
     sample[512+6] = 1'b1;
     sample[512+224+8] = 1'b1;
@@ -92,6 +93,66 @@ module tb_lockstep_protocol_event_encoder;
     #2;
     if (source_push != 9'h100) fail("mismatch 恢复变化必须单独记录");
     if (source_record[8*512+127:8*512+96] != 32'd1) fail("mismatch 本地序号未递增");
+
+    @(posedge clk);
+    #2;
+    sample = 1024'd0;
+    sample[442] = 1'b1;
+    sample[429] = 1'b1;
+    sample[425] = 1'b1;
+    sample[63:32] = 32'h80000100;
+    #2;
+    if (source_push[0]) fail("duplicate stable AHB read must be suppressed");
+    repeat (5000) begin
+      @(posedge clk);
+      #2;
+      if (source_push[0]) fail("long stable AHB polling must remain suppressed");
+    end
+
+    sample[223:192] = 32'h00000001;
+    #2;
+    if (!source_push[0]) fail("changed AHB read data must be emitted");
+    @(posedge clk);
+    #2;
+
+    sample[416] = 1'b1;
+    #2;
+    if (!source_push[0]) fail("every AHB data write must be emitted");
+
+    sample[416] = 1'b0;
+    sample[425] = 1'b0;
+    sample[63:32] = 32'h00000004;
+    #2;
+    if (source_push[0]) fail("AHB instruction fetch must not enter semantic event stream");
+
+    sample = 1024'd0;
+    sample[512+32+31] = 1'b1;
+    #2;
+    if (source_push[2]) fail("SPI active level must not emit every sample cycle");
+    repeat (5000) begin
+      @(posedge clk);
+      #2;
+      if (source_push[2]) fail("long SPI active level must remain suppressed");
+    end
+    sample[512+32+5] = 1'b1;
+    #2;
+    if (!source_push[2]) fail("SPI SCLK rising edge must be emitted");
+
+    sample = 1024'd0;
+    sample[512+96+29] = 1'b1;
+    #2;
+    if (source_push[4]) fail("I2C generic activity must not emit non-sampling edges");
+    sample[512+96+6] = 1'b1;
+    #2;
+    if (!source_push[4]) fail("I2C SCL rising edge must be emitted");
+    sample[512+96+6] = 1'b0;
+    sample[512+96+2] = 1'b1;
+    #2;
+    if (!source_push[4]) fail("I2C START must be emitted");
+    sample[512+96+2] = 1'b0;
+    sample[512+96+3] = 1'b1;
+    #2;
+    if (!source_push[4]) fail("I2C STOP must be emitted");
 
     $display("PASS tb_lockstep_protocol_event_encoder");
     $finish;

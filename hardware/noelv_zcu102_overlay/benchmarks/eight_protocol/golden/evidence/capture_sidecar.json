@@ -5,6 +5,6 @@
   "fixture_kind": "simulation_only",
   "board_evidence": false,
   "mismatch_expected_mask": "0x00",
-  "expected_complete_transactions_per_protocol": 32,
-  "expected_ahb_transactions": 128
+  "expected_complete_transactions_per_protocol": 48,
+  "expected_ahb_transactions": 256
 }

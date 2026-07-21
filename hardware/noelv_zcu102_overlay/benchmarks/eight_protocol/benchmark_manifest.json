@@ -3,9 +3,20 @@
   "entry_address": "0x00000000",
   "sample_width": 1024,
   "timebase_hz": 120000000,
-  "minimum_complete_transactions_per_protocol": 32,
-  "expected_ahb_transactions": 128,
+  "minimum_complete_transactions_per_protocol": 48,
+  "expected_ahb_transactions": 256,
+  "peripheral_poll_timeout_iterations": 100000,
   "program_done_marker": "PROGRAM_RUN_DONE",
+  "board_behavior_matrix": {
+    "ahb": {"explicit_accesses": 448, "widths": [8, 16, 32], "patterns": 8},
+    "uart": {"binary_bytes": 48, "patterns": 8, "completion_text": true},
+    "spi": {"transfers": 48, "configured_modes": [0, 1, 2, 3], "patterns": 8, "mode_observable_in_current_probe": false},
+    "can": {"attempted_frames": 32, "dlc_min": 0, "dlc_max": 8, "identifier_min": "0x120", "identifier_max": "0x7ff", "board_limit_reason": "no physical CAN RX echo; retain >30 bounded attempts"},
+    "i2c": {"write_transfers": 48, "repeated_start_reads": 12, "addresses": ["0x50", "0x52"]},
+    "eth": {"status": "unavailable/design_gap"},
+    "usb": {"status": "unavailable/design_gap"},
+    "jtag": {"host_scans": 48, "scan_types": ["IR", "DR"]}
+  },
   "board_profile": {
     "enabled": ["ahb", "uart", "spi", "can", "i2c"],
     "host_driven": ["jtag"],
@@ -23,7 +34,7 @@
   "board_sequence": [
     "load SREC and run from 0x00000000",
     "ARM capture before releasing the CPU",
-    "perform 32 bounded JTAG IDCODE or DMI scans while firmware is running",
+    "perform 48 bounded JTAG IR/DR or DMI scans while firmware is running",
     "collect UART/SPI/CAN/I2C and AHB evidence",
     "report ETH and USB as unavailable/design_gap"
   ]
