@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: report_generator_test.cpp
 * 日期: 2026-07-14
-* 版本: v1.0
-* 更新记录: 初版创建
+* 版本: v1.1
+* 更新记录: 增加程序镜像摘要和采集编号数据合同测试
 * 描述: 验证测试报告结论、归档文件和可追溯性行为
 **********************************************************/
 
@@ -36,15 +36,6 @@ bool writeJson(const QString& path, const QJsonObject& object)
     }
     QSaveFile file(path);
     const QByteArray data = QJsonDocument(object).toJson(QJsonDocument::Indented);
-    return file.open(QIODevice::WriteOnly) && file.write(data) == data.size() && file.commit();
-}
-
-bool writeBytes(const QString& path, const QByteArray& data)
-{
-    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
-        return false;
-    }
-    QSaveFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(data) == data.size() && file.commit();
 }
 
@@ -114,8 +105,22 @@ bool inputDigestTracksFactsOnly()
         return false;
     }
     model.requiredEvidence.runControl.state = EvidenceState::Failed;
-    return expect(generator.calculateInputDigest(model) != digest,
-                  "evidence changes should change the input digest");
+    if (!expect(generator.calculateInputDigest(model) != digest,
+                "evidence changes should change the input digest")) {
+        return false;
+    }
+    model.requiredEvidence.runControl.state = EvidenceState::Passed;
+    model.programSha256 = QStringLiteral("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const QString programDigest = generator.calculateInputDigest(model);
+    model.hasCaptureId = true;
+    model.captureId = 42U;
+    if (!expect(generator.calculateInputDigest(model) != programDigest,
+                "capture identity should change the input digest")) {
+        return false;
+    }
+    model.programSha256 = QStringLiteral("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    return expect(generator.calculateInputDigest(model) != programDigest,
+                  "program evidence digest should change the input digest");
 }
 
 bool diskModelBuilderUsesPersistedFacts()
@@ -147,6 +152,8 @@ bool diskModelBuilderUsesPersistedFacts()
     QJsonObject write;
     write.insert(QStringLiteral("success"), true);
     write.insert(QStringLiteral("created_at"), QStringLiteral("2026-07-14T08:00:00.000Z"));
+    write.insert(QStringLiteral("image_sha256"),
+                 QStringLiteral("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
     QJsonArray segments;
     QJsonObject firstSegment;
     firstSegment.insert(QStringLiteral("length"), QStringLiteral("4"));
@@ -164,18 +171,27 @@ bool diskModelBuilderUsesPersistedFacts()
     run.insert(QStringLiteral("state"), QStringLiteral("running"));
     run.insert(QStringLiteral("entry_address"), QStringLiteral("0x80000000"));
     run.insert(QStringLiteral("raw_return"), QStringLiteral("running"));
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("capture_id"), 42);
+    QJsonObject protocolEvents;
+    protocolEvents.insert(QStringLiteral("capture_id"), 42);
+    QJsonObject captureStatus;
+    QJsonObject captureStatusValue;
+    captureStatusValue.insert(QStringLiteral("capture_id"), 42);
+    captureStatus.insert(QStringLiteral("status"), captureStatusValue);
     if (!writeJson(taskRoot.filePath(QStringLiteral("evidence/program_write_record.json")), write) ||
         !writeJson(taskRoot.filePath(QStringLiteral("evidence/readback_verify_record.json")), verify) ||
-        !writeJson(taskRoot.filePath(QStringLiteral("evidence/run_control_record.json")), run)) {
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/run_control_record.json")), run) ||
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/capture_sidecar.json")), sidecar) ||
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/protocol_events.json")), protocolEvents) ||
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/capture_status.json")), captureStatus)) {
         return expect(false, "persisted evidence should be writable");
     }
 
     ReportDocumentModel context;
     context.taskId = QStringLiteral("task_disk");
-    context.programRelativePath = QStringLiteral("inputs/program/test.bin");
     context.resourceSnapshot.insert(QStringLiteral("profile_id"), QStringLiteral("board_1"));
     context.resourceSnapshot.insert(QStringLiteral("profile_path"), QStringLiteral("C:/private/profile.json"));
-    writeBytes(taskRoot.filePath(context.programRelativePath), QByteArrayLiteral("first-image"));
     const ReportGenerator generator;
     const ReportDocumentModel loaded = generator.buildModelFromTask(taskRoot.path(), context);
     QStringList reasons;
@@ -183,6 +199,10 @@ bool diskModelBuilderUsesPersistedFacts()
                 "persisted successful evidence should pass after reload") ||
         !expect(loaded.requiredEvidence.programWrite.metrics.value(QStringLiteral("size_bytes")).toInt() == 10,
                 "write metrics should come from persisted segments") ||
+        !expect(loaded.programSha256 == write.value(QStringLiteral("image_sha256")).toString(),
+                "program digest should come from persisted write evidence") ||
+        !expect(loaded.hasCaptureId && loaded.captureId == 42U,
+                "capture identity should come from persisted sidecar") ||
         !expect(loaded.artifacts.size() == 3, "unsafe artifacts should be rejected") ||
         !expect(!loaded.resourceSnapshot.contains(QStringLiteral("profile_path")),
                 "resource physical paths should be rejected")) {
@@ -190,11 +210,13 @@ bool diskModelBuilderUsesPersistedFacts()
     }
 
     const QString originalDigest = generator.calculateInputDigest(loaded);
-    writeBytes(taskRoot.filePath(context.programRelativePath), QByteArrayLiteral("replaced-image"));
+    write.insert(QStringLiteral("image_sha256"),
+                 QStringLiteral("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));
+    writeJson(taskRoot.filePath(QStringLiteral("evidence/program_write_record.json")), write);
     const ReportDocumentModel imageChanged = generator.buildModelFromTask(taskRoot.path(), context);
     if (!expect(imageChanged.programSha256 != loaded.programSha256 &&
                     generator.calculateInputDigest(imageChanged) != originalDigest,
-                "replacing the imported program image should make the report stale")) {
+                "replacing the persisted program digest should make the report stale")) {
         return false;
     }
     verify.insert(QStringLiteral("state"), QStringLiteral("mismatch"));
@@ -229,6 +251,53 @@ bool diskModelBuilderUsesPersistedFacts()
                   "registered but missing evidence should be missing, not not-run");
 }
 
+bool captureIdentityMismatchBlocksReport()
+{
+    using namespace lockstep::reporting;
+    QTemporaryDir taskRoot(lockstepTestTemporaryTemplate(QStringLiteral("report_capture_mismatch")));
+    if (!expect(taskRoot.isValid(), "capture mismatch task directory should be available")) {
+        return false;
+    }
+    QJsonObject sidecar;
+    sidecar.insert(QStringLiteral("capture_id"), 41);
+    QJsonObject protocolEvents;
+    protocolEvents.insert(QStringLiteral("capture_id"), 42);
+    QJsonObject captureStatus;
+    QJsonObject status;
+    status.insert(QStringLiteral("capture_id"), 41);
+    captureStatus.insert(QStringLiteral("status"), status);
+    if (!writeJson(taskRoot.filePath(QStringLiteral("evidence/capture_sidecar.json")), sidecar) ||
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/protocol_events.json")), protocolEvents) ||
+        !writeJson(taskRoot.filePath(QStringLiteral("evidence/capture_status.json")), captureStatus)) {
+        return expect(false, "capture identity evidence should be writable");
+    }
+
+    const ReportGenerator generator;
+    const ReportDocumentModel model = generator.buildModelFromTask(taskRoot.path(), passingModel());
+    const ReportDocumentModel repeated = generator.buildModelFromTask(taskRoot.path(), passingModel());
+    QStringList reasons;
+    if (!expect(model.hasCaptureId && model.captureId == 41U,
+                "sidecar should remain the canonical capture identity") ||
+        !expect(model.blockingErrors.size() == 1 &&
+                    model.blockingErrors.first().code == QStringLiteral("CAPTURE_ID_MISMATCH"),
+                "inconsistent capture identity should create one blocking diagnostic") ||
+        !expect(generator.calculateConclusion(model, &reasons) == ReportConclusion::Blocked,
+                "capture identity mismatch should block the report") ||
+        !expect(generator.calculateInputDigest(model) == generator.calculateInputDigest(repeated),
+                "rebuilding unchanged mismatched evidence should keep a stable input digest")) {
+        return false;
+    }
+
+    sidecar.insert(QStringLiteral("capture_id"), 41.5);
+    if (!writeJson(taskRoot.filePath(QStringLiteral("evidence/capture_sidecar.json")), sidecar)) {
+        return expect(false, "fractional capture identity evidence should be writable");
+    }
+    const ReportDocumentModel fractional = generator.buildModelFromTask(taskRoot.path(), passingModel());
+    return expect(!fractional.hasCaptureId && fractional.blockingErrors.size() == 1 &&
+                      fractional.blockingErrors.first().code == QStringLiteral("CAPTURE_ID_INVALID"),
+                  "fractional capture identity should be rejected");
+}
+
 bool generatesVersionedJsonAndHtmlArchive()
 {
     using namespace lockstep::reporting;
@@ -238,6 +307,8 @@ bool generatesVersionedJsonAndHtmlArchive()
     }
 
     ReportDocumentModel first = passingModel();
+    first.hasCaptureId = true;
+    first.captureId = 77U;
     first.generatedAt = QStringLiteral("2026-07-14T08:00:00.000Z");
     first.requiredEvidence.programWrite.recordPath = QStringLiteral("evidence/program_write_record.json");
     first.requiredEvidence.readbackVerify.recordPath = QStringLiteral("evidence/readback_verify_record.json");
@@ -292,6 +363,8 @@ bool generatesVersionedJsonAndHtmlArchive()
                 "json should contain an input digest") ||
         !expect(json.value(QStringLiteral("revision")).isDouble(),
                 "revision should remain numeric") ||
+        !expect(json.value(QStringLiteral("capture_id")).toInt() == 77,
+                "json should serialize the report-level capture identity") ||
         !expect(json.value(QStringLiteral("artifacts")).toArray().size() == 1 &&
                     json.value(QStringLiteral("artifacts")).toArray().first().toObject()
                         .value(QStringLiteral("relative_path")).toString() == QStringLiteral("evidence/safe.bin"),
@@ -310,6 +383,8 @@ bool generatesVersionedJsonAndHtmlArchive()
     if (!expect(html.contains("&lt;script&gt;"), "dynamic html should be escaped") ||
         !expect(!html.contains("https://") && !html.contains("http://"),
                 "html should not use network resources") ||
+        !expect(html.contains("采集编号") && html.contains("<td colspan=\"3\">77</td>"),
+                "html should display the report-level capture identity") ||
         !expect(html.contains("TestOS") && html.contains("board_1") &&
                     html.contains("evidence/safe.bin") && html.contains("warning") &&
                     html.contains("review warning evidence"),
@@ -375,7 +450,8 @@ bool generatesVersionedJsonAndHtmlArchive()
                "second version should be archived") &&
         expect(serializedRunPath.isEmpty(), "absolute evidence paths should not be serialized") &&
         expect(loadedOk && loaded.reportId == QStringLiteral("report_test_0002") &&
-                   loaded.revision == 2 && loadedConclusion == ReportConclusion::Pass,
+                   loaded.revision == 2 && loaded.hasCaptureId && loaded.captureId == 77U &&
+                   loadedConclusion == ReportConclusion::Pass,
                "latest report should round-trip through the public reader") &&
         expect(!failedPublish.success && latestAfter == latestBefore,
                "failed latest publication should preserve the previous report");
@@ -392,6 +468,9 @@ int main()
         return 1;
     }
     if (!diskModelBuilderUsesPersistedFacts()) {
+        return 1;
+    }
+    if (!captureIdentityMismatchBlocksReport()) {
         return 1;
     }
     return generatesVersionedJsonAndHtmlArchive() ? 0 : 1;

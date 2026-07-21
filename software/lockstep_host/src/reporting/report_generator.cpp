@@ -1,12 +1,14 @@
 /**********************************************************
 * 文件名: report_generator.cpp
 * 日期: 2026-07-14
-* 版本: v2.1
-* 更新记录: 报告 staging 固定迁移到 D:\tmp，避免在任务目录残留临时目录
+* 版本: v2.2
+* 更新记录: 增加程序镜像摘要导入和采集编号一致性门禁
 * 描述: 实现测试报告结论计算、序列化、归档发布和读取
 **********************************************************/
 
 #include "report_generator.h"
+
+#include <cmath>
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -33,6 +35,9 @@ constexpr char kRunControlPath[] = "evidence/run_control_record.json";
 constexpr char kArtifactIndexPath[] = "evidence/artifacts.json";
 constexpr char kWaveformPath[] = "waveform/capture.vcd";
 constexpr char kAnalysisPath[] = "evidence/protocol_analysis.json";
+constexpr char kCaptureSidecarPath[] = "evidence/capture_sidecar.json";
+constexpr char kProtocolEventsPath[] = "evidence/protocol_events.json";
+constexpr char kCaptureStatusPath[] = "evidence/capture_status.json";
 constexpr char kTemporaryReportRoot[] = "D:/tmp/lockstep/report-staging";
 
 QString utcNow()
@@ -79,6 +84,38 @@ bool readObject(const QString& path, QJsonObject* const object)
     }
     *object = document.object();
     return true;
+}
+
+bool captureIdFromJson(const QJsonValue& value, quint32* const captureId)
+{
+    if (captureId == nullptr) {
+        return false;
+    }
+    qulonglong parsed = 0U;
+    if (value.isDouble()) {
+        const double numeric = value.toDouble(-1.0);
+        if (!std::isfinite(numeric) || numeric < 0.0 || numeric > 4294967295.0 ||
+            std::floor(numeric) != numeric) {
+            return false;
+        }
+        parsed = static_cast<qulonglong>(numeric);
+    } else if (value.isString()) {
+        bool ok = false;
+        parsed = value.toString().toULongLong(&ok);
+        if (!ok || parsed > 0xffffffffULL) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    *captureId = static_cast<quint32>(parsed);
+    return true;
+}
+
+bool isSha256(const QString& value)
+{
+    static const QRegularExpression expression(QStringLiteral("^[0-9a-fA-F]{64}$"));
+    return expression.match(value).hasMatch();
 }
 
 bool isSafeRelativePath(const QString& path)
@@ -334,6 +371,8 @@ QJsonObject normalizedInput(const ReportDocumentModel& model)
     object.insert(QStringLiteral("program_file_name"), model.programFileName);
     object.insert(QStringLiteral("program_sha256"), model.programSha256);
     object.insert(QStringLiteral("entry_address"), model.entryAddress);
+    object.insert(QStringLiteral("capture_id"), model.hasCaptureId
+        ? QJsonValue(static_cast<double>(model.captureId)) : QJsonValue(QJsonValue::Null));
     object.insert(QStringLiteral("target_summary"), model.targetSummary);
     object.insert(QStringLiteral("required_evidence"), requiredToJson(model.requiredEvidence));
     object.insert(QStringLiteral("optional_records"), optionalRecordsToJson(model.optionalRecords));
@@ -467,7 +506,7 @@ QByteArray renderHtml(
         "</style></head><body><header><h1>锁步研发测试系统测试报告</h1>"
         "<div class=\"meta\"><div>任务：%2</div><div>任务 ID：%3</div><div>模式：%4</div><div>报告 ID：%1</div><div>版本：%5</div><div>生成时间：%6</div></div></header>"
         "<section class=\"conclusion\"><strong>结论：%7</strong><ul>%8</ul></section>"
-        "<h2>任务与测试对象</h2><table><tr><th>程序镜像</th><td>%9</td><th>入口地址</th><td>%10</td></tr><tr><th>程序 SHA-256</th><td colspan=\"3\"><code>%11</code></td></tr><tr><th>目标摘要</th><td colspan=\"3\">%12</td></tr></table>"
+        "<h2>任务与测试对象</h2><table><tr><th>程序镜像</th><td>%9</td><th>入口地址</th><td>%10</td></tr><tr><th>程序 SHA-256</th><td colspan=\"3\"><code>%11</code></td></tr><tr><th>采集编号</th><td colspan=\"3\">%27</td></tr><tr><th>目标摘要</th><td colspan=\"3\">%12</td></tr></table>"
         "<h2>强制证据</h2><table><tr><th>步骤</th><th>状态</th><th>摘要</th><th>时间</th><th>记录路径</th></tr>%13%14%15</table>"
         "<h2>可选记录（不影响通过判定）</h2><table><tr><th>记录</th><th>状态</th><th>摘要</th><th>时间</th><th>路径</th></tr>%16%17%18%19</table>"
         "<h2>阻断错误</h2><table><tr><th>级别</th><th>ID</th><th>代码</th><th>来源</th><th>消息</th><th>建议动作</th><th>时间</th></tr>%20</table>"
@@ -500,7 +539,8 @@ QByteArray renderHtml(
              reportJsonSha.toHtmlEscaped(),
              QString::fromUtf8(QJsonDocument(model.environment).toJson(QJsonDocument::Compact)).toHtmlEscaped(),
              QString::fromUtf8(QJsonDocument(model.resourceSnapshot).toJson(QJsonDocument::Compact)).toHtmlEscaped(),
-             artifactRows(model.artifacts));
+             artifactRows(model.artifacts),
+             model.hasCaptureId ? QString::number(model.captureId) : QStringLiteral("不适用"));
     return html.toUtf8();
 }
 
@@ -607,6 +647,13 @@ ReportDocumentModel ReportGenerator::buildModelFromTask(
     QString* const errorMessage) const
 {
     ReportDocumentModel model = context;
+    for (qsizetype index = model.blockingErrors.size() - 1; index >= 0; --index) {
+        if (model.blockingErrors.at(index).id.startsWith(QStringLiteral("report_capture_"))) {
+            model.blockingErrors.removeAt(index);
+        }
+    }
+    model.captureId = 0U;
+    model.hasCaptureId = false;
     model.environment = sanitizedEnvironment(context.environment);
     const QString programRelativePath = safePath(context.programRelativePath);
     const QString programPath = programRelativePath.isEmpty()
@@ -703,6 +750,10 @@ ReportDocumentModel ReportGenerator::buildModelFromTask(
             model.requiredEvidence.programWrite.state == EvidenceState::Passed
             ? QStringLiteral("烧写 %1 个段，共 %2 字节").arg(segments.size()).arg(totalBytes)
             : QStringLiteral("烧写失败: %1").arg(write.value(QStringLiteral("error_message")).toString());
+        const QString evidenceProgramSha256 = write.value(QStringLiteral("image_sha256")).toString().toLower();
+        if (model.programSha256.isEmpty() && isSha256(evidenceProgramSha256)) {
+            model.programSha256 = evidenceProgramSha256;
+        }
     }
 
     QJsonObject verify;
@@ -748,6 +799,77 @@ ReportDocumentModel ReportGenerator::buildModelFromTask(
             : (state == QStringLiteral("not_run")
                 ? QStringLiteral("程序运行尚未执行")
                 : QStringLiteral("运行失败: %1").arg(run.value(QStringLiteral("error_message")).toString()));
+    }
+
+    const auto appendCaptureDiagnostic = [&model](
+                                             const QString& code,
+                                             const QString& source,
+                                             const QString& message) {
+        ReportDiagnostic diagnostic;
+        diagnostic.id = QStringLiteral("report_capture_%1").arg(model.blockingErrors.size() + 1);
+        diagnostic.code = code;
+        diagnostic.severity = QStringLiteral("blocking");
+        diagnostic.source = source;
+        diagnostic.message = message;
+        diagnostic.suggestion = QStringLiteral("重新生成同一 capture_id 的完整采集证据后再归档");
+        model.blockingErrors.append(diagnostic);
+    };
+    QJsonObject captureSidecar;
+    const QString captureSidecarFile = absolutePath(QString::fromLatin1(kCaptureSidecarPath));
+    if (QFileInfo::exists(captureSidecarFile)) {
+        quint32 sidecarCaptureId = 0U;
+        if (!readObject(captureSidecarFile, &captureSidecar) ||
+            !captureIdFromJson(captureSidecar.value(QStringLiteral("capture_id")), &sidecarCaptureId)) {
+            appendCaptureDiagnostic(
+                QStringLiteral("CAPTURE_ID_INVALID"), QString::fromLatin1(kCaptureSidecarPath),
+                QStringLiteral("采集 sidecar 缺少有效的 capture_id"));
+            model.hasCaptureId = false;
+            model.captureId = 0U;
+        } else {
+            model.hasCaptureId = true;
+            model.captureId = sidecarCaptureId;
+        }
+    }
+    const auto crossCheckCaptureId = [&](const QString& relativePath, const QJsonValue& value) {
+        if (!model.hasCaptureId) {
+            return;
+        }
+        quint32 evidenceCaptureId = 0U;
+        if (!captureIdFromJson(value, &evidenceCaptureId)) {
+            appendCaptureDiagnostic(
+                QStringLiteral("CAPTURE_ID_INVALID"), relativePath,
+                QStringLiteral("证据 %1 缺少有效的 capture_id").arg(relativePath));
+        } else if (evidenceCaptureId != model.captureId) {
+            appendCaptureDiagnostic(
+                QStringLiteral("CAPTURE_ID_MISMATCH"), relativePath,
+                QStringLiteral("证据 %1 的 capture_id=%2，与 sidecar 的 capture_id=%3 不一致")
+                    .arg(relativePath).arg(evidenceCaptureId).arg(model.captureId));
+        }
+    };
+    QJsonObject protocolEvents;
+    const QString protocolEventsFile = absolutePath(QString::fromLatin1(kProtocolEventsPath));
+    if (QFileInfo::exists(protocolEventsFile)) {
+        if (readObject(protocolEventsFile, &protocolEvents)) {
+            crossCheckCaptureId(QString::fromLatin1(kProtocolEventsPath),
+                                protocolEvents.value(QStringLiteral("capture_id")));
+        } else {
+            appendCaptureDiagnostic(
+                QStringLiteral("CAPTURE_ID_INVALID"), QString::fromLatin1(kProtocolEventsPath),
+                QStringLiteral("协议事件证据无法解析，不能核验 capture_id"));
+        }
+    }
+    QJsonObject captureStatus;
+    const QString captureStatusFile = absolutePath(QString::fromLatin1(kCaptureStatusPath));
+    if (QFileInfo::exists(captureStatusFile)) {
+        if (readObject(captureStatusFile, &captureStatus)) {
+            crossCheckCaptureId(
+                QString::fromLatin1(kCaptureStatusPath),
+                captureStatus.value(QStringLiteral("status")).toObject().value(QStringLiteral("capture_id")));
+        } else {
+            appendCaptureDiagnostic(
+                QStringLiteral("CAPTURE_ID_INVALID"), QString::fromLatin1(kCaptureStatusPath),
+                QStringLiteral("采集状态证据无法解析，不能核验 capture_id"));
+        }
     }
 
     const auto fillOptional = [&](
@@ -890,6 +1012,8 @@ QJsonObject toJson(
     object.insert(QStringLiteral("mode"), model.mode);
     object.insert(QStringLiteral("task"), task);
     object.insert(QStringLiteral("program"), program);
+    object.insert(QStringLiteral("capture_id"), model.hasCaptureId
+        ? QJsonValue(static_cast<double>(model.captureId)) : QJsonValue(QJsonValue::Null));
     object.insert(QStringLiteral("target_summary"), model.targetSummary);
     object.insert(QStringLiteral("conclusion"), toString(conclusion));
     object.insert(QStringLiteral("reasons"), reasonArray);
@@ -1088,6 +1212,7 @@ bool ReportGenerator::loadLatestReport(
     loaded.programFileName = program.value(QStringLiteral("file_name")).toString();
     loaded.programSha256 = program.value(QStringLiteral("sha256")).toString();
     loaded.entryAddress = program.value(QStringLiteral("entry_address")).toString();
+    loaded.hasCaptureId = captureIdFromJson(object.value(QStringLiteral("capture_id")), &loaded.captureId);
     loaded.targetSummary = object.value(QStringLiteral("target_summary")).toString();
     const QJsonObject required = object.value(QStringLiteral("required_evidence")).toObject();
     loaded.requiredEvidence.programWrite = evidenceFromJson(required.value(QStringLiteral("program_write")).toObject());

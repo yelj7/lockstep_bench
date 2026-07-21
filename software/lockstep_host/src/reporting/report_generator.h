@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: report_generator.h
 * 日期: 2026-07-14
-* 版本: v2.0
-* 更新记录: 增加统一报告模型、证据状态和版本化归档接口
+* 版本: v2.1
+* 更新记录: 增加采集编号和程序镜像证据追溯字段
 * 描述: 声明测试报告结论计算、预览、读取和归档生成接口
 **********************************************************/
 
@@ -95,6 +95,8 @@ struct ReportDocumentModel final {
     QString programRelativePath;
     QString programSha256;
     QString entryAddress;
+    quint32 captureId = 0U;
+    bool hasCaptureId = false;
     QString targetSummary;
     ReportRequiredEvidence requiredEvidence;
     ReportOptionalRecords optionalRecords;
