@@ -1,8 +1,8 @@
 # /**********************************************************
 # * 文件名: run_lockstep_capture_sim.ps1
 # * 日期: 2026-07-17
-# * 版本: 1.1
-# * 更新记录: 增加 AHB/JTAG 并发突发容量回归。
+# * 版本: 1.7
+# * 更新记录: 门禁扩展为二十项，增加低速探针同步与 v4 变化环回归。
 # * 描述: 编译并运行当前 1024-bit 采集回归，生成 simulation_gate.json。
 # **********************************************************/
 
@@ -23,14 +23,20 @@ $sources = Get-Content -LiteralPath $manifestPath -Encoding UTF8 |
     ForEach-Object { Join-Path $sourceRootPath $_ }
 $tests = @(
     "tb_lockstep_capture_arm_delay",
+    "tb_lockstep_capture_absolute_index",
+    "tb_lockstep_capture_lifecycle_integration",
     "tb_lockstep_capture_recovery",
+    "tb_lockstep_rx_command_parser_recovery",
     "tb_lockstep_command_responses",
     "tb_lockstep_ft601_hello",
     "tb_lockstep_protocol_probe_real_only",
+    "tb_lockstep_low_speed_state_sync",
     "tb_lockstep_event_capture_core",
     "tb_lockstep_event_capture_capacity",
     "tb_lockstep_event_async_fifo",
     "tb_lockstep_event_capture_controller",
+    "tb_lockstep_event_overflow_pipeline",
+    "tb_lockstep_sparse_change_window_cdc",
     "tb_lockstep_protocol_event_encoder",
     "tb_lockstep_event_frame_source",
     "tb_lockstep_event_config_parser",
@@ -40,7 +46,8 @@ $tests = @(
 $testSources = $tests | ForEach-Object { Join-Path $sourceRootPath "tests/$_.v" }
 $digestFiles = @($sources) + @($testSources) + @(
     (Join-Path $sourceRootPath "include/lockstep_capture_protocol_v2.vh"),
-    (Join-Path $sourceRootPath "include/lockstep_capture_protocol_v3.vh")
+    (Join-Path $sourceRootPath "include/lockstep_capture_protocol_v3.vh"),
+    (Join-Path $sourceRootPath "include/lockstep_capture_protocol_v4.vh")
 )
 $digestLines = $digestFiles | Sort-Object | ForEach-Object {
     $absolutePath = (Resolve-Path -LiteralPath $_).Path

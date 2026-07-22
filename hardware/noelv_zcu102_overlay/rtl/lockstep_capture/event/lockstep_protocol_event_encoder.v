@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_protocol_event_encoder.v
 * 日期: 2026-07-19
-* 版本: 1.2
-* 更新记录: I2C 仅记录 START、STOP 和 SCL 上升沿，避免无解码价值的下降沿耗尽 FIFO。
+* 版本: 1.3
+* 更新记录: 输出协议线级 busy，供 program_done quiet guard 防止截断在途事务。
 * 描述: 生成 AHB、UART、SPI、CAN、I2C、JTAG 和 mismatch 事件，ETH/USB 保持空。
 **********************************************************/
 
@@ -19,7 +19,8 @@ module lockstep_protocol_event_encoder (
   sample_valid_i,
   sample_i,
   source_push_o,
-  source_record_o
+  source_record_o,
+  protocol_busy_o
 );
   parameter UDLY = 1;
 
@@ -34,6 +35,7 @@ module lockstep_protocol_event_encoder (
   input  [1023:0]   sample_i;
   output [8:0]      source_push_o;
   output [9*512-1:0] source_record_o;
+  output            protocol_busy_o;
 
   localparam integer PROBE_BASE = 512;
   localparam integer UART_BASE = PROBE_BASE + 0;
@@ -87,6 +89,17 @@ module lockstep_protocol_event_encoder (
   assign source_push_w[8] = (capture_active_i || capture_start_i) && sample_valid_i && source_enable_mask_i[8] &&
                             (mismatch_change_w != 5'd0);
   assign source_push_o = source_push_w;
+  assign protocol_busy_o = capture_active_i && sample_valid_i &&
+                           ((source_enable_mask_i[1] &&
+                             (!sample_i[UART_BASE] || !sample_i[UART_BASE+1])) ||
+                            (source_enable_mask_i[2] && !sample_i[SPI_BASE+3]) ||
+                            (source_enable_mask_i[3] &&
+                             (!sample_i[CAN_BASE] || !sample_i[CAN_BASE+1])) ||
+                            (source_enable_mask_i[4] && sample_i[I2C_BASE+30]) ||
+                            (source_enable_mask_i[5] &&
+                             (sample_i[PROBE_BASE+128] || sample_i[PROBE_BASE+130])) ||
+                            (source_enable_mask_i[7] &&
+                             (sample_i[JTAG_BASE] || sample_i[JTAG_BASE+4])));
 
   assign ahb_payload_w = {128'd0,
                           14'd0, sample_i[431:430], sample_i[436], sample_i[428:425],

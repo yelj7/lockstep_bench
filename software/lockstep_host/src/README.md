@@ -18,7 +18,6 @@
 | `ui_common/` | 共享窗口、状态栏、导航、页面容器和 UI 数据合同 | M01 |
 | `workspace/` | 工作区、任务、任务输入、任务级产物路径和任务索引 | M02 |
 | `resources/` | 固化资源、板卡 profile、模板、lockstep_trace 配置资源和模式配置 | M03 |
-| `workflow/` | 研发/测试流程状态机、阶段 gate 和失败阻断 | M04 |
 | `target_control/` | 目标连接、预检、自研调试访问、程序烧写、回读校验和运行控制 | M05-M07 |
 | `fault_injection/` | 注错配置、脚本调用、串口响应和注错记录 | M08 |
 | `acquisition/` | 采集配置、采集会话、帧流接收、分帧、校验和 VCD 生成 | M09-M10 |

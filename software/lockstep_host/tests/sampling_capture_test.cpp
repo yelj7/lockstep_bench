@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture_test.cpp
-* 日期: 2026-07-16
-* 版本: 3.6
-* 更新记录: 增加完整配置序列化和分阶段取消恢复回归。
-* 描述: 验证 v2/v3、恢复门槛、1024-bit VCD 和稀疏事件合同。
+* 日期: 2026-07-22
+* 版本: 4.0
+* 更新记录: 增加 v4 统一时间轴、稀疏状态链与结束统计正反例。
+* 描述: 验证 v2/v3/v4 采集组装、恢复门槛及稀疏事件合同。
 **********************************************************/
 
 #include <QCoreApplication>
@@ -51,6 +51,121 @@ bool expect(bool condition, const char* message)
 {
     if (!condition) std::cerr << message << '\n';
     return condition;
+}
+
+struct V4Fixture final {
+    static constexpr quint32 kCaptureId = 77U;
+    static constexpr quint64 kOrigin = 0x00000001ffffff00ULL;
+    static constexpr quint64 kTrigger = kOrigin + 2047U;
+    static constexpr quint64 kEndExclusive = kOrigin + 4096U;
+
+    QByteArray captureMeta;
+    QByteArray eventMeta;
+    QByteArray firstChange;
+    QByteArray secondChange;
+    QByteArray eventEnd;
+    QByteArray samples;
+    QByteArray captureEnd;
+
+    V4Fixture()
+    {
+        append32(&captureMeta, 120'000'000U);
+        append32(&captureMeta, lockstep::acquisition::kCaptureWindowSamplesV4);
+        append32(&captureMeta, 2047U);
+        append32(&captureMeta, 2049U);
+        append32(&captureMeta, 0x19fU);
+        append32(&captureMeta, 0U);
+        append32(&captureMeta, lockstep::acquisition::kCapturePhysicalChannelsV4);
+        append32(&captureMeta, lockstep::acquisition::kCaptureSampleWordBitsV4);
+        append32(&captureMeta, static_cast<quint32>(kOrigin));
+        append32(&captureMeta, static_cast<quint32>(kTrigger));
+        append64(&captureMeta, kOrigin);
+        append64(&captureMeta, kTrigger);
+        append64(&captureMeta, kEndExclusive);
+
+        append32(&eventMeta, 120'000'000U);
+        append32(&eventMeta, 0x09eU);
+        append32(&eventMeta, 0x09eU);
+        append32(&eventMeta, 0x060U);
+        append32(&eventMeta, lockstep::acquisition::kCaptureEventRecordBytesV4);
+        append32(&eventMeta, lockstep::acquisition::kCaptureEventLayoutV4);
+        append32(&eventMeta, 123U);
+        append32(&eventMeta, 456U);
+        append32(&eventMeta, 0x0001U);
+        append64(&eventMeta, kOrigin);
+        append64(&eventMeta, kTrigger);
+        append64(&eventMeta, kEndExclusive);
+        append32(&eventMeta, 2U);
+
+        append32(&firstChange, static_cast<quint32>(kOrigin + 3U));
+        append32(&firstChange, 41U);
+        append32(&firstChange, 0x1003U | (0x82U << 20U));
+        append32(&firstChange, 0x1002U);
+
+        append32(&secondChange, static_cast<quint32>(kOrigin + 0x110U));
+        append32(&secondChange, 42U);
+        append32(&secondChange, 0x1513U | (0x1cU << 20U));
+        append32(&secondChange, 0x0510U);
+
+        append32(&eventEnd, 0U);
+        append32(&eventEnd, 0U);
+        append32(&eventEnd, 2U);
+        append32(&eventEnd, 2U);
+        append32(&eventEnd, 2U);
+        append32(&eventEnd, 0U);
+        for (int source = 0; source < 9; ++source) append32(&eventEnd, 0U);
+        append32(&eventEnd, 0x09eU | (0x09eU << 9U));
+
+        samples = QByteArray(
+            static_cast<int>(lockstep::acquisition::kCaptureWindowSamplesV4 *
+                             lockstep::acquisition::kCaptureSampleBytesV4), '\0');
+        samples[0] = char(0x5a);
+        samples[samples.size() - 1] = char(0xa5);
+
+        append32(&captureEnd, lockstep::acquisition::kCaptureWindowSamplesV4);
+        append32(&captureEnd, static_cast<quint32>(kOrigin));
+        append32(&captureEnd, static_cast<quint32>(kTrigger));
+        append32(&captureEnd, 0U);
+        append32(&captureEnd, 0U);
+        append32(&captureEnd, static_cast<quint32>(samples.size()));
+        append32(&captureEnd, static_cast<quint32>(samples.size()));
+        append32(&captureEnd, 0U);
+    }
+};
+
+lockstep::acquisition::CaptureFrame v4Frame(
+    const lockstep::acquisition::CaptureFrameType type, const QByteArray& payload,
+    const quint32 sequence)
+{
+    lockstep::acquisition::CaptureFrame frame;
+    frame.header.version = lockstep::acquisition::kCaptureProtocolVersionV4;
+    frame.header.type = type;
+    frame.header.sequence = sequence;
+    frame.header.captureId = V4Fixture::kCaptureId;
+    frame.payload = payload;
+    return frame;
+}
+
+QList<lockstep::acquisition::CaptureFrame> v4Frames(
+    const V4Fixture& fixture, const bool eventMetaFirst)
+{
+    using lockstep::acquisition::CaptureFrame;
+    using lockstep::acquisition::CaptureFrameType;
+    QList<CaptureFrame> frames;
+    quint32 sequence = 300U;
+    if (!eventMetaFirst) {
+        frames.append(v4Frame(CaptureFrameType::CaptureMeta, fixture.captureMeta, sequence++));
+    }
+    frames.append(v4Frame(CaptureFrameType::EventMeta, fixture.eventMeta, sequence++));
+    frames.append(v4Frame(CaptureFrameType::EventData, fixture.firstChange, sequence++));
+    frames.append(v4Frame(CaptureFrameType::EventData, fixture.secondChange, sequence++));
+    if (eventMetaFirst) {
+        frames.append(v4Frame(CaptureFrameType::CaptureMeta, fixture.captureMeta, sequence++));
+    }
+    frames.append(v4Frame(CaptureFrameType::EventEnd, fixture.eventEnd, sequence++));
+    frames.append(v4Frame(CaptureFrameType::SampleData, fixture.samples, sequence++));
+    frames.append(v4Frame(CaptureFrameType::CaptureEnd, fixture.captureEnd, sequence));
+    return frames;
 }
 
 class FakeCaptureTransport final : public lockstep::acquisition::CaptureTransport {
@@ -479,6 +594,259 @@ int main(int argc, char** argv)
                     v3Record.protocolEvents.first().payload == QByteArray::fromHex("55aa") &&
                     v3Record.eventEmittedTotal == 1U && v3Record.eventDroppedTotal == 0U,
                 "v3 event record and EVENT_END statistics assemble exactly")) return 1;
+
+    const V4Fixture v4Fixture;
+    for (const bool eventMetaFirst : {false, true}) {
+        QList<CaptureFrame> inputFrames = v4Frames(v4Fixture, eventMetaFirst);
+        if (!eventMetaFirst) {
+            QByteArray encodedV4Stream;
+            for (const CaptureFrame& frame : inputFrames) {
+                encodedV4Stream += encoder.encode(
+                    frame.header.type, frame.payload, frame.header.sequence,
+                    frame.header.captureId, 0U, frame.header.version);
+            }
+            CaptureFrameCodec v4Decoder;
+            const CaptureDecodeResult decodedV4 = v4Decoder.feed(encodedV4Stream);
+            if (!expect(decodedV4.success && decodedV4.frames.size() == inputFrames.size(),
+                        "v4 encoded stream passes frame CRC and payload decoding")) return 1;
+            inputFrames = decodedV4.frames;
+        }
+        SamplingCaptureAssembler v4Assembler;
+        for (const CaptureFrame& frame : inputFrames) {
+            if (!expect(v4Assembler.append(frame, &error),
+                        "v4 capture/event frame accepted")) return 1;
+        }
+        const SamplingCaptureRecord v4Record = v4Assembler.record();
+        if (!expect(v4Assembler.complete() &&
+                        v4Record.contractVersion == kCaptureProtocolVersionV4 &&
+                        v4Record.physicalChannels == kCapturePhysicalChannelsV4 &&
+                        v4Record.sampleWordBits == kCaptureSampleWordBitsV4 &&
+                        v4Record.sampleBytes == kCaptureSampleBytesV4 &&
+                        v4Record.windowOriginTicks == V4Fixture::kOrigin &&
+                        v4Record.triggerTicks == V4Fixture::kTrigger &&
+                        v4Record.windowEndExclusiveTicks == V4Fixture::kEndExclusive &&
+                        v4Record.samples.size() == static_cast<int>(kCaptureWindowSamplesV4) &&
+                        v4Record.samples.first().size() == static_cast<int>(kCaptureSampleBytesV4),
+                    "v4 META order and 512-bit continuous window assemble exactly")) return 1;
+        if (!expect(v4Record.eventInitialState == 0x0001U &&
+                        v4Record.eventWatchdogTicks == 123U &&
+                        v4Record.eventHardTimeoutTicks == 456U &&
+                        v4Record.sparseChanges.size() == 2 &&
+                        v4Record.sparseChanges.at(0).globalSequence == 41U &&
+                        v4Record.sparseChanges.at(0).stateAfter == 0x1003U &&
+                        v4Record.sparseChanges.at(0).sourceMask == 0x82U &&
+                        v4Record.sparseChanges.at(1).absoluteIndex ==
+                            V4Fixture::kOrigin + 0x110U &&
+                        v4Record.sparseChanges.at(1).absoluteIndexLow == 0x10U &&
+                        v4Record.sparseChanges.at(1).stateAfter == 0x1513U &&
+                        v4Record.eventObservedTotal == 2U &&
+                        v4Record.eventRetainedTotal == 2U &&
+                        v4Record.eventUploadedTotal == 2U,
+                    "v4 sparse state chain, source mask, sequence and wrapped index are preserved")) {
+            return 1;
+        }
+    }
+    const auto expectV4Rejected = [&](const QList<CaptureFrame>& candidate,
+                                      const QString& errorPrefix,
+                                      const char* message) {
+        SamplingCaptureAssembler invalidAssembler;
+        bool rejected = false;
+        error.clear();
+        for (const CaptureFrame& frame : candidate) {
+            if (!invalidAssembler.append(frame, &error)) {
+                rejected = true;
+                break;
+            }
+        }
+        return expect(rejected && (errorPrefix.isEmpty() || error.startsWith(errorPrefix)), message);
+    };
+
+    QList<CaptureFrame> mixedFrames = v4Frames(v4Fixture, false);
+    mixedFrames[1].header.version = kCaptureProtocolVersionV3;
+    if (!expectV4Rejected(mixedFrames, QString(),
+                          "mixed legacy and v4 stream is rejected")) return 1;
+
+    V4Fixture stateReservedFixture;
+    overwrite32(&stateReservedFixture.firstChange, 8,
+                read32(stateReservedFixture.firstChange, 8) | 0x00010000U);
+    if (!expectV4Rejected(v4Frames(stateReservedFixture, false), QString(),
+                          "v4 state reserved bits are rejected")) return 1;
+
+    V4Fixture initialStateReservedFixture;
+    overwrite32(&initialStateReservedFixture.eventMeta, 32, 0x00010001U);
+    if (!expectV4Rejected(v4Frames(initialStateReservedFixture, false), QString(),
+                          "v4 initial-state reserved bits are rejected")) return 1;
+
+    V4Fixture changeReservedFixture;
+    overwrite32(&changeReservedFixture.firstChange, 12,
+                read32(changeReservedFixture.firstChange, 12) | 0x00010000U);
+    if (!expectV4Rejected(v4Frames(changeReservedFixture, false), QString(),
+                          "v4 change reserved bits are rejected")) return 1;
+
+    V4Fixture zeroChangeFixture;
+    overwrite32(&zeroChangeFixture.firstChange, 12, 0U);
+    if (!expectV4Rejected(v4Frames(zeroChangeFixture, false), QString(),
+                          "v4 zero change is rejected")) return 1;
+
+    V4Fixture wrongSourceFixture;
+    overwrite32(&wrongSourceFixture.firstChange, 8, 0x1003U | (0x02U << 20U));
+    if (!expectV4Rejected(v4Frames(wrongSourceFixture, false), QString(),
+                          "v4 source mask must exactly match changed protocols")) return 1;
+
+    V4Fixture brokenChainFixture;
+    overwrite32(&brokenChainFixture.firstChange, 8, 0x1002U | (0x82U << 20U));
+    if (!expectV4Rejected(v4Frames(brokenChainFixture, false), QString(),
+                          "v4 broken state chain is rejected")) return 1;
+
+    V4Fixture sequenceGapFixture;
+    overwrite32(&sequenceGapFixture.secondChange, 4, 43U);
+    if (!expectV4Rejected(v4Frames(sequenceGapFixture, false), QString(),
+                          "v4 capture-local sequence gap is rejected")) return 1;
+
+    V4Fixture duplicateIndexFixture;
+    overwrite32(&duplicateIndexFixture.secondChange, 0,
+                read32(duplicateIndexFixture.firstChange, 0));
+    if (!expectV4Rejected(v4Frames(duplicateIndexFixture, false), QString(),
+                          "v4 duplicate absolute index is rejected")) return 1;
+
+    V4Fixture decreasingIndexFixture;
+    overwrite32(&decreasingIndexFixture.secondChange, 0,
+                static_cast<quint32>(V4Fixture::kOrigin + 2U));
+    if (!expectV4Rejected(v4Frames(decreasingIndexFixture, false), QString(),
+                          "v4 decreasing absolute index is rejected")) return 1;
+
+    V4Fixture outsideWindowFixture;
+    overwrite32(&outsideWindowFixture.secondChange, 0,
+                static_cast<quint32>(V4Fixture::kEndExclusive));
+    if (!expectV4Rejected(v4Frames(outsideWindowFixture, false), QString(),
+                          "v4 out-of-window absolute index is rejected")) return 1;
+
+    V4Fixture retainedMismatchFixture;
+    overwrite32(&retainedMismatchFixture.eventMeta, 60, 3U);
+    if (!expectV4Rejected(v4Frames(retainedMismatchFixture, false), QString(),
+                          "v4 EVENT_META retained count mismatch is rejected")) return 1;
+
+    V4Fixture observedTooSmallFixture;
+    overwrite32(&observedTooSmallFixture.eventEnd, 8, 1U);
+    if (!expectV4Rejected(v4Frames(observedTooSmallFixture, false), QString(),
+                          "v4 observed count below retained count is rejected")) return 1;
+
+    V4Fixture dropSumFixture;
+    overwrite32(&dropSumFixture.eventEnd, 0,
+                static_cast<quint32>(EventEndReason::Overflow));
+    overwrite32(&dropSumFixture.eventEnd, 20, 1U);
+    if (!expectV4Rejected(v4Frames(dropSumFixture, false), QString(),
+                          "v4 per-source drop sum mismatch is rejected")) return 1;
+
+    V4Fixture lossWithoutReasonFixture;
+    overwrite32(&lossWithoutReasonFixture.eventEnd, 8, 3U);
+    overwrite32(&lossWithoutReasonFixture.eventEnd, 20, 1U);
+    overwrite32(&lossWithoutReasonFixture.eventEnd, 24, 1U);
+    if (!expectV4Rejected(
+            v4Frames(lossWithoutReasonFixture, false),
+            QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR"),
+            "v4 loss without overflow reason is rejected bidirectionally")) return 1;
+
+    V4Fixture reasonWithoutLossFixture;
+    overwrite32(&reasonWithoutLossFixture.eventEnd, 0,
+                static_cast<quint32>(EventEndReason::Overflow));
+    if (!expectV4Rejected(
+            v4Frames(reasonWithoutLossFixture, false),
+            QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR"),
+            "v4 overflow reason without loss is rejected bidirectionally")) return 1;
+
+    V4Fixture ringOverwriteFixture;
+    overwrite32(&ringOverwriteFixture.eventEnd, 8, 9U);
+    SamplingCaptureAssembler ringOverwriteAssembler;
+    for (const CaptureFrame& frame : v4Frames(ringOverwriteFixture, false)) {
+        if (!expect(ringOverwriteAssembler.append(frame, &error),
+                    "v4 ring overwrite is not reported as event loss")) return 1;
+    }
+
+    V4Fixture spiModeFixture;
+    overwrite32(&spiModeFixture.eventMeta, 20,
+                kCaptureEventLayoutV4 | (3U << 8U) | (1U << 10U));
+    SamplingCaptureAssembler spiModeAssembler;
+    for (const CaptureFrame& frame : v4Frames(spiModeFixture, false)) {
+        if (!expect(spiModeAssembler.append(frame, &error),
+                    "v4 EVENT_META accepts declared SPI mode bits")) return 1;
+    }
+    if (!expect(spiModeAssembler.record().eventSpiMode == 3U &&
+                    spiModeAssembler.record().eventSpiModeValid,
+                "v4 EVENT_META preserves SPI mode audit fields")) return 1;
+
+    V4Fixture shortWindowFixture;
+    shortWindowFixture.samples.chop(static_cast<int>(kCaptureSampleBytesV4));
+    overwrite32(&shortWindowFixture.captureEnd, 0, kCaptureWindowSamplesV4 - 1U);
+    overwrite32(&shortWindowFixture.captureEnd, 20,
+                static_cast<quint32>(shortWindowFixture.samples.size()));
+    overwrite32(&shortWindowFixture.captureEnd, 24,
+                static_cast<quint32>(shortWindowFixture.samples.size()));
+    if (!expectV4Rejected(v4Frames(shortWindowFixture, false), QString(),
+                          "v4 continuous window must contain exactly 4096 samples")) return 1;
+    QByteArray overflowEnd = eventEnd;
+    overwrite32(&overflowEnd, 0, 3U);
+    overwrite32(&overflowEnd, 4, 1U);
+    overwrite32(&overflowEnd, 8, 2U);
+    overwrite32(&overflowEnd, 16, 1U);
+    overwrite32(&overflowEnd, 20, 1U);
+    const QByteArray overflowStream =
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 20U, 42U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, eventData, 21U, 42U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventEnd, overflowEnd, 22U, 42U, 0U,
+                       kCaptureProtocolVersionV3);
+    CaptureFrameCodec overflowDecoder;
+    const CaptureDecodeResult overflowDecoded = overflowDecoder.feed(overflowStream);
+    SamplingCaptureAssembler overflowAssembler;
+    if (!expect(overflowDecoded.success &&
+                    overflowAssembler.append(overflowDecoded.frames.at(0), &error) &&
+                    overflowAssembler.append(overflowDecoded.frames.at(1), &error) &&
+                    !overflowAssembler.append(overflowDecoded.frames.at(2), &error) &&
+                    error.startsWith(QStringLiteral("CAPTURE_END_OVERFLOW")),
+                "EVENT_END loss is classified as CAPTURE_END_OVERFLOW")) return 1;
+    QByteArray mismatchedOverflowEnd = overflowEnd;
+    overwrite32(&mismatchedOverflowEnd, 0, 4U);
+    QByteArray mismatchedOverflowData = eventData;
+    overwrite32(&mismatchedOverflowData, 8, 43U);
+    const QByteArray mismatchedOverflowStream =
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 23U, 43U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, mismatchedOverflowData, 24U, 43U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventEnd, mismatchedOverflowEnd, 25U, 43U, 0U,
+                       kCaptureProtocolVersionV3);
+    CaptureFrameCodec mismatchedOverflowDecoder;
+    const CaptureDecodeResult mismatchedOverflowDecoded =
+        mismatchedOverflowDecoder.feed(mismatchedOverflowStream);
+    SamplingCaptureAssembler mismatchedOverflowAssembler;
+    if (!expect(mismatchedOverflowDecoded.success &&
+                    mismatchedOverflowAssembler.append(mismatchedOverflowDecoded.frames.at(0), &error) &&
+                    mismatchedOverflowAssembler.append(mismatchedOverflowDecoded.frames.at(1), &error) &&
+                    !mismatchedOverflowAssembler.append(mismatchedOverflowDecoded.frames.at(2), &error) &&
+                    error.startsWith(QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR")),
+                "EVENT_END loss with non-overflow reason is rejected as a contract error")) return 1;
+    QByteArray emptyOverflowEnd = eventEnd;
+    overwrite32(&emptyOverflowEnd, 0, 3U);
+    QByteArray emptyOverflowData = eventData;
+    overwrite32(&emptyOverflowData, 8, 44U);
+    const QByteArray emptyOverflowStream =
+        encoder.encode(CaptureFrameType::EventMeta, eventMeta, 26U, 44U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventData, emptyOverflowData, 27U, 44U, 0U,
+                       kCaptureProtocolVersionV3) +
+        encoder.encode(CaptureFrameType::EventEnd, emptyOverflowEnd, 28U, 44U, 0U,
+                       kCaptureProtocolVersionV3);
+    CaptureFrameCodec emptyOverflowDecoder;
+    const CaptureDecodeResult emptyOverflowDecoded = emptyOverflowDecoder.feed(emptyOverflowStream);
+    SamplingCaptureAssembler emptyOverflowAssembler;
+    if (!expect(emptyOverflowDecoded.success &&
+                    emptyOverflowAssembler.append(emptyOverflowDecoded.frames.at(0), &error) &&
+                    emptyOverflowAssembler.append(emptyOverflowDecoded.frames.at(1), &error) &&
+                    !emptyOverflowAssembler.append(emptyOverflowDecoded.frames.at(2), &error) &&
+                    error.startsWith(QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR")),
+                "EVENT_END overflow reason without loss is rejected as a contract error")) return 1;
     for (const quint32 reason : {1U, 2U, 4U, 5U}) {
         QByteArray reasonEnd = eventEnd;
         overwrite32(&reasonEnd, 0, reason);

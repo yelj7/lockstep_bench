@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_capture_protocol_v2.vh
 * 日期: 2026-07-17
-* 版本: 2.0
-* 更新记录: 升级锁步采集协议，增加恢复超时和完整状态观测字段。
+* 版本: 2.1
+* 更新记录: 增加接收命令截断帧超时错误码。
 * 描述: 定义 FT601 采集帧、状态、错误码和结构偏移。
 **********************************************************/
 `ifndef LOCKSTEP_CAPTURE_PROTOCOL_V2_VH
@@ -85,6 +85,7 @@ localparam [31:0] LOCKSTEP_ERR_BAD_TRIGGER_CONFIG = 32'd12;
 localparam [31:0] LOCKSTEP_ERR_BAD_PHYSICAL_CHANNELS = 32'd13;
 localparam [31:0] LOCKSTEP_ERR_BAD_SAMPLE_WORD_BITS = 32'd14;
 localparam [31:0] LOCKSTEP_ERR_BAD_BYTE_ENABLE = 32'd15;
+localparam [31:0] LOCKSTEP_ERR_RX_TIMEOUT = 32'd16;
 localparam [31:0] LOCKSTEP_ERR_INTERNAL = 32'd255;
 
 localparam integer LOCKSTEP_PAYLOAD_BYTES_HELLO_REQ = 0;

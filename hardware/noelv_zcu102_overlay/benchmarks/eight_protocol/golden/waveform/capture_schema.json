@@ -4,5 +4,6 @@
   "physical_channels": 1024,
   "sample_signal": "CH0..CH1023",
   "trace_profile_id": "trace.noelv.lockstep_1024",
-  "fixture_kind": "simulation_only"
+  "fixture_kind": "simulation_only",
+  "spi_mode_hint_available": true
 }

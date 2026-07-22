@@ -73,7 +73,6 @@ target_link_libraries(lockstep_ui_preview
         lockstep_target_control
         lockstep_ui_common
         lockstep_waveform_viewer
-        lockstep_workflow
         lockstep_workspace
         lockstep_workbench_dialogs
         ${LOCKSTEP_HIDAPI_TARGET}

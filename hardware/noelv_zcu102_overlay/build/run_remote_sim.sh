@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: run_remote_sim.sh
 # * 日期: 2026-07-19
-# * 版本: 1.3
-# * 更新记录: 门禁扩展为十四项，增加 AHB/JTAG 并发突发容量回归。
+# * 版本: 1.9
+# * 更新记录: 门禁扩展为二十项，增加低速探针同步与 v4 变化环回归。
 # * 描述: 对统一 overlay 运行 XSim，失败时不生成 pass gate。
 # **********************************************************/
 
@@ -38,14 +38,20 @@ XSIM="/tools/Xilinx/Vivado/2022.2/bin/xsim"
 mapfile -t SOURCES < <(grep -v '^[[:space:]]*#' "${SRC}/lockstep_capture_sources.lst" | grep -v '^[[:space:]]*$' | sed "s#^#${SRC}/#")
 TESTS=(
   tb_lockstep_capture_arm_delay
+  tb_lockstep_capture_absolute_index
+  tb_lockstep_capture_lifecycle_integration
   tb_lockstep_capture_recovery
+  tb_lockstep_rx_command_parser_recovery
   tb_lockstep_command_responses
   tb_lockstep_ft601_hello
   tb_lockstep_protocol_probe_real_only
+  tb_lockstep_low_speed_state_sync
   tb_lockstep_event_capture_core
   tb_lockstep_event_capture_capacity
   tb_lockstep_event_async_fifo
   tb_lockstep_event_capture_controller
+  tb_lockstep_event_overflow_pipeline
+  tb_lockstep_sparse_change_window_cdc
   tb_lockstep_protocol_event_encoder
   tb_lockstep_event_frame_source
   tb_lockstep_event_config_parser

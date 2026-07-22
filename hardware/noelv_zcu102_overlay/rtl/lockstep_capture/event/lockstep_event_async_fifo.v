@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_async_fifo.v
 * 日期: 2026-07-19
-* 版本: 1.2
-* 更新记录: 固化 Block RAM 推断属性，支持产品配置的 1024 条跨时钟缓冲。
+* 版本: 1.3
+* 更新记录: 增加包含预取寄存器在内的读域显式 empty 输出。
 * 描述: 使用 Gray 指针同步和读域输出寄存器跨域传递固定宽度事件。
 **********************************************************/
 
@@ -18,6 +18,7 @@ module lockstep_event_async_fifo (
   read_clk,
   read_rst_n,
   read_valid_o,
+  read_empty_o,
   read_ready_i,
   read_data_o
 );
@@ -35,6 +36,7 @@ module lockstep_event_async_fifo (
   input                   read_clk;
   input                   read_rst_n;
   output                  read_valid_o;
+  output                  read_empty_o;
   input                   read_ready_i;
   output [DATA_WIDTH-1:0] read_data_o;
 
@@ -74,6 +76,7 @@ module lockstep_event_async_fifo (
   assign memory_empty_w = (read_gray_r == write_gray_read_d2_r);
   assign read_load_w = (!read_valid_r || read_ready_i) && !memory_empty_w;
   assign read_valid_o = read_valid_r;
+  assign read_empty_o = memory_empty_w && !read_valid_r;
   assign read_data_o = read_data_r;
 
   // 写域双口存储器写入与 Gray 写指针推进。

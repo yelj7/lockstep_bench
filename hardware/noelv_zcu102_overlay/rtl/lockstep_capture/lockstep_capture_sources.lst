@@ -2,6 +2,7 @@
 capture/lockstep_wide_capture_window_cdc.v
 capture/lockstep_wide_capture_frame_source.v
 source/lockstep_protocol_probe_pack.v
+source/lockstep_low_speed_state_sync.v
 common/lockstep_crc32_word.v
 ft601/lockstep_ft601_be_polarity.v
 ft601/lockstep_ft601_245_adapter.v
@@ -16,6 +17,7 @@ event/lockstep_event_round_robin_arbiter.v
 event/lockstep_event_capture_core.v
 event/lockstep_event_async_fifo.v
 event/lockstep_event_capture_controller.v
+event/lockstep_sparse_change_window_cdc.v
 event/lockstep_global_timestamp.v
 event/lockstep_protocol_event_encoder.v
 event/lockstep_event_frame_source.v

@@ -61,15 +61,6 @@ struct BoardProfile final {
     bool runAfterDownload = false;
 };
 
-struct BoardProfileSummary final {
-    QString profileId;
-    QString profileName;
-    QString version;
-    QString sha256;
-    QString addressSummary;
-    QString runControlSummary;
-};
-
 struct ResourceSnapshot final {
     QString resourcePackId;
     QString resourcePackVersion;
@@ -97,7 +88,6 @@ struct ResourceValidationResult final {
 QString toString(ResourceStatus status);
 bool parseResourceStatus(const QString& text, ResourceStatus* status);
 
-QJsonObject toJson(const BoardProfileSummary& summary);
 QJsonObject toJson(const ResourceSnapshot& snapshot);
 
 class ResourceManager final {
@@ -107,30 +97,12 @@ public:
     ResourceValidationResult validateResourcePack(const QString& installRootPath);
     ResourceSnapshot getModeResourceSnapshot(const QString& mode) const;
 
-    QList<BoardProfileSummary> listBoardProfiles(const QString& mode) const;
     bool resolveBoardProfile(
         const QString& profileId,
         BoardProfile* profile,
         QString* errorMessage = nullptr) const;
 
-    bool resolveReportTemplate(
-        const QString& templateId,
-        ResourceItem* item,
-        QString* errorMessage = nullptr) const;
-
-    bool resolveProtocolRule(
-        const QString& ruleId,
-        ResourceItem* item,
-        QString* errorMessage = nullptr) const;
-
-    bool resolveLockstepTraceProfile(
-        const QString& profileId,
-        ResourceItem* item,
-        QString* errorMessage = nullptr) const;
-
     ManifestDefaults defaults() const;
-    QString resourcePackId() const;
-    QString resourcePackVersion() const;
 
 private:
     QString resourceRootPath_;

@@ -46,8 +46,13 @@ $sidecar = Read-Json 'evidence/capture_sidecar.json'
 $events = Read-Json 'evidence/protocol_events.json'
 $status = Read-Json 'evidence/capture_status.json'
 $analysis = Read-Json 'evidence/protocol_analysis.json'
+$benchmarkManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'benchmark_manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$expectedJtagScans = [int]$benchmarkManifest.board_behavior_matrix.jtag.host_scans
+$expectedJtagScansPerType = [int]($expectedJtagScans / 2)
 
 Assert-True ($report.conclusion -eq 'pass') '报告结论不是 pass'
+Assert-True ($status.success -eq $true -and $status.phase -eq 'complete' -and $status.status.last_error_code -eq 0) '采集状态不是无错误完成'
+Assert-True ($sidecar.stop_reason -eq 0 -and $events.end_reason -eq 0) '采集不是由 program_done 正常结束'
 Assert-True ($report.program.sha256 -eq $ExpectedSrecSha256) '报告中的程序 SHA-256 不匹配'
 Assert-True ($report.capture_id -eq $sidecar.capture_id -and
              $sidecar.capture_id -eq $events.capture_id -and
@@ -114,8 +119,8 @@ if ($counts.i2c_transfer -lt 48 -or $counts.i2c_repeated_start -lt 12) {
 Assert-True ($repeatedStartSummaries.Count -ge 12) 'I2C segment 未解析为 REPEATED_START'
 Assert-True ($eth.status -eq 'unavailable' -and $usb.status -eq 'unavailable') `
     'ETH/USB 必须保持 unavailable/design_gap'
-Assert-True ($counts.jtag -ge 48) 'JTAG 完整 scan 少于 48'
-Assert-True ($jtagIrScans -ge 48 -and $jtagDrScans -ge 48) 'JTAG IR/DR scan 覆盖不足'
+Assert-True ($counts.jtag -ge $expectedJtagScans) "JTAG 完整 scan 少于 $expectedJtagScans"
+Assert-True ($jtagIrScans -ge $expectedJtagScansPerType -and $jtagDrScans -ge $expectedJtagScansPerType) "JTAG IR/DR scan 分别少于 $expectedJtagScansPerType"
 Assert-True ($mismatch.status -eq 'complete' -and $mismatch.transactions.Count -eq 0) `
     'Mismatch 不应产生事件'
 

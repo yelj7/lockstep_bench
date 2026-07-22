@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_ft601_external_sample_top.v
 * 日期: 2026-07-17
-* 版本: 1.0
-* 更新记录: 固化独立 FT601 上电复位并接入连续 burst adapter。
+* 版本: 1.1
+* 更新记录: 将 FT601 复位改为标准异步断言、同步释放链。
 * 描述: 接收 1024-bit 外部宽样本，复用锁步采集协议流核心和 FT601 245 adapter。
 **********************************************************/
 
@@ -38,8 +38,8 @@ module lockstep_ft601_external_sample_top (
   parameter integer LANE_INDEX_BITS = 4;
 
   localparam RESET_SHIFT_WIDTH = 4;
-  localparam [RESET_SHIFT_WIDTH-1:0] RESET_ASSERT_VALUE = 4'hf;
-  localparam [RESET_SHIFT_WIDTH-1:0] RESET_DONE_VALUE = 4'h0;
+  localparam [RESET_SHIFT_WIDTH-1:0] RESET_ASSERT_VALUE = 4'h0;
+  localparam [RESET_SHIFT_WIDTH-1:0] RESET_DONE_VALUE = 4'hf;
 
   input                         ft_clk;
   input                         rst_n;
@@ -59,17 +59,14 @@ module lockstep_ft601_external_sample_top (
   output                        ft_wakeup_n_o;
   output [31:0]                 debug_ft601_state_o;
 
-  reg [RESET_SHIFT_WIDTH-1:0] ft_reset_shift_r = RESET_ASSERT_VALUE;
+  (* ASYNC_REG = "TRUE" *) reg [RESET_SHIFT_WIDTH-1:0] ft_reset_shift_r = RESET_ASSERT_VALUE;
   (* ASYNC_REG = "TRUE" *) reg source_enable_sample_d1_r;
   (* ASYNC_REG = "TRUE" *) reg source_enable_sample_d2_r;
-  reg                         source_enable_sample_prev_r;
-  reg [31:0]                  local_sample_abs_index_r;
 
   wire                        ft_rst_n_w;
   wire                        source_enable_w;
   wire                        source_enable_sample_w;
   wire                        core_sample_valid_w;
-  wire [31:0]                 core_sample_abs_index_w;
   wire                        core_rx_word_valid_w;
   wire                        core_rx_word_ready_w;
   wire [31:0]                 core_rx_word_data_w;
@@ -91,10 +88,9 @@ module lockstep_ft601_external_sample_top (
   wire [31:0]                 debug_wide_capture_metadata_w;
   wire [31:0]                 debug_wide_capture_samples_seen_w;
 
-  assign ft_rst_n_w = (ft_reset_shift_r == RESET_DONE_VALUE);
+  assign ft_rst_n_w = ft_reset_shift_r[RESET_SHIFT_WIDTH-1];
   assign source_enable_sample_w = source_enable_sample_d2_r;
   assign core_sample_valid_w = source_enable_sample_w && sample_valid_i;
-  assign core_sample_abs_index_w = local_sample_abs_index_r;
 
   assign ft_siwu_n_o = 1'b1;
   assign ft_wakeup_n_o = 1'b1;
@@ -104,7 +100,7 @@ module lockstep_ft601_external_sample_top (
     if (!rst_n) begin
       ft_reset_shift_r <= #UDLY RESET_ASSERT_VALUE;
     end else if (ft_reset_shift_r != RESET_DONE_VALUE) begin
-      ft_reset_shift_r <= #UDLY {ft_reset_shift_r[RESET_SHIFT_WIDTH-2:0], 1'b0};
+      ft_reset_shift_r <= #UDLY {ft_reset_shift_r[RESET_SHIFT_WIDTH-2:0], 1'b1};
     end else begin
       ft_reset_shift_r <= #UDLY ft_reset_shift_r;
     end
@@ -115,22 +111,9 @@ module lockstep_ft601_external_sample_top (
     if (!sample_rst_n) begin
       source_enable_sample_d1_r    <= #UDLY 1'b0;
       source_enable_sample_d2_r    <= #UDLY 1'b0;
-      source_enable_sample_prev_r  <= #UDLY 1'b0;
-      local_sample_abs_index_r     <= #UDLY 32'd0;
     end else begin
       source_enable_sample_d1_r   <= #UDLY source_enable_w;
       source_enable_sample_d2_r   <= #UDLY source_enable_sample_d1_r;
-      source_enable_sample_prev_r <= #UDLY source_enable_sample_w;
-
-      if (!source_enable_sample_w) begin
-        local_sample_abs_index_r <= #UDLY 32'd0;
-      end else if (!source_enable_sample_prev_r) begin
-        local_sample_abs_index_r <= #UDLY (sample_valid_i ? 32'd1 : 32'd0);
-      end else if (sample_valid_i) begin
-        local_sample_abs_index_r <= #UDLY local_sample_abs_index_r + 32'd1;
-      end else begin
-        local_sample_abs_index_r <= #UDLY local_sample_abs_index_r;
-      end
     end
   end
 
@@ -176,7 +159,7 @@ module lockstep_ft601_external_sample_top (
     .rx_be_valid_i                  (core_rx_be_valid_w),
     .wide_sample_valid_i            (core_sample_valid_w),
     .wide_sample_i                  (sample_i),
-    .wide_sample_abs_index_i        (core_sample_abs_index_w),
+    .wide_sample_abs_index_i        (sample_abs_index_i),
     .capture_external_status_flags_i(32'd0),
     .capture_external_debug_state_i (debug_ft601_state_w),
     .tx_word_valid_o                (core_tx_word_valid_w),

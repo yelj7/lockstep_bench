@@ -11,6 +11,9 @@
 *       无内容分支，各块 if-else 链只保留有实际写入的分支。
 *   0.5 配置成功后返回 STATUS_RSP，并等待采样域 ARM 接受后再确认。
 *   0.6 增加 START_EVENT_STREAM 无响应单周期释放脉冲。
+*   0.7 接入 POSTTRIGGER 与 DRAINING 生命周期状态。
+*   0.8 统一设备状态更新优先级，采集完成优先于并发状态转换。
+*   0.9 采样域未就绪时拒绝 ARM，活动期掉线立即上报致命错误并允许重配置。
 * 描述: LOCKSTEP 命令状态机控制器——命令合法性检查、设备状态管理、配置转发、
 *       延迟错误记录、上行帧响应生成。对接上位机命令帧，驱动采集核心
 *       配置/arm/stop，并生成 HELLO_RSP / STATUS_RSP / ERROR_RSP 等
@@ -73,8 +76,11 @@ module lockstep_command_state_machine (
   cfg_error_detail1_i,
   arm_o,
   arm_accepted_i,
+  capture_domain_ready_i,
   event_stream_start_o,
   stop_o,
+  capture_trigger_seen_i,
+  capture_draining_i,
   capture_frame_done_i,
   capture_samples_captured_i,
   capture_samples_uploaded_i,
@@ -175,8 +181,11 @@ module lockstep_command_state_machine (
   input  [31:0] cfg_error_detail1_i;
   output        arm_o;
   input         arm_accepted_i;
+  input         capture_domain_ready_i;
   output        event_stream_start_o;
   output        stop_o;
+  input         capture_trigger_seen_i;
+  input         capture_draining_i;
   input         capture_frame_done_i;
   input  [31:0] capture_samples_captured_i;
   input  [31:0] capture_samples_uploaded_i;
@@ -338,6 +347,7 @@ module lockstep_command_state_machine (
   wire        cfg_fire_w;                  // 配置握手完成
   wire        frame_fire_w;                // 帧发送握手完成
   wire        config_supported_w;          // 当前模式在支持列表中
+  wire        capture_config_valid_w;      // CONFIG_CAPTURE 字段符合当前固定采集能力
   wire        cmd_hello_w;                 // HELLO_REQ 命令
   wire        cmd_config_w;                // CONFIG_CAPTURE 命令
   wire        cmd_arm_w;                   // ARM_CAPTURE 命令
@@ -349,6 +359,7 @@ module lockstep_command_state_machine (
   wire        arm_fire_w;                  // arm 脉冲触发
   wire        stop_fire_w;                 // stop 脉冲触发
   wire        event_start_fire_w;          // 事件流释放脉冲触发
+  wire        capture_domain_fault_w;      // 等待/活动采集期间采样域掉线
 
   // 设备活跃：已 arm 但尚未完成或排空
   assign device_active_w = (device_state_r == LOCKSTEP_STATE_ARMED) ||
@@ -381,6 +392,20 @@ module lockstep_command_state_machine (
 
   // 模式支持检查：位 0 为有限采集模式
   assign config_supported_w = ((SUPPORTED_MODES & 32'h00000001) != 32'd0);
+  assign capture_config_valid_w = config_supported_w &&
+                                  (cmd_payload_words_i == 32'd13) &&
+                                  (cmd_payload0_i == 32'd120000000) &&
+                                  (cmd_payload1_i == 32'd4096) &&
+                                  (cmd_payload2_i == 32'd2047) &&
+                                  (cmd_payload3_i == 32'd2049) &&
+                                  ((cmd_payload4_i & ~32'h000001ff) == 32'd0) &&
+                                  (cmd_payload5_i == 32'd0) &&
+                                  (cmd_payload6_i == 32'h04000400) &&
+                                  ((cmd_payload7_i & ~32'h0000001f) == 32'd0) &&
+                                  ((cmd_payload9_i & ~32'h00000001) == 32'd0) &&
+                                  (cmd_payload10_i == 32'd0) &&
+                                  (cmd_payload11_i == 32'd0) &&
+                                  (cmd_payload12_i != 32'd0);
 
   // 命令类型解码
   assign cmd_hello_w  = (cmd_type_i == LOCKSTEP_FRAME_HELLO_REQ);
@@ -397,9 +422,12 @@ module lockstep_command_state_machine (
                                 (cmd_payload3_i >= cmd_payload2_i);
 
   // arm/stop 脉冲触发条件（组合逻辑计算，时序块单点赋值）
-  assign arm_fire_w  = cmd_fire_w && cmd_arm_w && (device_state_r == LOCKSTEP_STATE_CONFIGURED);
+  assign arm_fire_w  = cmd_fire_w && cmd_arm_w && capture_domain_ready_i &&
+                       (device_state_r == LOCKSTEP_STATE_CONFIGURED);
   assign stop_fire_w = cmd_fire_w && cmd_stop_w && device_active_w;
   assign event_start_fire_w = cmd_fire_w && cmd_event_start_w && device_active_w;
+  assign capture_domain_fault_w = !capture_domain_ready_i &&
+                                  ((cur_state == ST_WAIT_ARM_ACCEPT) || device_active_w);
 
   // 命令错误空闲触发：设备空闲时收到上位机错误（非延迟）
   wire cmd_error_idle_w;
@@ -410,11 +438,12 @@ module lockstep_command_state_machine (
   assign cmd_fire_catchall_w = cmd_fire_w
                               && !cmd_status_w
                               && !(cmd_hello_w && !device_active_w)
-                              && !(cmd_config_w && !device_active_w && config_supported_w)
+                              && !(cmd_config_w && !device_active_w && capture_config_valid_w)
                               && !(cmd_event_config_w &&
                                    (device_state_r == LOCKSTEP_STATE_CONFIGURED) &&
                                    event_config_valid_w)
-                              && !(cmd_arm_w && (device_state_r == LOCKSTEP_STATE_CONFIGURED))
+                              && !(cmd_arm_w && capture_domain_ready_i &&
+                                   (device_state_r == LOCKSTEP_STATE_CONFIGURED))
                               && !(cmd_stop_w && device_active_w)
                               && !(device_active_w && !cmd_stop_w);
 
@@ -437,7 +466,9 @@ module lockstep_command_state_machine (
 
     case (cur_state)
       ST_IDLE: begin
-        if (capture_done_with_error_w) begin
+        if (capture_domain_fault_w) begin
+          nxt_state = ST_SEND_FRAME;
+        end else if (capture_done_with_error_w) begin
           // 采集完成时存在延迟错误，优先发送 ERROR_RSP
           nxt_state = ST_SEND_FRAME;
         end else if (cmd_error_fire_w && !device_active_w) begin
@@ -461,7 +492,7 @@ module lockstep_command_state_machine (
         end else if (cmd_fire_w && cmd_status_w && !device_active_w) begin
           // 状态查询：发送 STATUS_RSP
           nxt_state = ST_SEND_FRAME;
-        end else if (cmd_fire_w && cmd_config_w && !device_active_w && config_supported_w) begin
+        end else if (cmd_fire_w && cmd_config_w && !device_active_w && capture_config_valid_w) begin
           // 配置命令且模式支持：转发到采集核心
           nxt_state = ST_APPLY_CONFIG;
         end else if (cmd_fire_w && cmd_event_config_w &&
@@ -500,7 +531,9 @@ module lockstep_command_state_machine (
       end
 
       ST_WAIT_ARM_ACCEPT: begin
-        if (arm_accepted_i) begin
+        if (!capture_domain_ready_i) begin
+          nxt_state = ST_SEND_FRAME;
+        end else if (arm_accepted_i) begin
           // 仅在采样域接受 ARM 后确认给主机
           nxt_state = ST_SEND_FRAME;
         end else begin
@@ -550,6 +583,10 @@ module lockstep_command_state_machine (
         post_frame_action_r <= #UDLY POST_ERROR;
       end
 
+      if (capture_domain_fault_w) begin
+        post_frame_action_r <= #UDLY POST_NONE;
+      end
+
       // 帧发送完毕，清除动作标记
       if (frame_fire_w) begin
         post_frame_action_r <= #UDLY POST_NONE;
@@ -564,31 +601,26 @@ module lockstep_command_state_machine (
     if (!rst_n) begin
       device_state_r <= #UDLY LOCKSTEP_STATE_IDLE;
     end else begin
-      // 采集结束帧已发送：回到 CONFIGURED，允许直接重新 ARM。
-      if (capture_frame_done_i && device_active_w && !pending_deferred_error_r) begin
+      // 状态收敛优先于生命周期转换，避免同周期后写覆盖完成态。
+      if (capture_domain_fault_w && device_active_w) begin
+        device_state_r <= #UDLY LOCKSTEP_STATE_ERROR;
+      end else if (frame_fire_w && (post_frame_action_r == POST_ERROR)) begin
+        device_state_r <= #UDLY LOCKSTEP_STATE_ERROR;
+      end else if (frame_fire_w && (post_frame_action_r == POST_COMPLETE)) begin
         device_state_r <= #UDLY LOCKSTEP_STATE_CONFIGURED;
-      end
-
-      // 命令/错误处理优先级链（仅更新设备状态）
-      if (cmd_fire_w && cmd_stop_w && device_active_w) begin
+      end else if (capture_frame_done_i && device_active_w && !pending_deferred_error_r) begin
+        device_state_r <= #UDLY LOCKSTEP_STATE_CONFIGURED;
+      end else if (cmd_fire_w && cmd_stop_w && device_active_w) begin
         device_state_r <= #UDLY LOCKSTEP_STATE_DRAINING;
+      end else if (capture_draining_i && device_active_w) begin
+        device_state_r <= #UDLY LOCKSTEP_STATE_DRAINING;
+      end else if (capture_trigger_seen_i &&
+                   (device_state_r == LOCKSTEP_STATE_CAPTURING_PRETRIGGER)) begin
+        device_state_r <= #UDLY LOCKSTEP_STATE_CAPTURING_POSTTRIGGER;
       end else if ((cur_state == ST_WAIT_ARM_ACCEPT) && arm_accepted_i) begin
         device_state_r <= #UDLY LOCKSTEP_STATE_CAPTURING_PRETRIGGER;
-      end
-
-      // 配置校验结果（独立于命令处理链）
-      if ((cur_state == ST_WAIT_CFG_RESULT) && !cfg_error_valid_i) begin
+      end else if ((cur_state == ST_WAIT_CFG_RESULT) && !cfg_error_valid_i) begin
         device_state_r <= #UDLY LOCKSTEP_STATE_CONFIGURED;
-      end
-
-      // 帧发送完成后的状态收尾（依据 3a-1 决定的 post_frame_action_r）
-      if (frame_fire_w) begin
-        if (post_frame_action_r == POST_ERROR) begin
-          device_state_r <= #UDLY LOCKSTEP_STATE_ERROR;
-        end else if (post_frame_action_r == POST_COMPLETE) begin
-          // 结束帧发送后回到 CONFIGURED，允许不重置比特流直接重新 ARM。
-          device_state_r <= #UDLY LOCKSTEP_STATE_CONFIGURED;
-        end
       end
     end
   end
@@ -616,6 +648,9 @@ module lockstep_command_state_machine (
       if ((cur_state == ST_WAIT_CFG_RESULT) && !cfg_error_valid_i) begin
         last_device_status_flags_r <= #UDLY 32'd0;
       end
+      if (capture_domain_fault_w && device_active_w) begin
+        last_device_status_flags_r <= #UDLY LOCKSTEP_DEVICE_STATUS_FLAG_FATAL_INTERNAL_ERROR;
+      end
     end
   end
 
@@ -636,6 +671,8 @@ module lockstep_command_state_machine (
       end else if (cmd_fire_catchall_w) begin
         if (cmd_config_w && !config_supported_w) begin
           last_error_code_r <= #UDLY LOCKSTEP_ERR_UNSUPPORTED_MODE;
+        end else if (cmd_config_w) begin
+          last_error_code_r <= #UDLY LOCKSTEP_ERR_BAD_TRIGGER_CONFIG;
         end else if (cmd_event_config_w) begin
           last_error_code_r <= #UDLY LOCKSTEP_ERR_BAD_TRIGGER_CONFIG;
         end else begin
@@ -649,6 +686,11 @@ module lockstep_command_state_machine (
       end else if ((cur_state == ST_WAIT_CFG_RESULT) && !cfg_error_valid_i) begin
         last_error_code_r <= #UDLY LOCKSTEP_ERR_NONE;
       end
+      if (capture_domain_fault_w ||
+          (cmd_fire_w && cmd_arm_w && !capture_domain_ready_i &&
+           (device_state_r == LOCKSTEP_STATE_CONFIGURED))) begin
+        last_error_code_r <= #UDLY LOCKSTEP_ERR_INTERNAL;
+      end
     end
   end
 
@@ -661,7 +703,7 @@ module lockstep_command_state_machine (
       active_capture_id_r <= #UDLY 32'd0;
     end else begin
       // Arm 命令：递增采集 ID 并同步到活跃 ID
-      if (cmd_fire_w && cmd_arm_w && (device_state_r == LOCKSTEP_STATE_CONFIGURED)) begin
+      if (arm_fire_w) begin
         capture_id_r        <= #UDLY capture_id_r + 32'd1;
         active_capture_id_r <= #UDLY capture_id_r + 32'd1;
       end
@@ -691,7 +733,7 @@ module lockstep_command_state_machine (
       cfg_event_limit_o <= #UDLY 32'd0;
       cfg_event_watchdog_ticks_o <= #UDLY 32'd12000000;
       cfg_event_hard_timeout_ticks_o <= #UDLY 32'd240000000;
-    end else if (cmd_fire_w && cmd_config_w && !device_active_w && config_supported_w) begin
+    end else if (cmd_fire_w && cmd_config_w && !device_active_w && capture_config_valid_w) begin
       // 将上位机 payload 字段映射到采集核心配置接口
       cfg_sample_rate_hz_o    <= #UDLY cmd_payload0_i;                    // payload[0]：采样率 Hz
       cfg_sample_count_o      <= #UDLY cmd_payload1_i;                    // payload[1]：请求采样数
@@ -867,6 +909,12 @@ module lockstep_command_state_machine (
         frame_flags_o        <= #UDLY 32'd0;
         payload_word_count_o <= #UDLY 32'd16;
       end
+      if (capture_domain_fault_w) begin
+        frame_type_o         <= #UDLY LOCKSTEP_FRAME_ERROR_RSP;
+        frame_capture_id_o   <= #UDLY active_capture_id_r;
+        frame_flags_o        <= #UDLY LOCKSTEP_FRAME_FLAG_ERROR;
+        payload_word_count_o <= #UDLY 32'd8;
+      end
     end
   end
 
@@ -963,10 +1011,17 @@ module lockstep_command_state_machine (
         payload15_o <= #UDLY 32'd64;
       end else if (cmd_fire_catchall_w) begin
         // 无法识别的命令 → ERROR_RSP payload
-        if (cmd_config_w && !config_supported_w) begin
+        if (cmd_arm_w && !capture_domain_ready_i &&
+            (device_state_r == LOCKSTEP_STATE_CONFIGURED)) begin
+          payload0_o <= #UDLY LOCKSTEP_ERR_INTERNAL;
+          payload4_o <= #UDLY LOCKSTEP_DEVICE_STATUS_FLAG_FATAL_INTERNAL_ERROR;
+        end else if (cmd_config_w && !config_supported_w) begin
           // 不支持的采集模式
           payload0_o <= #UDLY LOCKSTEP_ERR_UNSUPPORTED_MODE;
           payload4_o <= #UDLY SUPPORTED_MODES;
+        end else if (cmd_config_w) begin
+          payload0_o <= #UDLY LOCKSTEP_ERR_BAD_TRIGGER_CONFIG;
+          payload4_o <= #UDLY cmd_payload_words_i;
         end else if (cmd_event_config_w) begin
           payload0_o <= #UDLY LOCKSTEP_ERR_BAD_TRIGGER_CONFIG;
           payload4_o <= #UDLY cmd_payload0_i;
@@ -1030,6 +1085,16 @@ module lockstep_command_state_machine (
         payload13_o <= #UDLY capture_tx_generator_state_i;
         payload14_o <= #UDLY capture_ft601_state_i;
         payload15_o <= #UDLY capture_tx_bytes_i;
+      end
+      if (capture_domain_fault_w) begin
+        payload0_o <= #UDLY LOCKSTEP_ERR_INTERNAL;
+        payload1_o <= #UDLY {16'd0, LOCKSTEP_FRAME_ARM_CAPTURE};
+        payload2_o <= #UDLY active_capture_id_r;
+        payload3_o <= #UDLY device_state_r;
+        payload4_o <= #UDLY LOCKSTEP_DEVICE_STATUS_FLAG_FATAL_INTERNAL_ERROR;
+        payload5_o <= #UDLY capture_window_state_i;
+        payload6_o <= #UDLY capture_debug_flags_i;
+        payload7_o <= #UDLY 32'd0;
       end
     end
   end

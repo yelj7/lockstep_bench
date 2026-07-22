@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_event_frame_source.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 支持主机释放后与连续窗口按整帧交错上传。
+* 版本: 1.2
+* 更新记录: 保留主结束原因，overflow 和 dropped 仅通过独立字段上报。
 * 描述: 发送 EVENT_META、逐条 EVENT_DATA 和 EVENT_END，并保持事件统计。
 **********************************************************/
 
@@ -107,7 +107,6 @@ module lockstep_event_frame_source (
   reg [31:0] emitted_count_r;
   wire frame_fire_w;
   wire [31:0] dropped_total_w;
-  wire [31:0] effective_end_reason_w;
 
   assign frame_fire_w = frame_valid_o && frame_ready_i;
   assign dropped_total_w = dropped_count_i[1*32-1:0*32] +
@@ -119,7 +118,6 @@ module lockstep_event_frame_source (
                            dropped_count_i[7*32-1:6*32] +
                            dropped_count_i[8*32-1:7*32] +
                            dropped_count_i[9*32-1:8*32];
-  assign effective_end_reason_w = (overflow_mask_i != 9'd0) ? 32'd3 : collection_end_reason_i;
 
   assign frame_valid_o = (cur_state == ST_SEND_META) ||
                          (cur_state == ST_SEND_EVENT) ||
@@ -134,7 +132,7 @@ module lockstep_event_frame_source (
   assign state_o = {29'd0, cur_state};
 
   assign payload0_o = (cur_state == ST_SEND_META) ? sample_rate_hz_i :
-                      (cur_state == ST_SEND_EVENT) ? event_record_i[31:0] : effective_end_reason_w;
+                      (cur_state == ST_SEND_EVENT) ? event_record_i[31:0] : collection_end_reason_i;
   assign payload1_o = (cur_state == ST_SEND_META) ? {23'd0, implemented_source_mask_i} :
                       (cur_state == ST_SEND_EVENT) ? event_record_i[63:32] : {23'd0, overflow_mask_i};
   assign payload2_o = (cur_state == ST_SEND_META) ? {23'd0, enabled_source_mask_i} :

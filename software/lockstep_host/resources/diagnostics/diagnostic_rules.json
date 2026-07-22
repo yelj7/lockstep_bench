@@ -1,12 +1,12 @@
 {
   "schema": "lockstep-diagnostic-rules-v1",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "rules": [
     {
       "code": "DAP_NOT_ENUMERATED",
       "severity": "error",
       "message": "未枚举到 CMSIS-DAP 调试器",
-      "suggestion": "自动重枚举两次后仍失败时，重新插拔 DAP USB 连接并再次检测。"
+      "suggestion": "自动重试两次后仍失败时，重新插拔 DAP USB 连接并再次检测。"
     },
     {
       "code": "DAP_OPEN_FAILED",
@@ -24,31 +24,67 @@
       "code": "JTAG_IDCODE_FAILED",
       "severity": "error",
       "message": "无法读取 JTAG IDCODE",
-      "suggestion": "先执行 TAP reset 并重新连接两次；仍无 IDCODE 时检查板卡时钟、复位和启动模式后重启板卡。"
+      "suggestion": "执行 TAP reset 并重新连接；仍失败时检查板卡时钟、复位和启动模式。"
     },
     {
       "code": "DMI_NO_RESPONSE",
       "severity": "error",
       "message": "RISC-V DMI 无响应",
-      "suggestion": "确认 DAP 与 JTAG IDCODE 正常，重新连接两次；仍无响应时重启板卡并检查调试模块复位。"
+      "suggestion": "确认 DAP 和 JTAG IDCODE 正常；重连仍失败时重启板卡并检查调试模块复位。"
     },
     {
       "code": "CAPTURE_TRIGGER_TIMEOUT",
       "severity": "error",
       "message": "采集等待触发超时",
-      "suggestion": "检查触发地址、valid/ready 条件和 mismatch mask；保留状态证据后可直接重新 CONFIG/ARM，无需重烧比特流。"
+      "suggestion": "检查触发地址、valid/ready 条件和 mismatch mask，保留状态证据后重新 CONFIG/ARM。"
     },
     {
       "code": "CAPTURE_STREAM_TIMEOUT",
       "severity": "error",
       "message": "采集数据流或 CAPTURE_END 超时",
-      "suggestion": "查看 capture_status.json 区分窗口、帧源、TX 和 FT601 阻塞阶段，并执行 STOP 恢复。"
+      "suggestion": "查看 capture_status.json，区分窗口、帧源、TX 和 FT601 阻塞阶段，并执行采集恢复。"
+    },
+    {
+      "code": "CAPTURE_STREAM_ERROR",
+      "severity": "error",
+      "message": "采集帧流校验失败",
+      "suggestion": "保留 raw_capture.dat 和 capture_status.json，按 CRC、序号、长度和 capture_id 定位首个错误帧。"
+    },
+    {
+      "code": "CAPTURE_END_HOST_TERMINATE",
+      "severity": "warning",
+      "message": "采集由主机终止",
+      "suggestion": "将本次结果标记为已终止，不得作为正常完成证据。"
+    },
+    {
+      "code": "CAPTURE_END_WATCHDOG",
+      "severity": "error",
+      "message": "事件流因静默 watchdog 结束",
+      "suggestion": "检查 program_done 来源和 quiet guard；未接入正常结束标志前不得报告通过。"
+    },
+    {
+      "code": "CAPTURE_END_OVERFLOW",
+      "severity": "blocking",
+      "message": "事件 FIFO 溢出或存在丢失",
+      "suggestion": "检查逐协议 dropped 计数、仲裁公平性和 FT601 反压，丢失非零时必须判失败。"
+    },
+    {
+      "code": "CAPTURE_END_HARD_TIMEOUT",
+      "severity": "error",
+      "message": "事件采集达到硬超时",
+      "suggestion": "检查程序是否结束、program_done 是否可达，并核对 hard timeout 配置。"
+    },
+    {
+      "code": "CAPTURE_END_FATAL_ERROR",
+      "severity": "blocking",
+      "message": "采集因致命错误结束",
+      "suggestion": "保留原始帧、设备状态和 last_error_code，修复根因后重新采集。"
     },
     {
       "code": "CAPTURE_RECOVERY_FAILED",
       "severity": "blocking",
-      "message": "采集 STOP 与 D3XX 重连后仍未恢复",
-      "suggestion": "保留 raw/status 证据并执行 PL 复位；不要自动重烧比特流。"
+      "message": "采集终止并重连后仍未恢复",
+      "suggestion": "保留 raw/status 证据并执行 PL 复位，不要自动重烧比特流。"
     }
   ]
 }

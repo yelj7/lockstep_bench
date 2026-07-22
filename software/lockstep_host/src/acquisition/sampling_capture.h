@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.h
-* 日期: 2026-07-14
-* 版本: v3.3
-* 更新记录: 增加完整配置序列化和分阶段协作式取消合同。
-* 描述: 声明帧编解码、采集会话、D3XX 传输及 VCD/事件产物导出。
+* 日期: 2026-07-22
+* 版本: v4.0
+* 更新记录: 增加 v4 统一时间窗口与 16-byte 稀疏变化记录合同。
+* 描述: 声明 v2/v3/v4 帧编解码、采集会话、D3XX 传输及采集记录。
 **********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_ACQUISITION_SAMPLING_CAPTURE_H_
@@ -22,10 +22,17 @@ namespace lockstep::acquisition {
 constexpr quint32 kCaptureFrameMagic = 0x3243534cU;
 constexpr quint16 kCaptureProtocolVersion = 2U;
 constexpr quint16 kCaptureProtocolVersionV3 = 3U;
+constexpr quint16 kCaptureProtocolVersionV4 = 4U;
 constexpr quint32 kCaptureFrameHeaderBytes = 32U;
 constexpr quint32 kCaptureSampleWordBits = 1024U;
 constexpr quint32 kCapturePhysicalChannels = 1024U;
 constexpr quint32 kCaptureSampleBytes = 128U;
+constexpr quint32 kCaptureSampleWordBitsV4 = 512U;
+constexpr quint32 kCapturePhysicalChannelsV4 = 512U;
+constexpr quint32 kCaptureSampleBytesV4 = 64U;
+constexpr quint32 kCaptureWindowSamplesV4 = 4096U;
+constexpr quint32 kCaptureEventRecordBytesV4 = 16U;
+constexpr quint32 kCaptureEventLayoutV4 = 1U;
 
 enum class CaptureFrameType : quint16 {
     HelloRequest = 0x0001,
@@ -155,12 +162,28 @@ struct CaptureSessionResult final {
 };
 
 struct SamplingCaptureRecord final {
+    struct SparseChangeRecord final {
+        quint32 absoluteIndexLow = 0;
+        quint64 absoluteIndex = 0;
+        quint32 globalSequence = 0;
+        quint32 stateAfter = 0;
+        quint32 changeMask = 0;
+        quint8 sourceMask = 0;
+    };
+
+    quint16 contractVersion = kCaptureProtocolVersion;
     quint32 captureId = 0;
     quint32 sampleRateHz = 0;
     quint32 requestedSampleCount = 0;
     quint32 actualSampleCount = 0;
+    quint32 physicalChannels = kCapturePhysicalChannels;
+    quint32 sampleWordBits = kCaptureSampleWordBits;
+    quint32 sampleBytes = kCaptureSampleBytes;
     quint32 windowStartIndex = 0;
     quint32 triggerIndex = 0xffffffffU;
+    quint64 windowOriginTicks = 0;
+    quint64 triggerTicks = 0;
+    quint64 windowEndExclusiveTicks = 0;
     quint32 stopReason = 0;
     quint32 deviceStatusFlags = 0;
     QList<QByteArray> samples;
@@ -176,8 +199,16 @@ struct SamplingCaptureRecord final {
         QByteArray payload;
     };
     QList<ProtocolEvent> protocolEvents;
+    QList<SparseChangeRecord> sparseChanges;
     bool hasEventStream = false;
     quint32 eventTimebaseHz = 0;
+    quint32 eventLayoutId = 0;
+    quint32 eventSpiMode = 0;
+    bool eventSpiModeValid = false;
+    quint32 eventWatchdogTicks = 0;
+    quint32 eventHardTimeoutTicks = 0;
+    quint32 eventInitialState = 0;
+    quint32 eventRetainedCount = 0;
     quint32 implementedSourceMask = 0;
     quint32 enabledSourceMask = 0;
     quint32 designGapMask = 0;
@@ -186,6 +217,11 @@ struct SamplingCaptureRecord final {
     quint32 eventAcceptedTotal = 0;
     quint32 eventEmittedTotal = 0;
     quint32 eventDroppedTotal = 0;
+    quint32 eventObservedTotal = 0;
+    quint32 eventRetainedTotal = 0;
+    quint32 eventUploadedTotal = 0;
+    quint32 eventHardwareDroppedTotal = 0;
+    QList<quint32> eventDroppedBySource;
 };
 
 class SamplingCaptureAssembler final {
@@ -206,9 +242,15 @@ private:
     bool hasEventMeta_ = false;
     bool hasEventEnd_ = false;
     bool eventSequenceGap_ = false;
+    int contractFamily_ = 0;
     quint32 expectedEnabledSourceMask_ = 0x19fU;
     quint32 nextEventSequence_[9] = {};
     bool hasEventSequence_[9] = {};
+    quint32 v4CurrentState_ = 0;
+    quint32 v4NextSequence_ = 0;
+    quint64 v4LastAbsoluteIndex_ = 0;
+    bool hasV4Sequence_ = false;
+    bool hasV4AbsoluteIndex_ = false;
 };
 
 struct D3xxDeviceInfo final {

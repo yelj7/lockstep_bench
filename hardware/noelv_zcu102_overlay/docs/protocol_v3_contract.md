@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: protocol_v3_contract.md
 * 日期: 2026-07-19
-* 版本: 1.2
-* 更新记录: 固化帧级公平仲裁、全局样本索引时间戳和 program_done 边界。
+* 版本: 1.3
+* 更新记录: 明确首次 overflow 立即停止接收并排空已有事件。
 * 描述: 定义协商方式、事件帧、记录格式、状态语义和结束条件。
 **********************************************************/
 
@@ -90,7 +90,7 @@
 
 ## 结束与丢失语义
 
-事件结束原因：0=`program_done`，1=`host_stop`，2=`watchdog`，3=`overflow`，4=`hard_timeout`，5=`fatal_error`。`EVENT_END` 保存结束原因、overflow mask、accepted/emitted/dropped 总数、9 个逐协议 dropped 计数以及 enabled/implemented mask。逐协议 emitted 由 `EVENT_DATA` 记录计数得到，accepted 必须等于 emitted+dropped。任一 dropped 非零都必须置 overflow，并使板级验收失败。仲裁必须保证持续有请求的已启用源在有限次授权内被服务。
+事件结束原因：0=`program_done`，1=`host_stop`，2=`watchdog`，3=`overflow`，4=`hard_timeout`，5=`fatal_error`。首次 overflow 必须立即停止接收新事件，并在已有分源 FIFO 和跨时钟 FIFO 排空后发送 `EVENT_END reason=overflow`。`EVENT_END` 保存结束原因、overflow mask、accepted/emitted/dropped 总数、9 个逐协议 dropped 计数以及 enabled/implemented mask。逐协议 emitted 由 `EVENT_DATA` 记录计数得到，accepted 必须等于 emitted+dropped。任一 dropped 非零都必须置 overflow，并使板级验收失败。仲裁必须保证持续有请求的已启用源在有限次授权内被服务。
 
 ## 首批实现边界
 

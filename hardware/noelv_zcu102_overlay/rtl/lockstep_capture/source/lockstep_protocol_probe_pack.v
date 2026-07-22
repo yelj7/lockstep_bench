@@ -417,5 +417,4 @@ module lockstep_protocol_probe_pack (
     probe_r[511:288] = 224'd0;
   end
 
-  wire [31:0] unused_sample_index_w = sample_abs_index_i;
 endmodule

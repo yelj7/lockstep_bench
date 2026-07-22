@@ -5,12 +5,46 @@
   "groups": {
     "ahb": {"expected_events": 256, "transaction_type": "ahb_transfer", "minimum_transactions": 256, "required_types": ["ahb_transfer"]},
     "uart": {"expected_events": 48, "transaction_type": "uart_frame", "minimum_transactions": 48, "required_types": ["uart_frame"]},
-    "spi": {"expected_events": 48, "transaction_type": "spi_transfer", "minimum_transactions": 48, "required_types": ["spi_transfer"]},
+    "spi": {
+      "expected_events": 48,
+      "transaction_type": "spi_transfer",
+      "minimum_transactions": 48,
+      "required_types": ["spi_transfer"],
+      "mode_counts": {"0": 12, "1": 12, "2": 12, "3": 12},
+      "tx_cycle": ["0x00", "0xFF", "0xA5", "0x5A", "0x80", "0x7F", "0x01", "0xFE"],
+      "rx_cycle": ["0x5A", "0x80", "0x7F", "0x01", "0xFE", "0x00", "0xFF", "0xA5"]
+    },
     "can": {"expected_events": 48, "transaction_type": "can_frame", "minimum_transactions": 48, "required_types": ["can_frame"]},
-    "i2c": {"expected_events": 210, "transaction_type": "i2c_transfer", "minimum_transactions": 48, "required_types": ["i2c_ack", "i2c_segment", "i2c_transfer"]},
+    "i2c": {
+      "expected_events": 228,
+      "transaction_type": "i2c_transfer",
+      "minimum_transactions": 48,
+      "required_types": ["i2c_ack", "i2c_segment", "i2c_transfer"],
+      "type_counts": {"i2c_ack": 168, "i2c_segment": 12, "i2c_transfer": 48},
+      "ack_count": 156,
+      "nack_count": 12,
+      "repeated_start_count": 12,
+      "repeated_start_write_address": "0x52",
+      "read_count": 12,
+      "write_count": 36,
+      "transfer_contracts": [
+        {"operation": "write", "address": "0x50", "count": 24},
+        {"operation": "write", "address": "0x52", "count": 12},
+        {"operation": "read", "address": "0x52", "count": 12}
+      ]
+    },
     "eth": {"expected_events": 48, "transaction_type": "eth_frame", "minimum_transactions": 48, "required_types": ["eth_frame"]},
     "usb": {"expected_events": 49, "transaction_type": "usb_packet", "minimum_transactions": 48, "required_types": ["usb_reset", "usb_packet"]},
-    "jtag": {"expected_events": 888, "transaction_type": "jtag_scan", "minimum_transactions": 48, "required_types": ["jtag_cycle", "jtag_scan"]}
+    "jtag": {
+      "expected_events": 888,
+      "transaction_type": "jtag_scan",
+      "minimum_transactions": 48,
+      "required_types": ["jtag_cycle", "jtag_scan"],
+      "scan_contracts": {
+        "ir": {"count": 24, "bit_count": 4, "tdi_bits": "1010", "tdo_bits": "0101"},
+        "dr": {"count": 24, "bit_count": 8, "tdi_bits": "10100101", "tdo_bits": "01011010"}
+      }
+    }
   },
   "required_semantics": [
     "AHB READ",

@@ -110,14 +110,6 @@ QList<ResourceItem> itemListFromJson(const QJsonArray& array)
     return items;
 }
 
-bool resourceSupportsMode(const ResourceItem& item, const QString& mode)
-{
-    if (item.mode == mode) {
-        return true;
-    }
-    return item.modes.contains(mode, Qt::CaseInsensitive);
-}
-
 quint64 parseHexOrDecimal(const QString& text)
 {
     const QString trimmed = text.trimmed();
@@ -130,11 +122,6 @@ quint64 parseHexOrDecimal(const QString& text)
     }
 
     return ok ? value : 0U;
-}
-
-QString addressText(const quint64 value)
-{
-    return QStringLiteral("0x%1").arg(value, 0, 16);
 }
 
 bool isPortableResourcePath(const QString& value)
@@ -291,20 +278,6 @@ bool profileFromItem(
     return true;
 }
 
-BoardProfileSummary summaryFromProfile(const BoardProfile& profile)
-{
-    BoardProfileSummary summary;
-    summary.profileId = profile.profileId;
-    summary.profileName = profile.profileName;
-    summary.version = profile.version;
-    summary.sha256 = profile.sha256;
-    summary.addressSummary = QStringLiteral("RAM %1, entry %2")
-        .arg(addressText(profile.ramBaseAddress), addressText(profile.defaultRunAddress));
-    summary.runControlSummary = QStringLiteral("reset=%1, runAfterDownload=%2")
-        .arg(profile.resetStrategy, profile.runAfterDownload ? QStringLiteral("true") : QStringLiteral("false"));
-    return summary;
-}
-
 }  // namespace
 
 QString toString(const ResourceStatus status)
@@ -360,18 +333,6 @@ bool parseResourceStatus(const QString& text, ResourceStatus* const status)
     }
 
     return true;
-}
-
-QJsonObject toJson(const BoardProfileSummary& summary)
-{
-    QJsonObject object;
-    object.insert(QStringLiteral("profile_id"), summary.profileId);
-    object.insert(QStringLiteral("profile_name"), summary.profileName);
-    object.insert(QStringLiteral("version"), summary.version);
-    object.insert(QStringLiteral("sha256"), summary.sha256);
-    object.insert(QStringLiteral("address_summary"), summary.addressSummary);
-    object.insert(QStringLiteral("run_control_summary"), summary.runControlSummary);
-    return object;
 }
 
 QJsonObject toJson(const ResourceSnapshot& snapshot)
@@ -500,23 +461,6 @@ ResourceSnapshot ResourceManager::getModeResourceSnapshot(const QString& mode) c
     return snapshot;
 }
 
-QList<BoardProfileSummary> ResourceManager::listBoardProfiles(const QString& mode) const
-{
-    QList<BoardProfileSummary> summaries;
-    const QString normalized = mode.trimmed().toLower();
-    for (const ResourceItem& item : boardProfileItems_) {
-        if ((item.status == ResourceStatus::Enabled || item.status == ResourceStatus::Warning) &&
-            resourceSupportsMode(item, normalized)) {
-            BoardProfile profile;
-            QString error;
-            if (profileFromItem(resourceRootPath_, item, &profile, &error)) {
-                summaries.append(summaryFromProfile(profile));
-            }
-        }
-    }
-    return summaries;
-}
-
 bool ResourceManager::resolveBoardProfile(
     const QString& profileId,
     BoardProfile* const profile,
@@ -536,55 +480,9 @@ bool ResourceManager::resolveBoardProfile(
     return profileFromItem(resourceRootPath_, item, profile, errorMessage);
 }
 
-bool ResourceManager::resolveReportTemplate(
-    const QString& templateId,
-    ResourceItem* const item,
-    QString* const errorMessage) const
-{
-    if (!findItem(reportTemplateItems_, templateId, item)) {
-        setError(errorMessage, QStringLiteral("报告模板未注册: %1").arg(templateId));
-        return false;
-    }
-    return true;
-}
-
-bool ResourceManager::resolveProtocolRule(
-    const QString& ruleId,
-    ResourceItem* const item,
-    QString* const errorMessage) const
-{
-    if (!findItem(protocolRuleItems_, ruleId, item)) {
-        setError(errorMessage, QStringLiteral("协议规则未注册: %1").arg(ruleId));
-        return false;
-    }
-    return true;
-}
-
-bool ResourceManager::resolveLockstepTraceProfile(
-    const QString& profileId,
-    ResourceItem* const item,
-    QString* const errorMessage) const
-{
-    if (!findItem(lockstepTraceProfileItems_, profileId, item)) {
-        setError(errorMessage, QStringLiteral("lockstep trace profile 未注册: %1").arg(profileId));
-        return false;
-    }
-    return true;
-}
-
 ManifestDefaults ResourceManager::defaults() const
 {
     return defaults_;
-}
-
-QString ResourceManager::resourcePackId() const
-{
-    return resourcePackId_;
-}
-
-QString ResourceManager::resourcePackVersion() const
-{
-    return resourcePackVersion_;
 }
 
 }  // namespace lockstep::resources

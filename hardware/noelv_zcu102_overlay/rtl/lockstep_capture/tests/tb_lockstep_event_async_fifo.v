@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: tb_lockstep_event_async_fifo.v
 * 日期: 2026-07-19
-* 版本: 1.1
-* 更新记录: 增加深度 8 满容量和第 9 条反压回归。
-* 描述: 验证满容量、跨时钟事件顺序、数据稳定性和无误丢失。
+* 版本: 1.2
+* 更新记录: 增加读域显式 empty 握手回归。
+* 描述: 验证满容量、跨时钟事件顺序、数据稳定性、无误丢失和排空状态。
 **********************************************************/
 
 `timescale 1ns/1ps
@@ -19,6 +19,7 @@ module tb_lockstep_event_async_fifo;
   wire write_ready;
   wire write_drop;
   wire read_valid;
+  wire read_empty;
   wire [511:0] read_data;
   integer sent;
   integer received;
@@ -40,6 +41,7 @@ module tb_lockstep_event_async_fifo;
     .read_clk      (read_clk),
     .read_rst_n    (read_rst_n),
     .read_valid_o  (read_valid),
+    .read_empty_o  (read_empty),
     .read_ready_i  (read_ready),
     .read_data_o   (read_data)
   );
@@ -117,6 +119,8 @@ module tb_lockstep_event_async_fifo;
     #3;
     write_rst_n = 1'b1;
     read_rst_n = 1'b1;
+    repeat (3) @(posedge read_clk);
+    if (!read_empty) fail("双域复位后读域未报告 empty");
     while (sent < 40) begin
       @(negedge write_clk);
       if (write_ready) begin
@@ -137,6 +141,7 @@ module tb_lockstep_event_async_fifo;
     end
     repeat (4) @(posedge read_clk);
     if (read_valid) fail("异步 FIFO 排空后 valid 未清除");
+    if (!read_empty) fail("异步 FIFO 排空后未报告 empty");
     $display("PASS tb_lockstep_event_async_fifo");
     $finish;
   end

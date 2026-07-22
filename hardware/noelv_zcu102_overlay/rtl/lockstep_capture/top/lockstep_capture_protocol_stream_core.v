@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: lockstep_capture_protocol_stream_core.v
 * 日期: 2026-07-17
-* 版本: 1.5
-* 更新记录: JTAG FIFO 按板测高水位扩到 4096 条，其余事件源至少 2048 条，共享待上传 FIFO 为 4096 条。
+* 版本: 2.1
+* 更新记录: 复用采样域就绪同步链作为事件 FIFO 读域复位。
 * 描述: 复用命令解析、帧仲裁和发送器，交错上传连续窗口与稀疏事件。
 **********************************************************/
 
@@ -56,8 +56,6 @@ module lockstep_capture_protocol_stream_core (
   parameter integer SAMPLE_ADDR_WIDTH     = 12;
   parameter integer LANE_INDEX_BITS       = 4;
   parameter integer AHB_TRIGGER_MODE      = 1;
-  parameter [31:0] EVENT_WATCHDOG_TICKS   = 32'd12000000;
-  parameter [31:0] EVENT_HARD_TIMEOUT_TICKS = 32'd240000000;
 
   input                             clk;
   input                             rst_n;
@@ -204,44 +202,69 @@ module lockstep_capture_protocol_stream_core (
   wire [PROTOCOL_COUNT-1:0] protocol_enable_w;
 
   wire [8:0] event_enable_w;
-  reg [8:0] event_enable_sample_d1_r;
-  reg [8:0] event_enable_sample_d2_r;
-  reg [31:0] capture_id_sample_d1_r;
-  reg [31:0] capture_id_sample_d2_r;
-  reg stop_sample_d1_r;
-  reg stop_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg [8:0] event_enable_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg [8:0] event_enable_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] capture_id_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] capture_id_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] cfg_event_watchdog_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] cfg_event_watchdog_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] cfg_event_hard_timeout_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg [31:0] cfg_event_hard_timeout_sample_d2_r;
+  reg stop_toggle_clk_r;
+  (* ASYNC_REG = "TRUE" *) reg stop_toggle_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg stop_toggle_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg stop_toggle_sample_d3_r;
+  reg [31:0] cfg_event_watchdog_active_sample_r;
+  reg [31:0] cfg_event_hard_timeout_active_sample_r;
+  (* ASYNC_REG = "TRUE" *) reg capture_domain_ready_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg capture_domain_ready_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_write_reset_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_write_reset_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_read_ready_sample_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_read_ready_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_write_ready_read_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg event_fifo_write_ready_read_d2_r;
+  wire event_fifo_write_rst_n_w;
+  wire event_fifo_read_rst_n_w;
+  wire event_fifo_domains_ready_sample_w;
+  wire event_fifo_domains_ready_read_w;
+  wire stop_sample_pulse_w;
   wire event_capture_active_sample_w;
+  wire event_draining_sample_w;
   wire event_controller_done_sample_w;
-  wire [63:0] event_timestamp_sample_w;
   wire [63:0] event_global_timestamp_sample_w;
   wire [31:0] event_end_reason_sample_w;
   wire [8:0] event_source_push_w;
   wire [9*512-1:0] event_source_record_w;
-  wire [8:0] event_source_accept_w;
   wire [8:0] event_source_drop_w;
+  wire event_protocol_busy_sample_w;
   wire event_arb_valid_w;
   wire event_arb_ready_w;
+  wire event_fifo_write_ready_w;
   wire [511:0] event_arb_record_w;
   wire [3:0] event_arb_source_w;
   wire [8:0] event_overflow_sample_w;
-  wire [9*32-1:0] event_accepted_sample_w;
-  wire [9*32-1:0] event_emitted_sample_w;
   wire [9*32-1:0] event_dropped_sample_w;
   reg event_controller_ended_sample_r;
   reg event_done_toggle_sample_r;
   reg [31:0] event_end_reason_stable_sample_r;
   reg [8:0] event_overflow_stable_sample_r;
   reg [9*32-1:0] event_dropped_stable_sample_r;
-  reg event_done_toggle_read_d1_r;
-  reg event_done_toggle_read_d2_r;
-  reg event_done_toggle_read_d3_r;
-  reg [2:0] event_done_settle_read_r;
+  (* ASYNC_REG = "TRUE" *) reg event_done_toggle_read_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg event_done_toggle_read_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg event_done_toggle_read_d3_r;
+  (* ASYNC_REG = "TRUE" *) reg event_draining_read_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg event_draining_read_d2_r;
+  reg event_end_pending_read_r;
   reg event_collection_done_read_r;
   reg [31:0] event_end_reason_read_r;
   reg [8:0] event_overflow_read_r;
   reg [9*32-1:0] event_dropped_read_r;
   wire event_done_pulse_read_w;
+  wire event_pipeline_draining_read_w;
   wire event_async_valid_w;
+  wire event_fifo_read_valid_w;
+  wire event_async_empty_w;
   wire event_async_ready_w;
   wire [511:0] event_async_record_w;
   wire event_async_drop_w;
@@ -381,10 +404,84 @@ module lockstep_capture_protocol_stream_core (
                                 (device_state_w == LOCKSTEP_STATE_CAPTURING_POSTTRIGGER) ||
                                 (device_state_w == LOCKSTEP_STATE_DRAINING);
   assign event_done_pulse_read_w = event_done_toggle_read_d2_r ^ event_done_toggle_read_d3_r;
+  assign event_fifo_write_rst_n_w = event_fifo_write_reset_d2_r;
+  assign event_fifo_read_rst_n_w = capture_domain_ready_d2_r;
+  assign event_fifo_domains_ready_sample_w = event_fifo_write_rst_n_w &&
+                                             event_fifo_read_ready_sample_d2_r;
+  assign event_fifo_domains_ready_read_w = event_fifo_read_rst_n_w &&
+                                           event_fifo_write_ready_read_d2_r;
+  assign event_arb_ready_w = event_fifo_write_ready_w && event_fifo_domains_ready_sample_w;
+  assign event_async_valid_w = event_fifo_read_valid_w && event_fifo_domains_ready_read_w;
+  assign stop_sample_pulse_w = stop_toggle_sample_d2_r ^ stop_toggle_sample_d3_r;
+  assign event_pipeline_draining_read_w =
+         (event_draining_read_d2_r || event_end_pending_read_r) &&
+         !event_collection_done_read_r;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      stop_toggle_clk_r <= #UDLY 1'b0;
+    end else if (stop_w) begin
+      stop_toggle_clk_r <= #UDLY !stop_toggle_clk_r;
+    end
+  end
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      capture_domain_ready_d1_r <= #UDLY 1'b0;
+      capture_domain_ready_d2_r <= #UDLY 1'b0;
+    end else begin
+      capture_domain_ready_d1_r <= #UDLY sample_rst_n;
+      capture_domain_ready_d2_r <= #UDLY capture_domain_ready_d1_r;
+    end
+  end
+
+  // 两侧复位均同步释放后才允许异步 FIFO 传输。
+  always @(posedge sample_clk or negedge sample_rst_n) begin
+    if (!sample_rst_n) begin
+      event_fifo_read_ready_sample_d1_r <= #UDLY 1'b0;
+      event_fifo_read_ready_sample_d2_r <= #UDLY 1'b0;
+    end else begin
+      event_fifo_read_ready_sample_d1_r <= #UDLY event_fifo_read_rst_n_w;
+      event_fifo_read_ready_sample_d2_r <= #UDLY event_fifo_read_ready_sample_d1_r;
+    end
+  end
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      event_fifo_write_ready_read_d1_r <= #UDLY 1'b0;
+      event_fifo_write_ready_read_d2_r <= #UDLY 1'b0;
+    end else begin
+      event_fifo_write_ready_read_d1_r <= #UDLY event_fifo_write_rst_n_w;
+      event_fifo_write_ready_read_d2_r <= #UDLY event_fifo_write_ready_read_d1_r;
+    end
+  end
+
+  always @(posedge sample_clk or negedge sample_rst_n) begin
+    if (!sample_rst_n) begin
+      event_fifo_write_reset_d1_r <= #UDLY 1'b0;
+      event_fifo_write_reset_d2_r <= #UDLY 1'b0;
+    end else begin
+      event_fifo_write_reset_d1_r <= #UDLY rst_n;
+      event_fifo_write_reset_d2_r <= #UDLY event_fifo_write_reset_d1_r;
+    end
+  end
+
+  // 事件 DRAINING 状态同步到命令/状态响应时钟域。
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      event_draining_read_d1_r <= #UDLY 1'b0;
+      event_draining_read_d2_r <= #UDLY 1'b0;
+    end else begin
+      event_draining_read_d1_r <= #UDLY event_draining_sample_w;
+      event_draining_read_d2_r <= #UDLY event_draining_read_d1_r;
+    end
+  end
   lockstep_global_timestamp #(.UDLY(UDLY)) u_event_global_timestamp (
-    .clk         (sample_clk),
-    .rst_n       (sample_rst_n),
-    .timestamp_o (event_global_timestamp_sample_w)
+    .clk                (sample_clk),
+    .rst_n              (sample_rst_n),
+    .sample_valid_i     (wide_sample_valid_i),
+    .sample_abs_index_i (wide_sample_abs_index_i),
+    .timestamp_o        (event_global_timestamp_sample_w)
   );
 
   // 每轮 ARM 清除释放状态；主机确认 ARM ACK 后显式允许事件帧上传。
@@ -446,15 +543,31 @@ module lockstep_capture_protocol_stream_core (
       event_enable_sample_d2_r <= #UDLY 9'd0;
       capture_id_sample_d1_r <= #UDLY 32'd0;
       capture_id_sample_d2_r <= #UDLY 32'd0;
-      stop_sample_d1_r <= #UDLY 1'b0;
-      stop_sample_d2_r <= #UDLY 1'b0;
+      cfg_event_watchdog_sample_d1_r <= #UDLY 32'd0;
+      cfg_event_watchdog_sample_d2_r <= #UDLY 32'd0;
+      cfg_event_hard_timeout_sample_d1_r <= #UDLY 32'd0;
+      cfg_event_hard_timeout_sample_d2_r <= #UDLY 32'd0;
+      stop_toggle_sample_d1_r <= #UDLY 1'b0;
+      stop_toggle_sample_d2_r <= #UDLY 1'b0;
+      stop_toggle_sample_d3_r <= #UDLY 1'b0;
+      cfg_event_watchdog_active_sample_r <= #UDLY 32'd0;
+      cfg_event_hard_timeout_active_sample_r <= #UDLY 32'd0;
     end else begin
       event_enable_sample_d1_r <= #UDLY event_enable_w;
       event_enable_sample_d2_r <= #UDLY event_enable_sample_d1_r;
       capture_id_sample_d1_r <= #UDLY capture_id_w;
       capture_id_sample_d2_r <= #UDLY capture_id_sample_d1_r;
-      stop_sample_d1_r <= #UDLY stop_w;
-      stop_sample_d2_r <= #UDLY stop_sample_d1_r;
+      cfg_event_watchdog_sample_d1_r <= #UDLY cfg_event_watchdog_ticks_w;
+      cfg_event_watchdog_sample_d2_r <= #UDLY cfg_event_watchdog_sample_d1_r;
+      cfg_event_hard_timeout_sample_d1_r <= #UDLY cfg_event_hard_timeout_ticks_w;
+      cfg_event_hard_timeout_sample_d2_r <= #UDLY cfg_event_hard_timeout_sample_d1_r;
+      stop_toggle_sample_d1_r <= #UDLY stop_toggle_clk_r;
+      stop_toggle_sample_d2_r <= #UDLY stop_toggle_sample_d1_r;
+      stop_toggle_sample_d3_r <= #UDLY stop_toggle_sample_d2_r;
+      if (wide_trigger_pulse_sample_w) begin
+        cfg_event_watchdog_active_sample_r <= #UDLY cfg_event_watchdog_sample_d2_r;
+        cfg_event_hard_timeout_active_sample_r <= #UDLY cfg_event_hard_timeout_sample_d2_r;
+      end
     end
   end
 
@@ -462,14 +575,16 @@ module lockstep_capture_protocol_stream_core (
     .clk                  (sample_clk),
     .rst_n                (sample_rst_n),
     .capture_start_i      (wide_trigger_pulse_sample_w),
-    .stop_i               (stop_sample_d2_r),
+    .stop_i               (stop_sample_pulse_w),
     .program_done_i       (1'b0),
+    .overflow_i           ((|event_source_drop_w) || (|event_overflow_sample_w)),
     .activity_i           (|event_source_push_w),
-    .watchdog_ticks_i     (cfg_event_watchdog_ticks_w),
-    .hard_timeout_ticks_i (cfg_event_hard_timeout_ticks_w),
+    .protocol_busy_i      (event_protocol_busy_sample_w),
+    .watchdog_ticks_i     (cfg_event_watchdog_active_sample_r),
+    .hard_timeout_ticks_i (cfg_event_hard_timeout_active_sample_r),
     .capture_active_o     (event_capture_active_sample_w),
+    .draining_o           (event_draining_sample_w),
     .capture_done_pulse_o (event_controller_done_sample_w),
-    .timestamp_o          (event_timestamp_sample_w),
     .end_reason_o         (event_end_reason_sample_w)
   );
 
@@ -484,7 +599,8 @@ module lockstep_capture_protocol_stream_core (
     .sample_valid_i       (wide_sample_valid_i),
     .sample_i             (wide_sample_i),
     .source_push_o        (event_source_push_w),
-    .source_record_o      (event_source_record_w)
+    .source_record_o      (event_source_record_w),
+    .protocol_busy_o      (event_protocol_busy_sample_w)
   );
 
   lockstep_event_capture_core #(
@@ -513,15 +629,15 @@ module lockstep_capture_protocol_stream_core (
     .source_enable_mask_i (event_enable_sample_d2_r),
     .source_push_i        (event_source_push_w),
     .source_record_i      (event_source_record_w),
-    .source_accept_o      (event_source_accept_w),
+    .source_accept_o      (),
     .source_drop_o        (event_source_drop_w),
     .event_valid_o        (event_arb_valid_w),
     .event_ready_i        (event_arb_ready_w),
     .event_record_o       (event_arb_record_w),
     .event_source_o       (event_arb_source_w),
     .overflow_mask_o      (event_overflow_sample_w),
-    .accepted_count_o     (event_accepted_sample_w),
-    .emitted_count_o      (event_emitted_sample_w),
+    .accepted_count_o     (),
+    .emitted_count_o      (),
     .dropped_count_o      (event_dropped_sample_w)
   );
 
@@ -530,15 +646,16 @@ module lockstep_capture_protocol_stream_core (
     .DEPTH      (4096)
   ) u_event_async_fifo (
     .write_clk     (sample_clk),
-    .write_rst_n   (sample_rst_n),
-    .write_valid_i (event_arb_valid_w),
-    .write_ready_o (event_arb_ready_w),
+    .write_rst_n   (event_fifo_write_rst_n_w),
+    .write_valid_i (event_arb_valid_w && event_fifo_domains_ready_sample_w),
+    .write_ready_o (event_fifo_write_ready_w),
     .write_data_i  (event_arb_record_w),
     .write_drop_o  (event_async_drop_w),
     .read_clk      (clk),
-    .read_rst_n    (rst_n),
-    .read_valid_o  (event_async_valid_w),
-    .read_ready_i  (event_async_ready_w),
+    .read_rst_n    (event_fifo_read_rst_n_w),
+    .read_valid_o  (event_fifo_read_valid_w),
+    .read_empty_o  (event_async_empty_w),
+    .read_ready_i  (event_async_ready_w && event_fifo_domains_ready_read_w),
     .read_data_o   (event_async_record_w)
   );
 
@@ -566,13 +683,13 @@ module lockstep_capture_protocol_stream_core (
     end
   end
 
-  // 完成 toggle 同步后再等待三个 FT601 周期，覆盖异步 FIFO 写指针同步延迟。
+  // 源域结束到达后，等待异步 FIFO 在读域明确排空再发布统计快照。
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       event_done_toggle_read_d1_r <= #UDLY 1'b0;
       event_done_toggle_read_d2_r <= #UDLY 1'b0;
       event_done_toggle_read_d3_r <= #UDLY 1'b0;
-      event_done_settle_read_r <= #UDLY 3'd0;
+      event_end_pending_read_r <= #UDLY 1'b0;
       event_collection_done_read_r <= #UDLY 1'b0;
       event_end_reason_read_r <= #UDLY 32'd0;
       event_overflow_read_r <= #UDLY 9'd0;
@@ -582,18 +699,16 @@ module lockstep_capture_protocol_stream_core (
       event_done_toggle_read_d2_r <= #UDLY event_done_toggle_read_d1_r;
       event_done_toggle_read_d3_r <= #UDLY event_done_toggle_read_d2_r;
       if (wide_arm_accepted_w) begin
-        event_done_settle_read_r <= #UDLY 3'd0;
+        event_end_pending_read_r <= #UDLY 1'b0;
         event_collection_done_read_r <= #UDLY 1'b0;
       end else if (event_done_pulse_read_w) begin
-        event_done_settle_read_r <= #UDLY 3'b001;
-      end else if (event_done_settle_read_r != 3'd0) begin
-        event_done_settle_read_r <= #UDLY {event_done_settle_read_r[1:0], 1'b0};
-        if (event_done_settle_read_r[2]) begin
-          event_collection_done_read_r <= #UDLY 1'b1;
-          event_end_reason_read_r <= #UDLY event_end_reason_stable_sample_r;
-          event_overflow_read_r <= #UDLY event_overflow_stable_sample_r;
-          event_dropped_read_r <= #UDLY event_dropped_stable_sample_r;
-        end
+        event_end_pending_read_r <= #UDLY 1'b1;
+      end else if (event_end_pending_read_r && event_async_empty_w) begin
+        event_end_pending_read_r <= #UDLY 1'b0;
+        event_collection_done_read_r <= #UDLY 1'b1;
+        event_end_reason_read_r <= #UDLY event_end_reason_stable_sample_r;
+        event_overflow_read_r <= #UDLY event_overflow_stable_sample_r;
+        event_dropped_read_r <= #UDLY event_dropped_stable_sample_r;
       end
     end
   end
@@ -692,8 +807,11 @@ module lockstep_capture_protocol_stream_core (
     .cfg_error_detail1_i          (cfg_error_detail1_w),
     .arm_o                        (arm_w),
     .arm_accepted_i               (wide_arm_accepted_w),
+    .capture_domain_ready_i       (capture_domain_ready_d2_r && event_fifo_domains_ready_read_w),
     .event_stream_start_o         (event_stream_start_w),
     .stop_o                       (stop_w),
+    .capture_trigger_seen_i       (wide_trigger_seen_w),
+    .capture_draining_i           (event_pipeline_draining_read_w),
     .capture_frame_done_i         (cap_seq_done_w),
     .capture_samples_captured_i   (wide_meta_valid_w ? wide_meta_window_sample_count_w : wide_samples_seen_w),
     .capture_samples_uploaded_i   (cap_samples_uploaded_w),

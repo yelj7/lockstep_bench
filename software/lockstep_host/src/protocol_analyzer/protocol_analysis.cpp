@@ -23,6 +23,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QStringList>
 
 namespace lockstep::protocol_analyzer {
@@ -36,6 +37,42 @@ constexpr int kMismatchHighBit = 506;
 constexpr char kWaveformDirName[] = "waveform";
 constexpr char kTraceVcdName[] = "capture.vcd";
 constexpr char kTraceSchemaName[] = "capture_schema.json";
+
+bool alignWindowStartToTimestamp(const quint64 timestamp, const quint32 windowStart,
+                                 quint64* const absoluteWindowStart)
+{
+    if (absoluteWindowStart == nullptr) return false;
+    constexpr quint64 kIndexEpoch = quint64{1} << 32U;
+    quint64 alignedStart = (timestamp & ~(kIndexEpoch - 1U)) | windowStart;
+    if (alignedStart > timestamp) {
+        if (alignedStart < kIndexEpoch) return false;
+        alignedStart -= kIndexEpoch;
+    }
+    *absoluteWindowStart = alignedStart;
+    return true;
+}
+
+bool relativeTicksToVcdTime(const quint64 relativeTicks, const quint64 timebaseHz,
+                            const qint64 vcdTimeUnitPs, qint64* const result)
+{
+    constexpr quint64 kMaxAlignedDistance = 0x7fffffffULL;
+    if (relativeTicks > kMaxAlignedDistance || timebaseHz == 0U || vcdTimeUnitPs <= 0) return false;
+    const long double converted =
+        (static_cast<long double>(relativeTicks) * 1.0e12L) /
+        (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs));
+    if (converted + 0.5L > static_cast<long double>(std::numeric_limits<qint64>::max())) return false;
+    *result = static_cast<qint64>(converted + 0.5L);
+    return true;
+}
+
+bool eventTimestampToVcdTime(const quint64 timestamp, const quint32 windowStart,
+                             const quint64 timebaseHz, const qint64 vcdTimeUnitPs,
+                             qint64* const result)
+{
+    quint64 absoluteWindowStart = 0U;
+    return alignWindowStartToTimestamp(timestamp, windowStart, &absoluteWindowStart) &&
+        relativeTicksToVcdTime(timestamp - absoluteWindowStart, timebaseHz, vcdTimeUnitPs, result);
+}
 
 struct VcdSample final {
     qint64 time = 0;
@@ -81,6 +118,17 @@ struct ProtocolEvent final {
     qint64 endTime = 0;
     QJsonObject fields;
 };
+
+bool isCompleteReconstructedSparseTransaction(const ProtocolEvent& event)
+{
+    const QString source = event.fields.value(QStringLiteral("source")).toString();
+    if (!source.startsWith(QStringLiteral("sparse_")) ||
+        !event.fields.value(QStringLiteral("complete")).toBool()) return false;
+    return event.type == QStringLiteral("uart_frame") ||
+        event.type == QStringLiteral("spi_transfer") ||
+        event.type == QStringLiteral("i2c_transfer") ||
+        event.type == QStringLiteral("jtag_scan");
+}
 
 struct MismatchState final {
     int bit = 0;
@@ -784,8 +832,9 @@ QList<MismatchEvent> extractMismatchEvents(const QList<VcdSample>& samples)
 }
 
 QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
-                                          const quint32 sampleRateHz,
-                                          const qint64 timeUnitPs)
+                                           const quint32 sampleRateHz,
+                                           const qint64 timeUnitPs,
+                                           const bool spiModeHintAvailable)
 {
     QList<ProtocolEvent> events;
     if (samples.isEmpty()) {
@@ -824,6 +873,7 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
     quint64 i2cByte = 0U;
     QList<quint64> i2cBytes;
     QList<bool> i2cAcks;
+    QList<int> i2cAckEventIndices;
     bool ethOpen = false;
     VcdSample ethStart;
     bool usbOpen = false;
@@ -845,6 +895,7 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
     const bool ethReal = !wide || sampleBit(samples.first(), 773);
     const bool usbReal = !wide || sampleBit(samples.first(), 775);
     const bool jtagReal = !wide || sampleBit(samples.first(), 776);
+    const bool spiModeAvailable = spiModeHintAvailable;
     const bool uartHintDataAvailable = std::any_of(samples.cbegin(), samples.cend(), [p](const VcdSample& value) {
         return sampleValue(value, p(118, 520), 8) != 0U || sampleValue(value, p(126, 528), 8) != 0U;
     });
@@ -927,7 +978,21 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
                 if (!sampleBit(previous, lineBit) || sampleBit(sample, lineBit) ||
                     nextAllowed == nullptr || sample.time < *nextAllowed) return;
                 const qint64 stopIndex = sampleIndex + uartBitSamples * 10;
-                if (stopIndex >= samples.size()) return;
+                if (stopIndex >= samples.size()) {
+                    QJsonObject fields;
+                    fields.insert(QStringLiteral("direction"), direction);
+                    fields.insert(QStringLiteral("baud"), 115200);
+                    fields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
+                    fields.insert(QStringLiteral("complete"), false);
+                    fields.insert(QStringLiteral("truncated"), true);
+                    fields.insert(QStringLiteral("frame_error_available"), false);
+                    fields.insert(QStringLiteral("source"), QStringLiteral("raw_samples"));
+                    append(QStringLiteral("uart"), QStringLiteral("uart_frame"), sample.time,
+                           samples.last().time, QStringLiteral("UART %1 TRUNCATED").arg(direction),
+                           QStringLiteral("warning"), fields);
+                    *nextAllowed = samples.last().time + 1;
+                    return;
+                }
                 quint64 data = 0U;
                 for (int bit = 0; bit < 8; ++bit) {
                     const qint64 index = sampleIndex + uartBitSamples + uartBitSamples / 2 + bit * uartBitSamples;
@@ -944,6 +1009,10 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
                 rawFields.insert(QStringLiteral("baud"), 115200);
                 rawFields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
                 rawFields.insert(QStringLiteral("frame_error"), !stopHigh);
+                rawFields.insert(QStringLiteral("break"), data == 0U && !stopHigh);
+                rawFields.insert(QStringLiteral("complete"), true);
+                rawFields.insert(QStringLiteral("truncated"), false);
+                rawFields.insert(QStringLiteral("source"), QStringLiteral("raw_samples"));
                 append(QStringLiteral("uart"), QStringLiteral("uart_frame"), sample.time,
                        samples.at(static_cast<int>(stopIndex)).time,
                        QStringLiteral("UART %1 %2").arg(direction, hexValue(data, 8)),
@@ -970,7 +1039,14 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
         }
         const bool spiClockRising = sampleBit(sample, p(144, 544)) &&
             !sampleBit(previous, p(144, 544));
-        if (spiOpen && spiKnown && !spiCs && spiClockRising) {
+        const bool spiClockFalling = !sampleBit(sample, p(144, 544)) &&
+            sampleBit(previous, p(144, 544));
+        const quint64 activeSpiMode = spiModeAvailable
+            ? sampleValue(spiStart, p(150, 550), 2) : 0U;
+        const bool sampleOnRising = !spiModeAvailable ||
+            ((activeSpiMode & 1U) == ((activeSpiMode >> 1U) & 1U));
+        const bool spiSampleEdge = sampleOnRising ? spiClockRising : spiClockFalling;
+        if (spiOpen && spiKnown && !spiCs && spiSampleEdge) {
             spiTx = (spiTx << 1U) | (sampleBit(sample, p(145, 545)) ? 1U : 0U);
             spiRx = (spiRx << 1U) | (sampleBit(sample, p(146, 546)) ? 1U : 0U);
             ++spiBitCount;
@@ -980,12 +1056,19 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
                          sample.time > spiStart.time))) {
             const quint64 tx = spiBitCount > 0 ? spiTx : sampleValue(sample, p(152, 552), 8);
             const quint64 rx = spiBitCount > 0 ? spiRx : sampleValue(sample, p(160, 560), 8);
-            const quint64 mode = sampleValue(spiStart, p(150, 550), 2);
             QJsonObject fields;
             fields.insert(QStringLiteral("tx"), hexValue(tx, qMax(8, spiBitCount)));
             fields.insert(QStringLiteral("rx"), hexValue(rx, qMax(8, spiBitCount)));
             fields.insert(QStringLiteral("bit_count"), spiBitCount > 0 ? spiBitCount : 8);
-            fields.insert(QStringLiteral("mode"), static_cast<qint64>(mode));
+            fields.insert(QStringLiteral("complete"), true);
+            fields.insert(QStringLiteral("source"), spiUsingHint
+                ? QStringLiteral("rtl_frame_hint") : QStringLiteral("raw_samples"));
+            fields.insert(QStringLiteral("mode_available"), spiModeAvailable);
+            if (spiModeAvailable) {
+                fields.insert(QStringLiteral("mode"), static_cast<qint64>(activeSpiMode));
+                fields.insert(QStringLiteral("cpol"), static_cast<qint64>((activeSpiMode >> 1U) & 1U));
+                fields.insert(QStringLiteral("cpha"), static_cast<qint64>(activeSpiMode & 1U));
+            }
             fields.insert(QStringLiteral("cs_frame"), true);
             append(QStringLiteral("spi"), QStringLiteral("spi_transfer"), spiStart.time, sample.time,
                    QStringLiteral("SPI %1 bits TX=%2 RX=%3")
@@ -1062,20 +1145,23 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
             i2cByte = 0U;
             i2cBytes.clear();
             i2cAcks.clear();
+            i2cAckEventIndices.clear();
         }
         if (i2cOpen && i2cKnown && i2cSclRise && !i2cStartCondition) {
             if ((i2cBitCount % 9) < 8) {
                 i2cByte = (i2cByte << 1U) | (i2cSda ? 1U : 0U);
             } else {
                 i2cBytes.append(i2cByte);
-                const bool ack = sampleBit(sample, p(212, 612));
+                const bool ack = i2cHintAvailable
+                    ? sampleBit(sample, p(212, 612)) : !i2cSda;
                 i2cAcks.append(ack);
                 QJsonObject ackFields;
                 ackFields.insert(QStringLiteral("ack"), ack);
                 ackFields.insert(QStringLiteral("byte_index"), i2cAcks.size() - 1);
+                i2cAckEventIndices.append(events.size());
                 append(QStringLiteral("i2c"), QStringLiteral("i2c_ack"), previous.time, sample.time,
                        ack ? QStringLiteral("I2C ACK") : QStringLiteral("I2C NACK"),
-                       ack ? QString() : QStringLiteral("error"), ackFields);
+                       QString(), ackFields);
                 i2cByte = 0U;
             }
             ++i2cBitCount;
@@ -1096,12 +1182,29 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
             fields.insert(QStringLiteral("operation"), read ? QStringLiteral("read") : QStringLiteral("write"));
             fields.insert(QStringLiteral("data"), dataBytes.join(QStringLiteral(",")));
             fields.insert(QStringLiteral("ack_count"), i2cAcks.size());
+            fields.insert(QStringLiteral("complete"), true);
+            fields.insert(QStringLiteral("source"), i2cHintAvailable
+                ? QStringLiteral("rtl_protocol_hint") : QStringLiteral("raw_samples"));
+            bool unexpectedNack = false;
+            for (int index = 0; index < i2cAcks.size(); ++index) {
+                const bool normalFinalReadNack = read && index > 0 &&
+                    index == i2cAcks.size() - 1 && !i2cAcks.at(index);
+                const bool expected = i2cAcks.at(index) || normalFinalReadNack;
+                unexpectedNack = unexpectedNack || !expected;
+                if (index < i2cAckEventIndices.size()) {
+                    ProtocolEvent& ackEvent = events[i2cAckEventIndices.at(index)];
+                    ackEvent.fields.insert(QStringLiteral("expected"), expected);
+                    ackEvent.fields.insert(QStringLiteral("normal_final_read_nack"), normalFinalReadNack);
+                    if (!expected) ackEvent.severity = QStringLiteral("error");
+                }
+            }
             append(QStringLiteral("i2c"), QStringLiteral("i2c_transfer"), i2cStart.time, sample.time,
                    QStringLiteral("I2C %1 ADDR=%2 DATA=%3 ACKS=%4")
                        .arg(read ? QStringLiteral("READ") : QStringLiteral("WRITE"),
                             hexValue(addressByte >> 1U, 7), dataBytes.join(QStringLiteral(",")))
                        .arg(i2cAcks.size()),
-                   sampleBit(sample, p(239, 639)) ? QStringLiteral("error") : QString(), fields);
+                    (sampleBit(sample, p(239, 639)) || unexpectedNack)
+                        ? QStringLiteral("error") : QString(), fields);
             i2cOpen = false;
         }
 
@@ -1169,14 +1272,30 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
             const int tmsBit = useRvJtag ? p(341, 741) : p(337, 737);
             const int tdiBit = useRvJtag ? p(342, 742) : p(338, 738);
             const int tdoBit = useRvJtag ? p(343, 743) : p(339, 739);
+            const bool currentIsShift = tapState == TapState::ShiftDr ||
+                                        tapState == TapState::ShiftIr;
             const TapState nextState = nextTapState(tapState, sampleBit(sample, tmsBit));
             const bool nextIsShift = nextState == TapState::ShiftDr || nextState == TapState::ShiftIr;
-            if (jtagScanOpen && !nextIsShift) {
+            if (!jtagScanOpen && !currentIsShift && nextIsShift) {
+                jtagScanOpen = true;
+                jtagScanIsIr = nextState == TapState::ShiftIr;
+                jtagScanStart = sample.time;
+                jtagTdiBits.clear();
+                jtagTdoBits.clear();
+            } else if (currentIsShift && jtagScanOpen) {
+                jtagTdiBits.append(sampleBit(sample, tdiBit) ? QLatin1Char('1') : QLatin1Char('0'));
+                jtagTdoBits.append(sampleBit(sample, tdoBit) ? QLatin1Char('1') : QLatin1Char('0'));
+            }
+            const bool scanUpdated = jtagScanIsIr
+                ? nextState == TapState::UpdateIr : nextState == TapState::UpdateDr;
+            if (jtagScanOpen && scanUpdated) {
                 QJsonObject scanFields;
                 scanFields.insert(QStringLiteral("register"), jtagScanIsIr ? QStringLiteral("ir") : QStringLiteral("dr"));
                 scanFields.insert(QStringLiteral("tdi_bits"), jtagTdiBits);
                 scanFields.insert(QStringLiteral("tdo_bits"), jtagTdoBits);
                 scanFields.insert(QStringLiteral("bit_count"), jtagTdiBits.size());
+                scanFields.insert(QStringLiteral("complete"), true);
+                scanFields.insert(QStringLiteral("truncated"), false);
                 append(QStringLiteral("jtag"), QStringLiteral("jtag_scan"), jtagScanStart, sample.time,
                        QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
                            .arg(jtagScanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
@@ -1185,15 +1304,6 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
                 jtagScanOpen = false;
                 jtagTdiBits.clear();
                 jtagTdoBits.clear();
-            }
-            if (nextIsShift) {
-                if (!jtagScanOpen) {
-                    jtagScanOpen = true;
-                    jtagScanIsIr = nextState == TapState::ShiftIr;
-                    jtagScanStart = previous.time;
-                }
-                jtagTdiBits.append(sampleBit(sample, tdiBit) ? QLatin1Char('1') : QLatin1Char('0'));
-                jtagTdoBits.append(sampleBit(sample, tdoBit) ? QLatin1Char('1') : QLatin1Char('0'));
             }
             tapState = nextState;
             QJsonObject cycleFields;
@@ -1217,12 +1327,14 @@ QList<ProtocolEvent> decodeProtocolEvents(const QList<VcdSample>& samples,
         fields.insert(QStringLiteral("tdi_bits"), jtagTdiBits);
         fields.insert(QStringLiteral("tdo_bits"), jtagTdoBits);
         fields.insert(QStringLiteral("bit_count"), jtagTdiBits.size());
+        fields.insert(QStringLiteral("complete"), false);
+        fields.insert(QStringLiteral("truncated"), true);
         append(QStringLiteral("jtag"), QStringLiteral("jtag_scan"), jtagScanStart,
                samples.last().time,
                QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
                    .arg(jtagScanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
                    .arg(jtagTdiBits.size()).arg(jtagTdiBits, jtagTdoBits),
-                   QString(), fields);
+                    QStringLiteral("warning"), fields);
     }
     std::sort(events.begin(), events.end(), [](const ProtocolEvent& left, const ProtocolEvent& right) {
         if (left.startTime != right.startTime) return left.startTime < right.startTime;
@@ -1299,6 +1411,28 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
         archive.value(QStringLiteral("timebase_hz")).toInteger());
     const quint32 windowStart = static_cast<quint32>(
         captureSidecar.value(QStringLiteral("window_start_index")).toInteger());
+    quint64 windowSampleCount = 0U;
+    bool windowSampleCountOk = false;
+    const QJsonValue windowCountValue = captureSidecar.value(QStringLiteral("actual_sample_count"));
+    if (!windowCountValue.isUndefined()) {
+        const qint64 count = windowCountValue.toInteger(-1);
+        if (count > 0) {
+            windowSampleCount = static_cast<quint64>(count);
+            windowSampleCountOk = true;
+        }
+    }
+    const QJsonValue windowEndValue = captureSidecar.value(QStringLiteral("window_end_index"));
+    if (!windowSampleCountOk && !windowEndValue.isUndefined()) {
+        bool windowEndOk = false;
+        const quint64 relativeWindowEnd = windowEndValue.isString()
+            ? windowEndValue.toString().toULongLong(&windowEndOk)
+            : static_cast<quint64>(windowEndValue.toInteger(-1));
+        if (!windowEndValue.isString() && windowEndValue.toInteger(-1) >= 0) windowEndOk = true;
+        if (windowEndOk && relativeWindowEnd >= windowStart) {
+            windowSampleCount = relativeWindowEnd - windowStart + 1U;
+            windowSampleCountOk = windowSampleCount != 0U;
+        }
+    }
     if (timebaseHz == 0U || vcdTimeUnitPs <= 0) {
         addDiagnostic(
             diagnostics, QStringLiteral("TRACE_EVENT_TIMEBASE_ERROR"), QStringLiteral("error"),
@@ -1306,6 +1440,22 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
         if (archiveValid != nullptr) *archiveValid = false;
         return result;
     }
+    if ((!windowCountValue.isUndefined() || !windowEndValue.isUndefined()) && !windowSampleCountOk) {
+        addDiagnostic(
+            diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"), QStringLiteral("error"),
+            QStringLiteral("sparse capture window cannot be aligned"),
+            QStringLiteral("window_start=%1 actual_sample_count=%2 window_end=%3")
+                .arg(windowStart)
+                .arg(windowCountValue.toVariant().toString(), windowEndValue.toVariant().toString()));
+        if (archiveValid != nullptr) *archiveValid = false;
+        return result;
+    }
+    const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](
+                                    const quint64 timestamp) {
+        qint64 value = 0;
+        eventTimestampToVcdTime(timestamp, windowStart, timebaseHz, vcdTimeUnitPs, &value);
+        return value;
+    };
 
     const QList<ProtocolGroupDefinition> definitions = fixedProtocolGroups();
     const QJsonArray events = archive.value(QStringLiteral("events")).toArray();
@@ -1324,10 +1474,17 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             continue;
         }
 
-        const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
-        const qint64 eventTime = static_cast<qint64>(
-            (static_cast<long double>(relativeTicks) * 1.0e12L) /
-            (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
+        qint64 eventTime = 0;
+        if (!eventTimestampToVcdTime(timestamp, windowStart, timebaseHz, vcdTimeUnitPs,
+                                     &eventTime)) {
+            addDiagnostic(
+                diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"), QStringLiteral("error"),
+                QStringLiteral("sparse event timestamp cannot be aligned to the VCD window"),
+                QStringLiteral("timestamp=%1 window_start=%2")
+                    .arg(timestamp).arg(windowStart));
+            if (archiveValid != nullptr) *archiveValid = false;
+            continue;
+        }
         const int sourceKind = item.value(QStringLiteral("source_kind")).toInt();
         ProtocolEvent event;
         event.groupId = definitions.at(protocolId).id;
@@ -1423,12 +1580,6 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             }
             return level;
         };
-        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
-            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
-            return static_cast<qint64>(
-                (static_cast<long double>(relativeTicks) * 1.0e12L) /
-                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
-        };
         const auto decodeLine = [&](const quint8 lineMask, const quint8 fallingMask,
                                     const QString& direction) {
             quint64 nextAllowedTimestamp = 0U;
@@ -1443,12 +1594,85 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                     if (lineAt(sampleTimestamp, lineMask)) data |= quint8(1U << bit);
                 }
                 const quint64 stopTimestamp = edge.timestamp + (19U * bitTicks) / 2U;
+                const quint64 frameEndTimestamp = edge.timestamp + 10U * bitTicks;
+                quint64 alignedWindowEnd = 0U;
+                if (windowSampleCountOk) {
+                    quint64 alignedWindowStart = 0U;
+                    if (!alignWindowStartToTimestamp(edge.timestamp, windowStart, &alignedWindowStart) ||
+                        windowSampleCount - 1U >
+                            std::numeric_limits<quint64>::max() - alignedWindowStart) {
+                        addDiagnostic(
+                            diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"),
+                            QStringLiteral("error"),
+                            QStringLiteral("sparse UART window epoch alignment failed"),
+                            QStringLiteral("timestamp=%1 window_start=%2 count=%3")
+                                .arg(edge.timestamp).arg(windowStart).arg(windowSampleCount));
+                        if (archiveValid != nullptr) *archiveValid = false;
+                        return;
+                    }
+                    alignedWindowEnd = alignedWindowStart + windowSampleCount - 1U;
+                }
+                qint64 frameStartTime = 0;
+                if (!eventTimestampToVcdTime(edge.timestamp, windowStart, timebaseHz,
+                                             vcdTimeUnitPs, &frameStartTime)) {
+                    addDiagnostic(
+                        diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"),
+                        QStringLiteral("error"),
+                        QStringLiteral("sparse UART frame start conversion failed"),
+                        QStringLiteral("timestamp=%1").arg(edge.timestamp));
+                    if (archiveValid != nullptr) *archiveValid = false;
+                    return;
+                }
+                if (windowSampleCountOk && frameEndTimestamp > alignedWindowEnd) {
+                    qint64 alignedWindowEndTime = 0;
+                    if (!eventTimestampToVcdTime(alignedWindowEnd, windowStart, timebaseHz,
+                                                 vcdTimeUnitPs, &alignedWindowEndTime)) {
+                        addDiagnostic(
+                            diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"),
+                            QStringLiteral("error"),
+                            QStringLiteral("sparse UART window end conversion failed"),
+                            QStringLiteral("window_end=%1").arg(alignedWindowEnd));
+                        if (archiveValid != nullptr) *archiveValid = false;
+                        return;
+                    }
+                    ProtocolEvent frame;
+                    frame.groupId = QStringLiteral("uart");
+                    frame.type = QStringLiteral("uart_frame");
+                    frame.startTime = frameStartTime;
+                    frame.endTime = alignedWindowEndTime;
+                    frame.summary = QStringLiteral("UART %1 TRUNCATED").arg(direction);
+                    frame.severity = QStringLiteral("warning");
+                    frame.fields.insert(QStringLiteral("direction"), direction);
+                    frame.fields.insert(QStringLiteral("baud"), static_cast<qint64>(uartBaud));
+                    frame.fields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
+                    frame.fields.insert(QStringLiteral("complete"), false);
+                    frame.fields.insert(QStringLiteral("truncated"), true);
+                    frame.fields.insert(QStringLiteral("frame_error_available"), false);
+                    frame.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_timestamp_edges"));
+                    frame.fields.insert(QStringLiteral("capture_id"), edge.record.value(QStringLiteral("capture_id")));
+                    frame.fields.insert(QStringLiteral("evidence"), relativePath);
+                    result.append(frame);
+                    nextAllowedTimestamp = alignedWindowEnd == std::numeric_limits<quint64>::max()
+                        ? alignedWindowEnd : alignedWindowEnd + 1U;
+                    continue;
+                }
                 const bool stopHigh = lineAt(stopTimestamp, lineMask);
+                qint64 frameEndTime = 0;
+                if (!eventTimestampToVcdTime(frameEndTimestamp, windowStart, timebaseHz,
+                                             vcdTimeUnitPs, &frameEndTime)) {
+                    addDiagnostic(
+                        diagnostics, QStringLiteral("TRACE_EVENT_TIME_AXIS_ERROR"),
+                        QStringLiteral("error"),
+                        QStringLiteral("sparse UART frame end conversion failed"),
+                        QStringLiteral("frame_end=%1").arg(frameEndTimestamp));
+                    if (archiveValid != nullptr) *archiveValid = false;
+                    return;
+                }
                 ProtocolEvent frame;
                 frame.groupId = QStringLiteral("uart");
                 frame.type = QStringLiteral("uart_frame");
-                frame.startTime = ticksToVcdTime(edge.timestamp);
-                frame.endTime = ticksToVcdTime(edge.timestamp + 10U * bitTicks);
+                frame.startTime = frameStartTime;
+                frame.endTime = frameEndTime;
                 frame.summary = QStringLiteral("UART %1 %2").arg(direction, hexValue(data, 8));
                 frame.severity = stopHigh ? QString() : QStringLiteral("error");
                 frame.fields.insert(QStringLiteral("direction"), direction);
@@ -1456,11 +1680,14 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                 frame.fields.insert(QStringLiteral("baud"), static_cast<qint64>(uartBaud));
                 frame.fields.insert(QStringLiteral("format"), QStringLiteral("8N1"));
                 frame.fields.insert(QStringLiteral("frame_error"), !stopHigh);
+                frame.fields.insert(QStringLiteral("break"), data == 0U && !stopHigh);
+                frame.fields.insert(QStringLiteral("complete"), true);
+                frame.fields.insert(QStringLiteral("truncated"), false);
                 frame.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_timestamp_edges"));
                 frame.fields.insert(QStringLiteral("capture_id"), edge.record.value(QStringLiteral("capture_id")));
                 frame.fields.insert(QStringLiteral("evidence"), relativePath);
                 result.append(frame);
-                nextAllowedTimestamp = edge.timestamp + 10U * bitTicks;
+                nextAllowedTimestamp = frameEndTimestamp;
             }
         };
         decodeLine(0x01U, 0x10U, QStringLiteral("TX"));
@@ -1477,12 +1704,6 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             if (delta > 0U) edgeInterval = qMin(edgeInterval, delta);
         }
         if (edgeInterval == std::numeric_limits<quint64>::max()) edgeInterval = 1U;
-        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
-            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
-            return static_cast<qint64>(
-                (static_cast<long double>(relativeTicks) * 1.0e12L) /
-                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
-        };
         const auto appendTransfer = [&](const QList<SparseLineEvent>& transfer) {
             if (transfer.isEmpty() || transfer.size() > 64) return;
             quint64 txData = 0U;
@@ -1501,7 +1722,10 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                                           hexValue(rxData, transfer.size()));
             event.fields.insert(QStringLiteral("tx_data"), hexValue(txData, transfer.size()));
             event.fields.insert(QStringLiteral("rx_data"), hexValue(rxData, transfer.size()));
+            event.fields.insert(QStringLiteral("tx"), hexValue(txData, transfer.size()));
+            event.fields.insert(QStringLiteral("rx"), hexValue(rxData, transfer.size()));
             event.fields.insert(QStringLiteral("bit_count"), transfer.size());
+            event.fields.insert(QStringLiteral("complete"), true);
             event.fields.insert(QStringLiteral("mode_available"), false);
             event.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_rising_edges"));
             event.fields.insert(QStringLiteral("evidence"), relativePath);
@@ -1524,12 +1748,6 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                                                       const SparseLineEvent& right) {
             return left.timestamp < right.timestamp;
         });
-        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
-            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
-            return static_cast<qint64>(
-                (static_cast<long double>(relativeTicks) * 1.0e12L) /
-                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
-        };
         bool active = false;
         quint64 startTimestamp = 0U;
         int bitCount = 0;
@@ -1557,12 +1775,33 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                 .arg(endReason, byteTexts.join(QStringLiteral(", ")));
             event.fields.insert(QStringLiteral("bytes"), byteArray);
             event.fields.insert(QStringLiteral("acks"), ackArray);
+            if (!bytes.isEmpty()) {
+                const bool read = (bytes.first() & 1U) != 0U;
+                QStringList dataBytes;
+                for (int index = 1; index < bytes.size(); ++index) {
+                    dataBytes.append(hexValue(bytes.at(index), 8));
+                }
+                event.fields.insert(QStringLiteral("address"), hexValue(bytes.first() >> 1U, 7));
+                event.fields.insert(QStringLiteral("operation"),
+                                    read ? QStringLiteral("read") : QStringLiteral("write"));
+                event.fields.insert(QStringLiteral("data"), dataBytes.join(QStringLiteral(",")));
+            }
+            event.fields.insert(QStringLiteral("ack_count"), acks.size());
             event.fields.insert(QStringLiteral("trailing_partial_bits"), bitCount);
             event.fields.insert(QStringLiteral("end_reason"), endReason);
             event.fields.insert(QStringLiteral("complete"), complete);
             event.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_scl_rising_edges"));
             event.fields.insert(QStringLiteral("evidence"), relativePath);
-            if (!complete) event.severity = QStringLiteral("warning");
+            if (!complete) {
+                event.severity = QStringLiteral("warning");
+            } else if (!bytes.isEmpty()) {
+                const bool read = (bytes.first() & 1U) != 0U;
+                for (int index = 0; index < acks.size(); ++index) {
+                    const bool normalFinalReadNack = read && index > 0 &&
+                        index == acks.size() - 1 && !acks.at(index);
+                    if (!acks.at(index) && !normalFinalReadNack) event.severity = QStringLiteral("error");
+                }
+            }
             result.append(event);
         };
         for (const SparseLineEvent& edge : i2cEdges) {
@@ -1607,12 +1846,6 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                                                         const SparseLineEvent& right) {
             return left.timestamp < right.timestamp;
         });
-        const auto ticksToVcdTime = [timebaseHz, windowStart, vcdTimeUnitPs](const quint64 timestamp) {
-            const quint32 relativeTicks = static_cast<quint32>(timestamp) - windowStart;
-            return static_cast<qint64>(
-                (static_cast<long double>(relativeTicks) * 1.0e12L) /
-                (static_cast<long double>(timebaseHz) * static_cast<long double>(vcdTimeUnitPs)));
-        };
         TapState tapState = TapState::TestLogicReset;
         bool scanOpen = false;
         bool scanIsIr = false;
@@ -1633,7 +1866,7 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             const bool currentIsShift = tapState == TapState::ShiftDr || tapState == TapState::ShiftIr;
             const TapState nextState = nextTapState(tapState, tms);
             const bool nextIsShift = nextState == TapState::ShiftDr || nextState == TapState::ShiftIr;
-            if (!currentIsShift && nextIsShift) {
+            if (!scanOpen && !currentIsShift && nextIsShift) {
                 scanOpen = true;
                 scanIsIr = nextState == TapState::ShiftIr;
                 scanStartTimestamp = edge.timestamp;
@@ -1642,7 +1875,10 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             } else if (currentIsShift && scanOpen) {
                 tdiBits.append(tdi ? QLatin1Char('1') : QLatin1Char('0'));
                 tdoBits.append(tdo ? QLatin1Char('1') : QLatin1Char('0'));
-                if (!nextIsShift) {
+            }
+            const bool scanUpdated = scanIsIr
+                ? nextState == TapState::UpdateIr : nextState == TapState::UpdateDr;
+            if (scanOpen && scanUpdated) {
                     ProtocolEvent scan;
                     scan.groupId = QStringLiteral("jtag");
                     scan.type = QStringLiteral("jtag_scan");
@@ -1656,6 +1892,8 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                     scan.fields.insert(QStringLiteral("tdi_bits"), tdiBits);
                     scan.fields.insert(QStringLiteral("tdo_bits"), tdoBits);
                     scan.fields.insert(QStringLiteral("bit_count"), tdiBits.size());
+                    scan.fields.insert(QStringLiteral("complete"), true);
+                    scan.fields.insert(QStringLiteral("truncated"), false);
                     scan.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_tap_cycles"));
                     scan.fields.insert(QStringLiteral("jtag_path"),
                                        rvJtag ? QStringLiteral("rv_jtag") : QStringLiteral("primary_jtag"));
@@ -1664,7 +1902,6 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
                     scanOpen = false;
                     tdiBits.clear();
                     tdoBits.clear();
-                }
             }
             ProtocolEvent cycle;
             cycle.groupId = QStringLiteral("jtag");
@@ -1683,6 +1920,27 @@ QList<ProtocolEvent> loadSparseProtocolEvents(
             cycle.fields.insert(QStringLiteral("evidence"), relativePath);
             result.append(cycle);
             tapState = nextState;
+        }
+        if (scanOpen && !tdiBits.isEmpty()) {
+            ProtocolEvent scan;
+            scan.groupId = QStringLiteral("jtag");
+            scan.type = QStringLiteral("jtag_scan");
+            scan.startTime = ticksToVcdTime(scanStartTimestamp);
+            scan.endTime = ticksToVcdTime(jtagEdges.last().timestamp);
+            scan.summary = QStringLiteral("JTAG %1 SCAN bits=%2 TDI=%3 TDO=%4")
+                .arg(scanIsIr ? QStringLiteral("IR") : QStringLiteral("DR"))
+                .arg(tdiBits.size()).arg(tdiBits, tdoBits);
+            scan.severity = QStringLiteral("warning");
+            scan.fields.insert(QStringLiteral("register"),
+                               scanIsIr ? QStringLiteral("ir") : QStringLiteral("dr"));
+            scan.fields.insert(QStringLiteral("tdi_bits"), tdiBits);
+            scan.fields.insert(QStringLiteral("tdo_bits"), tdoBits);
+            scan.fields.insert(QStringLiteral("bit_count"), tdiBits.size());
+            scan.fields.insert(QStringLiteral("complete"), false);
+            scan.fields.insert(QStringLiteral("truncated"), true);
+            scan.fields.insert(QStringLiteral("source"), QStringLiteral("sparse_tap_cycles"));
+            scan.fields.insert(QStringLiteral("evidence"), relativePath);
+            result.append(scan);
         }
     }
     std::sort(result.begin(), result.end(), [](const ProtocolEvent& left, const ProtocolEvent& right) {
@@ -2182,16 +2440,44 @@ ProtocolAnalysisResult ProtocolAnalyzer::analyzeTask(const ProtocolAnalysisReque
     }
     QList<ProtocolEvent> protocolEvents = decodeProtocolEvents(
         parseResult.samples, sampleRateHz,
-        parseResult.timescaleMultiplier * timeUnitToPs(parseResult.timescaleUnit));
+        parseResult.timescaleMultiplier * timeUnitToPs(parseResult.timescaleUnit),
+        schema.value(QStringLiteral("spi_mode_hint_available")).toBool());
     quint32 designGapMask = 0U;
     bool sparseArchiveValid = true;
-    protocolEvents.append(loadSparseProtocolEvents(
+    const QList<ProtocolEvent> sparseEvents = loadSparseProtocolEvents(
         taskRootPath,
         captureSidecar,
         parseResult.timescaleMultiplier * timeUnitToPs(parseResult.timescaleUnit),
         &designGapMask,
         &sparseArchiveValid,
-        &result.diagnostics));
+        &result.diagnostics);
+    QSet<int> replacedVcdEvents;
+    for (const ProtocolEvent& sparseEvent : sparseEvents) {
+        if (!isCompleteReconstructedSparseTransaction(sparseEvent)) continue;
+        int replacementIndex = -1;
+        qint64 replacementDuration = std::numeric_limits<qint64>::max();
+        for (int index = 0; index < protocolEvents.size(); ++index) {
+            const ProtocolEvent& vcdEvent = protocolEvents.at(index);
+            if (replacedVcdEvents.contains(index) || vcdEvent.groupId != sparseEvent.groupId ||
+                vcdEvent.type != sparseEvent.type || vcdEvent.startTime > sparseEvent.startTime ||
+                vcdEvent.endTime < sparseEvent.endTime) {
+                continue;
+            }
+            const qint64 duration = vcdEvent.endTime - vcdEvent.startTime;
+            if (duration < replacementDuration) {
+                replacementIndex = index;
+                replacementDuration = duration;
+            }
+        }
+        if (replacementIndex >= 0) replacedVcdEvents.insert(replacementIndex);
+    }
+    QList<ProtocolEvent> retainedVcdEvents;
+    retainedVcdEvents.reserve(protocolEvents.size() - replacedVcdEvents.size());
+    for (int index = 0; index < protocolEvents.size(); ++index) {
+        if (!replacedVcdEvents.contains(index)) retainedVcdEvents.append(protocolEvents.at(index));
+    }
+    protocolEvents = retainedVcdEvents;
+    protocolEvents.append(sparseEvents);
     std::sort(protocolEvents.begin(), protocolEvents.end(), [](const ProtocolEvent& left,
                                                                const ProtocolEvent& right) {
         if (left.startTime != right.startTime) return left.startTime < right.startTime;

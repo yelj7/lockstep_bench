@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: tb_lockstep_ft601_hello.v
 * 日期: 2026-07-17
-* 版本: 1.0
-* 更新记录: 新增 FT601 同步 FIFO 边界的 HELLO 往返测试。
+* 版本: 1.1
+* 更新记录: 增加 FT601 复位异步断言、四拍同步释放检查。
 * 描述: 模拟主机向 FT601 写入完整 HELLO_REQ，验证采样域保持复位时
 *       FT601 协议域仍能解析命令并返回 HELLO_RSP。
 **********************************************************/
@@ -113,7 +113,16 @@ module tb_lockstep_ft601_hello;
     failures_r = 0;
 
     repeat (5) @(posedge ft_clk);
+    @(negedge ft_clk);
     rst_n = 1'b1;
+    repeat (3) begin
+      @(posedge ft_clk);
+      #2;
+      if (dut.ft_rst_n_w) fail_check("FT601 reset released too early");
+    end
+    @(posedge ft_clk);
+    #2;
+    if (!dut.ft_rst_n_w) fail_check("FT601 reset did not release on fourth clock");
 
     repeat (500) begin
       @(posedge ft_clk);

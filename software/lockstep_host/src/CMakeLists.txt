@@ -8,7 +8,6 @@
 
 add_subdirectory(workspace)
 add_subdirectory(resources)
-add_subdirectory(workflow)
 add_subdirectory(target_control)
 add_subdirectory(fault_injection)
 add_subdirectory(acquisition)

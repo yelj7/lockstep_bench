@@ -1,8 +1,8 @@
 ﻿/**********************************************************
 * 文件名: debug_service_main.cpp
 * 日期: 2026-07-09
-* 版本: 1.0.0.3
-* 更新记录: 修正 reset-halt/resume 状态并将有界 JTAG 证据扫描上限扩展到 64
+* 版本: 1.0.0.4
+* 更新记录: 以新鲜 resumeack 判定启动成功，兼容快速结束程序
 * 描述: 解析统一产品程序的调试请求并执行自研板卡传输层。
 **********************************************************/
 
@@ -109,8 +109,6 @@ constexpr quint32 kDmControlHartSelMask = 0x03FFFFC0U;
 constexpr quint32 kDmStatusAuthenticated = 0x00000080U;
 constexpr quint32 kDmStatusAnyHalted = 0x00000100U;
 constexpr quint32 kDmStatusAllHalted = 0x00000200U;
-constexpr quint32 kDmStatusAnyRunning = 0x00000400U;
-constexpr quint32 kDmStatusAllRunning = 0x00000800U;
 constexpr quint32 kDmStatusAllUnavailable = 0x00002000U;
 constexpr quint32 kDmStatusAllNonexistent = 0x00008000U;
 constexpr quint32 kDmStatusAnyResumeAck = 0x00010000U;
@@ -2271,13 +2269,9 @@ private:
                 errorMessage)) {
             return false;
         }
-        if (!dmiWrite(kDmControl, baseDmControl(), errorMessage)) {
-            return false;
-        }
-        return pollDmStatusFor(
-            kDmStatusAllRunning | kDmStatusAnyRunning,
-            QStringLiteral("resume running"),
-            errorMessage);
+        // NOEL-V only asserts resumeack after observing the selected hart running.
+        // A short program may halt again before a later DMSTATUS read sees running.
+        return dmiWrite(kDmControl, baseDmControl(), errorMessage);
     }
 
     bool clearAbstractCommandError(QString* const errorMessage)

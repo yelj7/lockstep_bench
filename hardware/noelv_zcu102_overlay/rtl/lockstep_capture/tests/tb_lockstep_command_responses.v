@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: tb_lockstep_command_responses.v
 * 日期: 2026-07-17
-* 版本: 1.1
-* 更新记录: 增加 START_EVENT_STREAM 无响应释放命令回归。
+* 版本: 1.4
+* 更新记录: 增加采样域未就绪、等待 ARM 掉线和活动采集掉线恢复回归。
 * 描述: 验证配置、ARM 接受确认及事件流释放命令合同。
 **********************************************************/
 
@@ -20,6 +20,7 @@ module tb_lockstep_command_responses;
   reg  [31:0] cmd_payload2_i;
   reg  [31:0] cmd_payload3_i;
   reg         arm_accepted_i;
+  reg         capture_domain_ready_i;
   wire        cfg_valid_o;
   wire        arm_o;
   wire        event_stream_start_o;
@@ -27,6 +28,8 @@ module tb_lockstep_command_responses;
   reg         frame_ready_i;
   wire        stop_o;
   reg         capture_frame_done_i;
+  reg         capture_trigger_seen_i;
+  reg         capture_draining_i;
   wire [15:0] frame_type_o;
   wire [31:0] frame_capture_id_o;
   wire [31:0] payload0_o;
@@ -100,8 +103,11 @@ module tb_lockstep_command_responses;
     .cfg_error_detail1_i(32'd0),
     .arm_o(arm_o),
     .arm_accepted_i(arm_accepted_i),
+    .capture_domain_ready_i(capture_domain_ready_i),
     .event_stream_start_o(event_stream_start_o),
     .stop_o(stop_o),
+    .capture_trigger_seen_i(capture_trigger_seen_i),
+    .capture_draining_i(capture_draining_i),
     .capture_frame_done_i(capture_frame_done_i),
     .capture_samples_captured_i(32'd0),
     .capture_samples_uploaded_i(32'd0),
@@ -190,8 +196,11 @@ module tb_lockstep_command_responses;
     cmd_payload2_i = 32'd2047;
     cmd_payload3_i = 32'd2049;
     arm_accepted_i = 1'b0;
+    capture_domain_ready_i = 1'b1;
     frame_ready_i = 1'b0;
     capture_frame_done_i = 1'b0;
+    capture_trigger_seen_i = 1'b0;
+    capture_draining_i = 1'b0;
     failures_r = 0;
     arm_pulse_count_r = 0;
     event_start_pulse_count_r = 0;
@@ -231,6 +240,22 @@ module tb_lockstep_command_responses;
     #1;
     frame_ready_i = 1'b0;
 
+    @(posedge clk);
+    #2;
+    capture_domain_ready_i = 1'b0;
+    send_command(16'h0003, 32'd3);
+    while (!frame_valid_o) @(posedge clk);
+    #1;
+    if (frame_type_o !== 16'h80ff || payload0_o !== 32'd255 ||
+        arm_pulse_count_r != 0 || device_state_o !== 32'd2) begin
+      fail_check("ARM while sample domain is reset must fail without an ARM pulse");
+    end
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    capture_domain_ready_i = 1'b1;
     send_command(16'h0003, 32'd4);
     repeat (5) begin
       @(posedge clk);
@@ -239,6 +264,21 @@ module tb_lockstep_command_responses;
     end
     if (arm_pulse_count_r != 1) fail_check("ARM request pulse count mismatch");
 
+    capture_domain_ready_i = 1'b0;
+    while (!frame_valid_o) @(posedge clk);
+    #1;
+    if (frame_type_o !== 16'h80ff || payload0_o !== 32'd255 ||
+        device_state_o !== 32'd2) begin
+      fail_check("sample-domain reset while waiting for ARM did not recover");
+    end
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    capture_domain_ready_i = 1'b1;
+    send_command(16'h0003, 32'd4);
+
     arm_accepted_i = 1'b1;
     @(posedge clk);
     #1;
@@ -246,8 +286,8 @@ module tb_lockstep_command_responses;
     while (!frame_valid_o) @(posedge clk);
     #1;
     if (frame_type_o !== 16'h8005 || payload_word_count_o !== 32'd16 ||
-        payload0_o !== 32'd4 || payload1_o !== 32'd4 || payload2_o !== 32'd1 ||
-        frame_capture_id_o !== 32'd1) begin
+        payload0_o !== 32'd4 || payload1_o !== 32'd4 || payload2_o !== 32'd2 ||
+        frame_capture_id_o !== 32'd2 || arm_pulse_count_r != 2) begin
       fail_check("ARM acceptance STATUS_RSP contract mismatch");
     end
     frame_ready_i = 1'b1;
@@ -277,6 +317,18 @@ module tb_lockstep_command_responses;
     #1;
     frame_ready_i = 1'b0;
 
+    capture_trigger_seen_i = 1'b1;
+    @(posedge clk);
+    #2;
+    capture_trigger_seen_i = 1'b0;
+    if (device_state_o !== 32'd5) fail_check("trigger did not enter CAPTURING_POSTTRIGGER");
+
+    capture_draining_i = 1'b1;
+    @(posedge clk);
+    #2;
+    capture_draining_i = 1'b0;
+    if (device_state_o !== 32'd6) fail_check("event quiet guard did not enter DRAINING");
+
     send_command(16'h0004, 32'd7);
     #1;
     if (!stop_o) fail_check("STOP_CAPTURE pulse was not generated");
@@ -285,6 +337,80 @@ module tb_lockstep_command_responses;
     #2;
     capture_frame_done_i = 1'b0;
     if (device_state_o !== 32'd2) fail_check("STOP completion must return CONFIGURED");
+
+    send_command(16'h0003, 32'd8);
+    arm_accepted_i = 1'b1;
+    @(posedge clk);
+    #1;
+    arm_accepted_i = 1'b0;
+    while (!frame_valid_o) @(posedge clk);
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    capture_frame_done_i = 1'b1;
+    capture_draining_i = 1'b1;
+    @(posedge clk);
+    #2;
+    capture_frame_done_i = 1'b0;
+    capture_draining_i = 1'b0;
+    if (device_state_o !== 32'd2) begin
+      fail_check("capture completion must override simultaneous DRAINING");
+    end
+
+    send_command(16'h0003, 32'd9);
+    arm_accepted_i = 1'b1;
+    @(posedge clk);
+    #1;
+    arm_accepted_i = 1'b0;
+    while (!frame_valid_o) @(posedge clk);
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    @(posedge clk);
+    #2;
+    capture_domain_ready_i = 1'b0;
+    while (!frame_valid_o) @(posedge clk);
+    #1;
+    if (frame_type_o !== 16'h80ff || payload0_o !== 32'd255 ||
+        device_state_o !== 32'd8) begin
+      fail_check("active capture sample-domain reset was not reported as fatal");
+    end
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    capture_domain_ready_i = 1'b1;
+    cmd_payload0_i = 32'd120000000;
+    cmd_payload1_i = 32'd4096;
+    cmd_payload2_i = 32'd2047;
+    cmd_payload3_i = 32'd2049;
+    send_command(16'h0002, 32'd10);
+    while (!frame_valid_o) @(posedge clk);
+    #1;
+    if (frame_type_o !== 16'h8005 || device_state_o !== 32'd2) begin
+      fail_check("sample-domain fatal error did not allow reconfiguration");
+    end
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
+
+    cmd_payload0_i = 32'd50000000;
+    send_command(16'h0002, 32'd11);
+    while (!frame_valid_o) @(posedge clk);
+    #1;
+    if (frame_type_o !== 16'h80ff || payload0_o !== 32'd12) begin
+      fail_check("unsupported CONFIG_CAPTURE fields did not return BAD_TRIGGER_CONFIG");
+    end
+    frame_ready_i = 1'b1;
+    @(posedge clk);
+    #1;
+    frame_ready_i = 1'b0;
 
     if (failures_r == 0) begin
       $display("PASS tb_lockstep_command_responses");

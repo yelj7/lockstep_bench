@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: eight_protocol_benchmark_test.cpp
 * 日期: 2026-07-20
-* 版本: v1.1
-* 更新记录: 增加扩展行为矩阵、事务数量和 repeated START 合同门禁
-* 描述: 重放仿真 golden VCD，核对八协议常见行为及零 Mismatch 合同
+* 版本: v1.2
+* 更新记录: 精确核对 SPI mode 0-3 数据及 I2C repeated START、ACK/NACK 数量
+* 描述: 重放仿真 golden VCD，核对八协议行为及零 Mismatch 合同
 **********************************************************/
 
 #include <QCoreApplication>
@@ -101,6 +101,152 @@ QHash<QString, QList<QJsonObject>> eventsByGroup(const QJsonArray& events)
     return result;
 }
 
+bool verifySpiEvents(const QList<QJsonObject>& events, const QJsonObject& contract)
+{
+    const QJsonObject expectedModeCounts = contract.value(QStringLiteral("mode_counts")).toObject();
+    const QJsonArray expectedTxCycle = contract.value(QStringLiteral("tx_cycle")).toArray();
+    const QJsonArray expectedRxCycle = contract.value(QStringLiteral("rx_cycle")).toArray();
+    QHash<int, int> actualModeCounts;
+    if (!expect(!expectedTxCycle.isEmpty() && expectedTxCycle.size() == expectedRxCycle.size(),
+                QStringLiteral("SPI data cycles are non-empty and aligned"))) {
+        return false;
+    }
+    for (int index = 0; index < events.size(); ++index) {
+        const QJsonObject fields = events.at(index).value(QStringLiteral("fields")).toObject();
+        const int mode = fields.value(QStringLiteral("mode")).toInt(-1);
+        ++actualModeCounts[mode];
+        const int cycleIndex = index % expectedTxCycle.size();
+        if (!expect(fields.value(QStringLiteral("mode_available")).toBool(),
+                    QStringLiteral("SPI transfer %1 exposes simulation mode hint").arg(index)) ||
+            !expect(mode == index % 4,
+                    QStringLiteral("SPI transfer %1 mode is %2").arg(index).arg(index % 4)) ||
+            !expect(fields.value(QStringLiteral("cpol")).toInt(-1) == mode / 2,
+                    QStringLiteral("SPI transfer %1 CPOL matches mode").arg(index)) ||
+            !expect(fields.value(QStringLiteral("cpha")).toInt(-1) == mode % 2,
+                    QStringLiteral("SPI transfer %1 CPHA matches mode").arg(index)) ||
+            !expect(fields.value(QStringLiteral("bit_count")).toInt() == 8,
+                    QStringLiteral("SPI transfer %1 has 8 bits").arg(index)) ||
+            !expect(fields.value(QStringLiteral("tx")).toString() ==
+                        expectedTxCycle.at(cycleIndex).toString(),
+                    QStringLiteral("SPI transfer %1 TX data matches").arg(index)) ||
+            !expect(fields.value(QStringLiteral("rx")).toString() ==
+                        expectedRxCycle.at(cycleIndex).toString(),
+                    QStringLiteral("SPI transfer %1 RX data matches").arg(index))) {
+            return false;
+        }
+    }
+    for (auto iterator = expectedModeCounts.constBegin(); iterator != expectedModeCounts.constEnd(); ++iterator) {
+        const int mode = iterator.key().toInt();
+        if (!expect(actualModeCounts.value(mode) == iterator.value().toInt(),
+                    QStringLiteral("SPI mode %1 transfer count: %2")
+                        .arg(mode).arg(actualModeCounts.value(mode)))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool verifyI2cEvents(const QList<QJsonObject>& events, const QJsonObject& contract)
+{
+    QHash<QString, int> typeCounts;
+    int ackCount = 0;
+    int nackCount = 0;
+    int repeatedStartCount = 0;
+    int readCount = 0;
+    int writeCount = 0;
+    QHash<QString, int> transferCounts;
+    for (const QJsonObject& event : events) {
+        const QString type = event.value(QStringLiteral("type")).toString();
+        const QString summary = event.value(QStringLiteral("summary")).toString();
+        ++typeCounts[type];
+        if (type == QStringLiteral("i2c_ack")) {
+            event.value(QStringLiteral("fields")).toObject().value(QStringLiteral("ack")).toBool()
+                ? ++ackCount : ++nackCount;
+        }
+        if (type == QStringLiteral("i2c_segment") &&
+            summary.startsWith(QStringLiteral("I2C REPEATED_START"))) {
+            ++repeatedStartCount;
+            if (!expect(summary.contains(
+                            QStringLiteral("ADDR=%1").arg(contract.value(
+                                QStringLiteral("repeated_start_write_address")).toString())),
+                        QStringLiteral("I2C repeated START write address matches firmware"))) {
+                return false;
+            }
+        }
+        if (type == QStringLiteral("i2c_transfer")) {
+            const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+            const QString operation = fields.value(QStringLiteral("operation")).toString();
+            const QString address = fields.value(QStringLiteral("address")).toString();
+            ++transferCounts[operation + QLatin1Char('@') + address];
+            if (operation == QStringLiteral("read")) ++readCount;
+            if (operation == QStringLiteral("write")) ++writeCount;
+        }
+    }
+    const QJsonObject expectedTypeCounts = contract.value(QStringLiteral("type_counts")).toObject();
+    for (auto iterator = expectedTypeCounts.constBegin(); iterator != expectedTypeCounts.constEnd(); ++iterator) {
+        if (!expect(typeCounts.value(iterator.key()) == iterator.value().toInt(),
+                    QStringLiteral("I2C %1 count: %2")
+                        .arg(iterator.key()).arg(typeCounts.value(iterator.key())))) {
+            return false;
+        }
+    }
+    for (const QJsonValue& value : contract.value(QStringLiteral("transfer_contracts")).toArray()) {
+        const QJsonObject expected = value.toObject();
+        const QString key = expected.value(QStringLiteral("operation")).toString() +
+            QLatin1Char('@') + expected.value(QStringLiteral("address")).toString();
+        if (!expect(transferCounts.value(key) == expected.value(QStringLiteral("count")).toInt(),
+                    QStringLiteral("I2C %1 transfer count: %2")
+                        .arg(key).arg(transferCounts.value(key)))) {
+            return false;
+        }
+    }
+    return expect(ackCount == contract.value(QStringLiteral("ack_count")).toInt(),
+                  QStringLiteral("I2C ACK count: %1").arg(ackCount)) &&
+        expect(nackCount == contract.value(QStringLiteral("nack_count")).toInt(),
+               QStringLiteral("I2C NACK count: %1").arg(nackCount)) &&
+        expect(repeatedStartCount == contract.value(QStringLiteral("repeated_start_count")).toInt(),
+               QStringLiteral("I2C repeated START count: %1").arg(repeatedStartCount)) &&
+        expect(readCount == contract.value(QStringLiteral("read_count")).toInt(),
+               QStringLiteral("I2C read count: %1").arg(readCount)) &&
+        expect(writeCount == contract.value(QStringLiteral("write_count")).toInt(),
+               QStringLiteral("I2C write count: %1").arg(writeCount));
+}
+
+bool verifyJtagScans(const QList<QJsonObject>& events, const QJsonObject& contract)
+{
+    const QJsonObject scanContracts = contract.value(QStringLiteral("scan_contracts")).toObject();
+    QHash<QString, QList<QJsonObject>> scansByRegister;
+    for (const QJsonObject& event : events) {
+        if (event.value(QStringLiteral("type")).toString() != QStringLiteral("jtag_scan")) continue;
+        const QJsonObject fields = event.value(QStringLiteral("fields")).toObject();
+        scansByRegister[fields.value(QStringLiteral("register")).toString()].append(fields);
+    }
+    for (auto iterator = scanContracts.constBegin(); iterator != scanContracts.constEnd(); ++iterator) {
+        const QString registerName = iterator.key();
+        const QJsonObject expected = iterator.value().toObject();
+        const QList<QJsonObject> actual = scansByRegister.value(registerName);
+        if (!expect(actual.size() == expected.value(QStringLiteral("count")).toInt(),
+                    QStringLiteral("JTAG %1 scan count: %2")
+                        .arg(registerName.toUpper()).arg(actual.size()))) {
+            return false;
+        }
+        for (const QJsonObject& fields : actual) {
+            if (!expect(fields.value(QStringLiteral("bit_count")).toInt() ==
+                            expected.value(QStringLiteral("bit_count")).toInt(),
+                        QStringLiteral("JTAG %1 bit count").arg(registerName.toUpper())) ||
+                !expect(fields.value(QStringLiteral("tdi_bits")).toString() ==
+                            expected.value(QStringLiteral("tdi_bits")).toString(),
+                        QStringLiteral("JTAG %1 TDI value").arg(registerName.toUpper())) ||
+                !expect(fields.value(QStringLiteral("tdo_bits")).toString() ==
+                            expected.value(QStringLiteral("tdo_bits")).toString(),
+                        QStringLiteral("JTAG %1 TDO value").arg(registerName.toUpper()))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool verifyExpectedEvents(const QJsonObject& analysis, const QJsonObject& expected)
 {
     const QJsonArray protocolEvents = analysis.value(QStringLiteral("protocol_events")).toArray();
@@ -134,6 +280,9 @@ bool verifyExpectedEvents(const QJsonObject& analysis, const QJsonObject& expect
                 return false;
             }
         }
+        if (groupId == QStringLiteral("spi") && !verifySpiEvents(actual, contract)) return false;
+        if (groupId == QStringLiteral("i2c") && !verifyI2cEvents(actual, contract)) return false;
+        if (groupId == QStringLiteral("jtag") && !verifyJtagScans(actual, contract)) return false;
     }
 
     QStringList summaries;
@@ -218,6 +367,10 @@ int main(int argc, char* argv[])
                         "firmware/noelv_eight_protocol_benchmark.c")),
                         QByteArrayLiteral("I2C_WRITE | (readBack != 0 ? 0U : I2C_STOP)")),
                 QStringLiteral("firmware keeps the bus active before repeated START reads")) ||
+        !expect(fileContains(QDir(benchmarkRoot).filePath(QStringLiteral(
+                        "firmware/noelv_eight_protocol_benchmark.c")),
+                        QByteArrayLiteral("(transaction & 0x3U) == 0x3U")),
+                QStringLiteral("firmware schedules exactly 12 repeated START reads")) ||
         !expect(verifySrec(QDir(benchmarkRoot).filePath(
                     QStringLiteral("firmware/noelv_eight_protocol_benchmark.srec"))),
                 QStringLiteral("firmware SREC checksums and 0x0 termination entry are valid"))) {

@@ -2,8 +2,8 @@
 # /**********************************************************
 # * 文件名: generate_golden.py
 # * 日期: 2026-07-20
-# * 版本: v1.1
-# * 更新记录: 扩展到 48 事务、256 AHB 事务并增加边界值和 JTAG DR scan
+# * 版本: v1.2
+# * 更新记录: 生成真实 SPI mode 0-3 波形，并对齐固件的 12 次 I2C repeated START read
 # * 描述: 生成仅用于解析器回归的确定性仿真波形、schema 和 sidecar
 # **********************************************************/
 
@@ -65,16 +65,34 @@ def emit_uart_hint(builder, direction, value):
 
 
 def emit_spi(builder, mode, tx, rx):
+    cpol = (mode >> 1) & 1
+    cpha = mode & 1
     builder.set(550, 2, mode)
+    builder.set(544, 1, cpol)
+    builder.set(547, 1, 1)
+    builder.emit()
+
+    if cpha == 0:
+        builder.set(545, 1, (tx >> 7) & 1)
+        builder.set(546, 1, (rx >> 7) & 1)
     builder.set(547, 1, 0)
     builder.emit()
+
     for bit in range(7, -1, -1):
-        builder.set(544, 1, 0)
-        builder.set(545, 1, (tx >> bit) & 1)
-        builder.set(546, 1, (rx >> bit) & 1)
+        if cpha == 0 and bit != 7:
+            builder.set(545, 1, (tx >> bit) & 1)
+            builder.set(546, 1, (rx >> bit) & 1)
+            builder.emit()
+
+        builder.set(544, 1, 1 - cpol)
+        if cpha == 1:
+            builder.set(545, 1, (tx >> bit) & 1)
+            builder.set(546, 1, (rx >> bit) & 1)
         builder.emit()
-        builder.set(544, 1, 1)
+
+        builder.set(544, 1, cpol)
         builder.emit()
+
     builder.set(547, 1, 1)
     builder.emit()
 
@@ -225,13 +243,14 @@ def main():
         )
 
     for transaction in range(PROTOCOL_TRANSACTIONS):
+        write_address = 0xA0 if transaction % 2 == 0 else 0xA4
         i2c_start(builder)
-        i2c_byte(builder, 0xA0)
+        i2c_byte(builder, write_address)
         i2c_byte(builder, transaction)
         i2c_byte(builder, transaction ^ 0x5A)
-        if transaction % 8 == 7:
+        if transaction % 4 == 3:
             i2c_start(builder, repeated=True)
-            i2c_byte(builder, 0xA1)
+            i2c_byte(builder, write_address | 1)
             i2c_byte(builder, transaction ^ 0xC3, ack=False)
         i2c_stop(builder)
 
@@ -270,6 +289,7 @@ def main():
         "sample_signal": "CH0..CH1023",
         "trace_profile_id": "trace.noelv.lockstep_1024",
         "fixture_kind": "simulation_only",
+        "spi_mode_hint_available": True,
     }
     sidecar = {
         "schema": "lockstep-capture-sidecar-v3",

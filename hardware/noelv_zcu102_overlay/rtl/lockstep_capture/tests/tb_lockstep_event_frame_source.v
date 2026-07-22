@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: tb_lockstep_event_frame_source.v
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新增事件帧序列与统计回归。
-* 描述: 验证 META/DATA/END 顺序、反压、记录映射和 overflow 结束语义。
+* 版本: 1.1
+* 更新记录: 固定主结束原因与 overflow 独立上报语义。
+* 描述: 验证 META/DATA/END 顺序、反压、记录映射和结束统计。
 **********************************************************/
 
 `timescale 1ns/1ps
@@ -114,7 +114,7 @@ module tb_lockstep_event_frame_source;
     collection_done = 1'b1;
 
     while (!frame_valid || frame_type != 16'h8105) @(negedge clk);
-    if (payload0 != 32'd3 || payload1 != 32'h2 || payload2 != 32'd3 ||
+    if (payload0 != 32'd2 || payload1 != 32'h2 || payload2 != 32'd3 ||
         payload3 != 32'd2 || payload4 != 32'd1 || payload5 != 32'd0 ||
         payload14 != 32'h183 || payload15 != 32'h19f) begin
       $display("EVENT_END actual=%0d,%0h,%0d,%0d,%0d,%0d,%0h,%0h",

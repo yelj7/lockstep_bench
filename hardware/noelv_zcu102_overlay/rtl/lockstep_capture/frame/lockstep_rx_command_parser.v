@@ -1,13 +1,14 @@
 /**********************************************************
 * 文件名: lockstep_rx_command_parser.v
 * 日期: 2026-06-03
-* 版本: 0.2
+* 版本: 0.3
 * 更新记录:
 *   0.1 初始版：面向字对齐 LOCKSTEP 控制帧的命令解析器。
 *   0.2 重构为多段 FSM：拆分 nxt_state 组合逻辑与 6 组数据通路寄存器，添加注释。
+*   0.3 增加首字魔数重同步、截断帧超时和异常字节使能恢复。
 * 描述: LOCKSTEP PC-to-PL 命令帧解析器——从 FT601 32-bit 字流中解析上行命令帧。
 *       顺序接收 8 字帧头 + 可选 N 字 payload，逐字计算 CRC-32 校验，
-*       帧头完成后检查魔数/版本/长度/类型，payload 完成后检查 CRC，
+*       首字立即检查魔数，帧头完成后检查版本/长度/类型，payload 完成后检查 CRC，
 *       输出解析成功的命令或错误报告。
 **********************************************************/
 
@@ -49,6 +50,8 @@ module lockstep_rx_command_parser (
   debug_state_o
 );
   parameter UDLY = 1;
+  // FT601 生产时钟为 100 MHz，默认 1,000,000 周期对应 10 ms 字间超时。
+  parameter integer RX_GAP_TIMEOUT_CYCLES = 1000000;
 
   input         clk;
   input         rst_n;
@@ -100,6 +103,8 @@ module lockstep_rx_command_parser (
   localparam [2:0] ST_PAYLOAD    = 3'd1; // 接收 payload
   localparam [2:0] ST_CMD_HOLD   = 3'd2; // 命令输出保持，等待下游就绪
   localparam [2:0] ST_ERROR_HOLD = 3'd3; // 错误输出保持，等待下游就绪
+  localparam [31:0] RX_GAP_TIMEOUT_LIMIT =
+      (RX_GAP_TIMEOUT_CYCLES > 0) ? (RX_GAP_TIMEOUT_CYCLES - 1) : 0;
 
   //==================================================================
   // FSM 状态寄存器
@@ -131,6 +136,7 @@ module lockstep_rx_command_parser (
   //==================================================================
   reg [3:0]  header_index_r;
   reg [31:0] payload_index_r;
+  reg [31:0] rx_gap_count_r;
 
   //==================================================================
   // Block 3d: 命令输出寄存器 — 解析成功后的 cmd 握手信号与元数据
@@ -185,12 +191,36 @@ module lockstep_rx_command_parser (
   wire [31:0] current_seq_w;
   wire [31:0] current_payload_len_w;
   wire [31:0] current_crc_received_w;
+  wire        rx_full_word_w;
+  wire        rx_bad_byte_enable_w;
+  wire        rx_bad_magic_w;
+  wire        rx_word_accept_w;
+  wire        rx_frame_in_progress_w;
+  wire        rx_gap_timeout_w;
+  wire        error_type_known_w;
+  wire        error_seq_known_w;
 
   // 就绪：仅在接收帧头或 payload 阶段接受新字
   assign rx_word_ready_o = (cur_state == ST_HEADER) || (cur_state == ST_PAYLOAD);
 
   // 字握手完成
   assign rx_word_fire_w = rx_word_valid_i && rx_word_ready_o;
+
+  assign rx_full_word_w = (rx_be_valid_i == 4'hf);
+  assign rx_bad_byte_enable_w = rx_word_fire_w && !rx_full_word_w;
+  assign rx_bad_magic_w = rx_word_fire_w && rx_full_word_w &&
+                          (cur_state == ST_HEADER) && (header_index_r == 4'd0) &&
+                          (rx_word_data_i != LOCKSTEP_MAGIC);
+  assign rx_word_accept_w = rx_word_fire_w && rx_full_word_w && !rx_bad_magic_w;
+  assign rx_frame_in_progress_w = (cur_state == ST_PAYLOAD) ||
+                                  ((cur_state == ST_HEADER) && (header_index_r != 4'd0));
+  assign rx_gap_timeout_w = (RX_GAP_TIMEOUT_CYCLES > 0) &&
+                            rx_frame_in_progress_w && !rx_word_fire_w &&
+                            (rx_gap_count_r >= RX_GAP_TIMEOUT_LIMIT);
+  assign error_type_known_w = (cur_state == ST_PAYLOAD) ||
+                              ((cur_state == ST_HEADER) && (header_index_r >= 4'd2));
+  assign error_seq_known_w = (cur_state == ST_PAYLOAD) ||
+                             ((cur_state == ST_HEADER) && (header_index_r >= 4'd5));
 
   // CRC 输入数据：帧头第 8 字（CRC 字）用 0 替代（发送方 CRC 计算时该位置为 0）
   assign crc_word_w = ((cur_state == ST_HEADER) && (header_index_r == 4'd7)) ? 32'd0 : rx_word_data_i;
@@ -326,8 +356,10 @@ module lockstep_rx_command_parser (
 
     case (cur_state)
       ST_HEADER: begin
-        // 收到字且字节使能有效
-        if (rx_word_fire_w && (rx_be_valid_i == 4'hf)) begin
+        if (rx_bad_byte_enable_w || rx_bad_magic_w || rx_gap_timeout_w) begin
+          nxt_state = ST_ERROR_HOLD;
+        // 收到完整且属于当前帧的字
+        end else if (rx_word_accept_w) begin
           if (header_index_r == 4'd7) begin
             // 帧头最后一字接收完毕，检查帧头错误
             if (header_error_code_w != LOCKSTEP_ERR_NONE) begin
@@ -345,15 +377,14 @@ module lockstep_rx_command_parser (
             end
           end
           // header_index_r < 7：保持在 ST_HEADER，继续接收
-        end else if (rx_word_fire_w) begin
-          // 字节使能无效：进入错误保持
-          nxt_state = ST_ERROR_HOLD;
         end
       end
 
       ST_PAYLOAD: begin
-        // 收到字且字节使能有效
-        if (rx_word_fire_w && (rx_be_valid_i == 4'hf)) begin
+        if (rx_bad_byte_enable_w || rx_gap_timeout_w) begin
+          nxt_state = ST_ERROR_HOLD;
+        // 收到完整 payload 字
+        end else if (rx_word_accept_w) begin
           if (payload_index_r == (payload_words_r - 32'd1)) begin
             // 最后一个 payload 字：检查 CRC
             if (crc_final_w == crc_received_r) begin
@@ -363,9 +394,6 @@ module lockstep_rx_command_parser (
             end
           end
           // 非最后字：保持在 ST_PAYLOAD
-        end else if (rx_word_fire_w) begin
-          // 字节使能无效
-          nxt_state = ST_ERROR_HOLD;
         end
       end
 
@@ -404,7 +432,7 @@ module lockstep_rx_command_parser (
       capture_id_r    <= #UDLY 32'd0;
       flags_r         <= #UDLY 32'd0;
       crc_received_r  <= #UDLY 32'd0;
-    end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_HEADER)) begin
+    end else if (rx_word_accept_w && (cur_state == ST_HEADER)) begin
       // 根据帧头字序号捕获对应字段
       case (header_index_r)
         4'd0: begin
@@ -454,7 +482,7 @@ module lockstep_rx_command_parser (
       // 返回帧头状态时复位 CRC
       if ((cur_state == ST_CMD_HOLD) || (cur_state == ST_ERROR_HOLD)) begin
         crc_r <= #UDLY LOCKSTEP_CRC32_INIT;
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && ((cur_state == ST_HEADER) || (cur_state == ST_PAYLOAD))) begin
+      end else if (rx_word_accept_w && ((cur_state == ST_HEADER) || (cur_state == ST_PAYLOAD))) begin
         // 有效字接收：更新 CRC 累加器
         crc_r <= #UDLY crc_next_w;
       end
@@ -473,7 +501,7 @@ module lockstep_rx_command_parser (
       if ((cur_state == ST_CMD_HOLD) || (cur_state == ST_ERROR_HOLD)) begin
         header_index_r  <= #UDLY 4'd0;
         payload_index_r <= #UDLY 32'd0;
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf)) begin
+      end else if (rx_word_accept_w) begin
         if (cur_state == ST_HEADER) begin
           if (header_index_r == 4'd7) begin
             // 帧头最后一字：指针保持（等待状态切换），payload 指针复位
@@ -493,6 +521,20 @@ module lockstep_rx_command_parser (
   end
 
   //==================================================================
+  // Block 3c-2: 截断帧字间超时计数器
+  //==================================================================
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rx_gap_count_r <= #UDLY 32'd0;
+    end else if ((cur_state == ST_CMD_HOLD) || (cur_state == ST_ERROR_HOLD) ||
+                 rx_word_fire_w || rx_gap_timeout_w || !rx_frame_in_progress_w) begin
+      rx_gap_count_r <= #UDLY 32'd0;
+    end else begin
+      rx_gap_count_r <= #UDLY rx_gap_count_r + 32'd1;
+    end
+  end
+
+  //==================================================================
   // FSM Block 3d: 命令输出寄存器 — 解析成功后输出 cmd 握手与元数据
   //==================================================================
   always @(posedge clk or negedge rst_n) begin
@@ -507,14 +549,14 @@ module lockstep_rx_command_parser (
       if ((cur_state == ST_CMD_HOLD) && cmd_ready_i) begin
         cmd_valid_o <= #UDLY 1'b0;
       // 无 payload 帧头 CRC 校验通过 → 输出命令
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_HEADER) && (header_index_r == 4'd7) && (header_error_code_w == LOCKSTEP_ERR_NONE) && (current_payload_len_w == 32'd0) && (crc_final_w == current_crc_received_w)) begin
+      end else if (rx_word_accept_w && (cur_state == ST_HEADER) && (header_index_r == 4'd7) && (header_error_code_w == LOCKSTEP_ERR_NONE) && (current_payload_len_w == 32'd0) && (crc_final_w == current_crc_received_w)) begin
         cmd_valid_o         <= #UDLY 1'b1;
         cmd_type_o          <= #UDLY current_type_w;
         cmd_seq_o           <= #UDLY current_seq_w;
         cmd_capture_id_o    <= #UDLY capture_id_r;
         cmd_payload_words_o <= #UDLY 32'd0;
       // payload CRC 校验通过 → 输出命令
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_PAYLOAD) && (payload_index_r == (payload_words_r - 32'd1)) && (crc_final_w == crc_received_r)) begin
+      end else if (rx_word_accept_w && (cur_state == ST_PAYLOAD) && (payload_index_r == (payload_words_r - 32'd1)) && (crc_final_w == crc_received_r)) begin
         cmd_valid_o         <= #UDLY 1'b1;
         cmd_type_o          <= #UDLY type_r;
         cmd_seq_o           <= #UDLY seq_r;
@@ -542,7 +584,7 @@ module lockstep_rx_command_parser (
       cmd_payload10_o <= #UDLY 32'd0;
       cmd_payload11_o <= #UDLY 32'd0;
       cmd_payload12_o <= #UDLY 32'd0;
-    end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_PAYLOAD)) begin
+    end else if (rx_word_accept_w && (cur_state == ST_PAYLOAD)) begin
       // 按 payload 字序号写入对应寄存器
       case (payload_index_r[3:0])
         4'd0:  cmd_payload0_o  <= #UDLY rx_word_data_i;
@@ -578,15 +620,36 @@ module lockstep_rx_command_parser (
       if ((cur_state == ST_ERROR_HOLD) && error_ready_i) begin
         error_valid_o <= #UDLY 1'b0;
       // 字节使能无效错误
-      end else if (rx_word_fire_w && (rx_be_valid_i != 4'hf)) begin
+      end else if (rx_bad_byte_enable_w) begin
         error_valid_o   <= #UDLY 1'b1;
         error_code_o    <= #UDLY LOCKSTEP_ERR_BAD_BYTE_ENABLE;
-        error_type_o    <= #UDLY current_type_w;
-        error_seq_o     <= #UDLY current_seq_w;
+        error_type_o    <= #UDLY (error_type_known_w ? type_r : 16'd0);
+        error_seq_o     <= #UDLY (error_seq_known_w ? seq_r : 32'd0);
         error_detail0_o <= #UDLY {28'd0, rx_be_valid_i};
         error_detail1_o <= #UDLY 32'd0;
+      // 帧首字魔数错误：立即丢弃该字并回报，避免继续吞掉后续完整帧。
+      end else if (rx_bad_magic_w) begin
+        error_valid_o   <= #UDLY 1'b1;
+        error_code_o    <= #UDLY LOCKSTEP_ERR_BAD_MAGIC;
+        error_type_o    <= #UDLY 16'd0;
+        error_seq_o     <= #UDLY 32'd0;
+        error_detail0_o <= #UDLY rx_word_data_i;
+        error_detail1_o <= #UDLY LOCKSTEP_MAGIC;
+      // 截断帧超时：detail0 为已收字数，detail1 为当前阶段期望字数。
+      end else if (rx_gap_timeout_w) begin
+        error_valid_o <= #UDLY 1'b1;
+        error_code_o  <= #UDLY LOCKSTEP_ERR_RX_TIMEOUT;
+        error_type_o  <= #UDLY (error_type_known_w ? type_r : 16'd0);
+        error_seq_o   <= #UDLY (error_seq_known_w ? seq_r : 32'd0);
+        if (cur_state == ST_HEADER) begin
+          error_detail0_o <= #UDLY {28'd0, header_index_r};
+          error_detail1_o <= #UDLY 32'd8;
+        end else begin
+          error_detail0_o <= #UDLY payload_index_r;
+          error_detail1_o <= #UDLY payload_words_r;
+        end
       // 帧头最后一字：头校验错误 或 CRC 错误（无 payload 时）
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_HEADER) && (header_index_r == 4'd7)) begin
+      end else if (rx_word_accept_w && (cur_state == ST_HEADER) && (header_index_r == 4'd7)) begin
         if (header_error_code_w != LOCKSTEP_ERR_NONE) begin
           // 帧头字段校验失败
           error_valid_o   <= #UDLY 1'b1;
@@ -605,7 +668,7 @@ module lockstep_rx_command_parser (
           error_detail1_o <= #UDLY crc_final_w;
         end
       // payload 最后一字：CRC 校验失败
-      end else if (rx_word_fire_w && (rx_be_valid_i == 4'hf) && (cur_state == ST_PAYLOAD) && (payload_index_r == (payload_words_r - 32'd1)) && (crc_final_w != crc_received_r)) begin
+      end else if (rx_word_accept_w && (cur_state == ST_PAYLOAD) && (payload_index_r == (payload_words_r - 32'd1)) && (crc_final_w != crc_received_r)) begin
         error_valid_o   <= #UDLY 1'b1;
         error_code_o    <= #UDLY LOCKSTEP_ERR_BAD_CRC;
         error_type_o    <= #UDLY type_r;

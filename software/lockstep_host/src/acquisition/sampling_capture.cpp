@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: sampling_capture.cpp
-* 日期: 2026-07-16
-* 版本: v3.6
-* 更新记录: 强制有限 D3XX 超时并补齐各采集阶段取消检查。
-* 描述: 实现 v2/v3 线协议、D3XX 传输、1024-bit VCD 和事件 sidecar 输出。
+* 日期: 2026-07-22
+* 版本: v4.0
+* 更新记录: 增加 v4 统一时间窗口、512-bit 样本与 16-bit 稀疏状态链校验。
+* 描述: 实现 v2/v3/v4 采集帧组装、D3XX 传输及采集产物输出。
 **********************************************************/
 
 #include "sampling_capture.h"
@@ -78,6 +78,17 @@ quint32 read32(const char* data)
 quint64 read64(const char* data)
 {
     return qFromLittleEndian<quint64>(reinterpret_cast<const uchar*>(data));
+}
+
+quint8 v4SourceMaskForChange(const quint32 changeMask)
+{
+    quint8 sourceMask = 0U;
+    if ((changeMask & 0x000fU) != 0U) sourceMask |= quint8(1U << 1U);
+    if ((changeMask & 0x00f0U) != 0U) sourceMask |= quint8(1U << 2U);
+    if ((changeMask & 0x0300U) != 0U) sourceMask |= quint8(1U << 3U);
+    if ((changeMask & 0x0c00U) != 0U) sourceMask |= quint8(1U << 4U);
+    if ((changeMask & 0xf000U) != 0U) sourceMask |= quint8(1U << 7U);
+    return sourceMask;
 }
 
 bool parseStatusV2(const CaptureFrame& frame, CaptureStatusV2* status, QString* error)
@@ -263,7 +274,8 @@ CaptureDecodeResult CaptureFrameCodec::feed(const QByteArray& bytes)
         frame.header.flags = read32(raw + 24);
         frame.header.crc32 = read32(raw + 28);
         if ((frame.header.version != kCaptureProtocolVersion &&
-             frame.header.version != kCaptureProtocolVersionV3) ||
+             frame.header.version != kCaptureProtocolVersionV3 &&
+             frame.header.version != kCaptureProtocolVersionV4) ||
             frame.header.headerLength != kCaptureFrameHeaderBytes || frame.header.payloadLength > kMaxPayloadBytes) {
             result.success = false;
             result.error = QStringLiteral("采集帧头合同错误");
@@ -375,9 +387,20 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
     const bool continuousFrame = frame.header.type == CaptureFrameType::CaptureMeta ||
                                  frame.header.type == CaptureFrameType::SampleData ||
                                  frame.header.type == CaptureFrameType::CaptureEnd;
-    if ((eventFrame && frame.header.version != kCaptureProtocolVersionV3) ||
-        (continuousFrame && frame.header.version != kCaptureProtocolVersion)) {
-        if (error != nullptr) *error = QStringLiteral("采集帧版本与 v2/v3 双流合同不一致");
+    const bool v4Frame = frame.header.version == kCaptureProtocolVersionV4;
+    const bool versionValid = v4Frame ||
+        (eventFrame && frame.header.version == kCaptureProtocolVersionV3) ||
+        (continuousFrame && frame.header.version == kCaptureProtocolVersion);
+    if (!versionValid) {
+        if (error != nullptr) *error = QStringLiteral("采集帧版本与 v2/v3/v4 合同不一致");
+        return false;
+    }
+    const int frameFamily = v4Frame ? 4 : 3;
+    if (contractFamily_ == 0) {
+        contractFamily_ = frameFamily;
+        record_.contractVersion = v4Frame ? kCaptureProtocolVersionV4 : kCaptureProtocolVersion;
+    } else if (contractFamily_ != frameFamily) {
+        if (error != nullptr) *error = QStringLiteral("采集流混用 legacy 与 v4 帧");
         return false;
     }
     if (!hasAnyFrame_) {
@@ -393,28 +416,60 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         return false;
     }
     if (frame.header.type == CaptureFrameType::CaptureMeta) {
-        if (hasMeta_ || frame.payload.size() != 40) {
+        const int expectedMetaBytes = v4Frame ? 64 : 40;
+        if (hasMeta_ || frame.payload.size() != expectedMetaBytes) {
             if (error != nullptr) *error = QStringLiteral("CAPTURE_META 重复或长度错误");
             return false;
         }
-        record_.captureId = frame.header.captureId;
-        record_.sampleRateHz = read32(frame.payload.constData());
-        record_.requestedSampleCount = read32(frame.payload.constData() + 4);
-        const quint32 physicalChannels = read32(frame.payload.constData() + 24);
-        const quint32 sampleWordBits = read32(frame.payload.constData() + 28);
-        record_.windowStartIndex = read32(frame.payload.constData() + 32);
-        record_.triggerIndex = read32(frame.payload.constData() + 36);
-        if (physicalChannels != kCapturePhysicalChannels || sampleWordBits != kCaptureSampleWordBits ||
-            (hasEventMeta_ && record_.eventTimebaseHz != record_.sampleRateHz)) {
-            if (error != nullptr) *error = QStringLiteral("硬件上报的通道数或样本位宽不是 1024");
+        const char* data = frame.payload.constData();
+        const quint32 sampleRateHz = read32(data);
+        const quint32 requestedSampleCount = read32(data + 4);
+        const quint32 pretriggerCount = read32(data + 8);
+        const quint32 posttriggerCount = read32(data + 12);
+        const quint32 physicalChannels = read32(data + 24);
+        const quint32 sampleWordBits = read32(data + 28);
+        const quint32 windowStartIndex = read32(data + 32);
+        const quint32 triggerIndex = read32(data + 36);
+        const quint64 windowOriginTicks = v4Frame ? read64(data + 40) : windowStartIndex;
+        const quint64 triggerTicks = v4Frame ? read64(data + 48) : triggerIndex;
+        const quint64 windowEndExclusiveTicks = v4Frame
+            ? read64(data + 56) : quint64(windowStartIndex) + requestedSampleCount;
+        const bool v4ContractInvalid = v4Frame &&
+            (requestedSampleCount != kCaptureWindowSamplesV4 || pretriggerCount != 2047U ||
+             posttriggerCount != 2049U || physicalChannels != kCapturePhysicalChannelsV4 ||
+             sampleWordBits != kCaptureSampleWordBitsV4 ||
+             static_cast<quint32>(windowOriginTicks) != windowStartIndex ||
+             static_cast<quint32>(triggerTicks) != triggerIndex ||
+             triggerTicks < windowOriginTicks || triggerTicks - windowOriginTicks != 2047U ||
+             windowEndExclusiveTicks < windowOriginTicks ||
+             windowEndExclusiveTicks - windowOriginTicks != kCaptureWindowSamplesV4);
+        const bool legacyContractInvalid = !v4Frame &&
+            (physicalChannels != kCapturePhysicalChannels || sampleWordBits != kCaptureSampleWordBits);
+        const bool eventMetaMismatch = hasEventMeta_ &&
+            (record_.eventTimebaseHz != sampleRateHz ||
+             (v4Frame && (record_.windowOriginTicks != windowOriginTicks ||
+                          record_.triggerTicks != triggerTicks ||
+                          record_.windowEndExclusiveTicks != windowEndExclusiveTicks)));
+        if (v4ContractInvalid || legacyContractInvalid || eventMetaMismatch) {
+            if (error != nullptr) *error = QStringLiteral("CAPTURE_META 能力或时间窗口合同错误");
             return false;
         }
+        record_.captureId = frame.header.captureId;
+        record_.sampleRateHz = sampleRateHz;
+        record_.requestedSampleCount = requestedSampleCount;
+        record_.physicalChannels = physicalChannels;
+        record_.sampleWordBits = sampleWordBits;
+        record_.sampleBytes = sampleWordBits / 8U;
+        record_.windowStartIndex = windowStartIndex;
+        record_.triggerIndex = triggerIndex;
+        record_.windowOriginTicks = windowOriginTicks;
+        record_.triggerTicks = triggerTicks;
+        record_.windowEndExclusiveTicks = windowEndExclusiveTicks;
         hasMeta_ = true;
         return true;
     }
     if (frame.header.type == CaptureFrameType::EventMeta) {
-        if (hasEventMeta_ || hasEnd_ || frame.header.version != kCaptureProtocolVersionV3 ||
-            frame.payload.size() != 64) {
+        if (hasEventMeta_ || hasEnd_ || frame.payload.size() != 64) {
             if (error != nullptr) *error = QStringLiteral("EVENT_META 重复、版本或长度错误");
             return false;
         }
@@ -426,10 +481,54 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         record_.implementedSourceMask = read32(data + 4);
         record_.enabledSourceMask = read32(data + 8);
         record_.designGapMask = read32(data + 12);
-        if (record_.eventTimebaseHz == 0U || recordBytes != 64U ||
-            record_.implementedSourceMask != 0x19fU ||
-            record_.enabledSourceMask != expectedEnabledSourceMask_ ||
-            record_.designGapMask != 0x060U ||
+        bool contractInvalid = false;
+        if (v4Frame) {
+            constexpr quint32 kSparseSourceMaskV4 = 0x09eU;
+            const quint64 captureWindowOrigin = record_.windowOriginTicks;
+            const quint64 captureTrigger = record_.triggerTicks;
+            const quint64 captureWindowEnd = record_.windowEndExclusiveTicks;
+            const quint32 layoutWord = read32(data + 20);
+            record_.eventLayoutId = layoutWord & 0xffU;
+            record_.eventSpiMode = (layoutWord >> 8U) & 0x3U;
+            record_.eventSpiModeValid = (layoutWord & (1U << 10U)) != 0U;
+            record_.eventWatchdogTicks = read32(data + 24);
+            record_.eventHardTimeoutTicks = read32(data + 28);
+            const quint32 initialStateWord = read32(data + 32);
+            record_.eventInitialState = initialStateWord & 0xffffU;
+            const quint64 eventWindowOrigin = read64(data + 36);
+            const quint64 eventTrigger = read64(data + 44);
+            const quint64 eventWindowEnd = read64(data + 52);
+            record_.eventRetainedCount = read32(data + 60);
+            v4CurrentState_ = record_.eventInitialState;
+            contractInvalid = recordBytes != kCaptureEventRecordBytesV4 ||
+                record_.eventLayoutId != kCaptureEventLayoutV4 ||
+                (layoutWord & 0xfffff800U) != 0U ||
+                (initialStateWord & 0xffff0000U) != 0U ||
+                record_.implementedSourceMask != kSparseSourceMaskV4 ||
+                record_.enabledSourceMask != (expectedEnabledSourceMask_ & kSparseSourceMaskV4) ||
+                record_.designGapMask != 0x060U ||
+                record_.eventRetainedCount > kCaptureWindowSamplesV4 ||
+                eventTrigger < eventWindowOrigin || eventTrigger - eventWindowOrigin != 2047U ||
+                eventWindowEnd < eventWindowOrigin ||
+                eventWindowEnd - eventWindowOrigin != kCaptureWindowSamplesV4;
+            if (hasMeta_) {
+                contractInvalid = contractInvalid ||
+                    record_.eventTimebaseHz != record_.sampleRateHz ||
+                    captureWindowOrigin != eventWindowOrigin || captureTrigger != eventTrigger ||
+                    captureWindowEnd != eventWindowEnd;
+            }
+            record_.windowOriginTicks = eventWindowOrigin;
+            record_.triggerTicks = eventTrigger;
+            record_.windowEndExclusiveTicks = eventWindowEnd;
+            record_.windowStartIndex = static_cast<quint32>(eventWindowOrigin);
+            record_.triggerIndex = static_cast<quint32>(eventTrigger);
+        } else {
+            contractInvalid = recordBytes != 64U ||
+                record_.implementedSourceMask != 0x19fU ||
+                record_.enabledSourceMask != expectedEnabledSourceMask_ ||
+                record_.designGapMask != 0x060U;
+        }
+        if (record_.eventTimebaseHz == 0U || contractInvalid ||
             (record_.enabledSourceMask & ~record_.implementedSourceMask) != 0U ||
             (hasMeta_ && record_.eventTimebaseHz != record_.sampleRateHz)) {
             if (error != nullptr) *error = QStringLiteral("EVENT_META 能力或记录宽度合同错误");
@@ -439,6 +538,63 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         return true;
     }
     if (frame.header.type == CaptureFrameType::EventData) {
+        if (v4Frame) {
+            if (!hasEventMeta_ || hasEventEnd_ || hasEnd_ ||
+                frame.payload.size() != static_cast<int>(kCaptureEventRecordBytesV4)) {
+                if (error != nullptr) *error = QStringLiteral("EVENT_DATA v4 state or length is invalid");
+                return false;
+            }
+            const char* data = frame.payload.constData();
+            const quint32 absoluteIndexLow = read32(data);
+            const quint32 globalSequence = read32(data + 4);
+            const quint32 stateWord = read32(data + 8);
+            const quint32 changeWord = read32(data + 12);
+            const quint32 stateAfter = stateWord & 0xffffU;
+            const quint8 sourceMask = static_cast<quint8>((stateWord >> 20U) & 0xffU);
+            const quint32 changeMask = changeWord & 0xffffU;
+            const quint8 expectedSourceMask = v4SourceMaskForChange(changeMask);
+            const quint32 relativeIndex = absoluteIndexLow -
+                static_cast<quint32>(record_.windowOriginTicks);
+            const quint64 absoluteIndex = record_.windowOriginTicks + relativeIndex;
+            const quint32 stateBefore = stateAfter ^ changeMask;
+            const bool sequenceInvalid = hasV4Sequence_ && globalSequence != v4NextSequence_;
+            const bool indexInvalid = relativeIndex >= kCaptureWindowSamplesV4 ||
+                absoluteIndex >= record_.windowEndExclusiveTicks ||
+                (hasV4AbsoluteIndex_ && absoluteIndex <= v4LastAbsoluteIndex_);
+            const bool recordInvalid = (stateWord & 0xf00f0000U) != 0U ||
+                (changeWord & 0xffff0000U) != 0U || changeMask == 0U ||
+                sourceMask != expectedSourceMask ||
+                (quint32(sourceMask) & ~record_.enabledSourceMask) != 0U ||
+                stateBefore != v4CurrentState_ || sequenceInvalid || indexInvalid;
+            if (recordInvalid) {
+                if (error != nullptr) {
+                    *error = QStringLiteral(
+                        "EVENT_DATA v4 contract error: index=%1 seq=%2 state_before=0x%3 "
+                        "expected_state=0x%4 change=0x%5 source=0x%6 expected_source=0x%7")
+                        .arg(absoluteIndexLow).arg(globalSequence)
+                        .arg(stateBefore, 4, 16, QLatin1Char('0'))
+                        .arg(v4CurrentState_, 4, 16, QLatin1Char('0'))
+                        .arg(changeMask, 4, 16, QLatin1Char('0'))
+                        .arg(sourceMask, 2, 16, QLatin1Char('0'))
+                        .arg(expectedSourceMask, 2, 16, QLatin1Char('0'));
+                }
+                return false;
+            }
+            SamplingCaptureRecord::SparseChangeRecord change;
+            change.absoluteIndexLow = absoluteIndexLow;
+            change.absoluteIndex = absoluteIndex;
+            change.globalSequence = globalSequence;
+            change.stateAfter = stateAfter;
+            change.changeMask = changeMask;
+            change.sourceMask = sourceMask;
+            record_.sparseChanges.append(change);
+            v4CurrentState_ = stateAfter;
+            v4NextSequence_ = globalSequence + 1U;
+            v4LastAbsoluteIndex_ = absoluteIndex;
+            hasV4Sequence_ = true;
+            hasV4AbsoluteIndex_ = true;
+            return true;
+        }
         if (!hasEventMeta_ || hasEventEnd_ || hasEnd_ || frame.payload.isEmpty() ||
             (frame.payload.size() % 64) != 0) {
             if (error != nullptr) *error = QStringLiteral("EVENT_DATA 状态或长度错误");
@@ -491,6 +647,72 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
             return false;
         }
         const char* data = frame.payload.constData();
+        if (v4Frame) {
+            record_.eventEndReason = read32(data);
+            record_.eventOverflowMask = read32(data + 4);
+            record_.eventObservedTotal = read32(data + 8);
+            record_.eventRetainedTotal = read32(data + 12);
+            record_.eventUploadedTotal = read32(data + 16);
+            record_.eventHardwareDroppedTotal = read32(data + 20);
+            record_.eventAcceptedTotal = record_.eventObservedTotal;
+            record_.eventEmittedTotal = record_.eventUploadedTotal;
+            record_.eventDroppedTotal = record_.eventHardwareDroppedTotal;
+            record_.eventDroppedBySource.clear();
+            quint64 droppedSum = 0U;
+            for (int source = 0; source < 9; ++source) {
+                const quint32 dropped = read32(data + 24 + source * 4);
+                record_.eventDroppedBySource.append(dropped);
+                droppedSum += dropped;
+            }
+            const quint32 masks = read32(data + 60);
+            const quint32 endEnabledSourceMask = masks & 0x1ffU;
+            const quint32 endImplementedSourceMask = (masks >> 9U) & 0x1ffU;
+            const quint32 received = static_cast<quint32>(record_.sparseChanges.size());
+            const bool statisticsInvalid =
+                record_.eventEndReason > static_cast<quint32>(EventEndReason::FatalError) ||
+                (record_.eventOverflowMask & ~0x1ffU) != 0U ||
+                (masks & 0xfffc0000U) != 0U ||
+                droppedSum != record_.eventHardwareDroppedTotal ||
+                record_.eventRetainedTotal != record_.eventRetainedCount ||
+                record_.eventRetainedTotal != received ||
+                record_.eventUploadedTotal != record_.eventRetainedTotal ||
+                record_.eventObservedTotal < record_.eventRetainedTotal ||
+                endEnabledSourceMask != record_.enabledSourceMask ||
+                endImplementedSourceMask != record_.implementedSourceMask;
+            const bool eventLoss = record_.eventHardwareDroppedTotal != 0U ||
+                                   record_.eventOverflowMask != 0U || eventSequenceGap_;
+            const bool reasonIsOverflow =
+                record_.eventEndReason == static_cast<quint32>(EventEndReason::Overflow);
+            const bool overflowReasonMismatch = reasonIsOverflow != eventLoss;
+            if (statisticsInvalid || overflowReasonMismatch || eventLoss) {
+                if (error != nullptr) {
+                    const QString detail = QStringLiteral(
+                        "EVENT_END v4 contract error: reason=%1 overflow=0x%2 observed=%3 "
+                        "retained=%4 meta_retained=%5 received=%6 uploaded=%7 dropped=%8 "
+                        "drop_sum=%9 enabled=0x%10/0x%11 implemented=0x%12/0x%13")
+                        .arg(record_.eventEndReason)
+                        .arg(record_.eventOverflowMask, 3, 16, QLatin1Char('0'))
+                        .arg(record_.eventObservedTotal).arg(record_.eventRetainedTotal)
+                        .arg(record_.eventRetainedCount).arg(received)
+                        .arg(record_.eventUploadedTotal).arg(record_.eventHardwareDroppedTotal)
+                        .arg(droppedSum)
+                        .arg(endEnabledSourceMask, 3, 16, QLatin1Char('0'))
+                        .arg(record_.enabledSourceMask, 3, 16, QLatin1Char('0'))
+                        .arg(endImplementedSourceMask, 3, 16, QLatin1Char('0'))
+                        .arg(record_.implementedSourceMask, 3, 16, QLatin1Char('0'));
+                    if (overflowReasonMismatch) {
+                        *error = QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR: %1").arg(detail);
+                    } else if (eventLoss && !statisticsInvalid) {
+                        *error = QStringLiteral("CAPTURE_END_OVERFLOW: %1").arg(detail);
+                    } else {
+                        *error = detail;
+                    }
+                }
+                return false;
+            }
+            hasEventEnd_ = true;
+            return true;
+        }
         record_.eventEndReason = read32(data + 0);
         record_.eventOverflowMask = read32(data + 4);
         record_.eventAcceptedTotal = read32(data + 8);
@@ -505,17 +727,22 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         }
         const quint32 endEnabledSourceMask = read32(data + 56);
         const quint32 endImplementedSourceMask = read32(data + 60);
-        if (record_.eventEndReason > static_cast<quint32>(EventEndReason::FatalError) ||
+        const bool statisticsInvalid =
+            record_.eventEndReason > static_cast<quint32>(EventEndReason::FatalError) ||
             (record_.eventOverflowMask & ~0x1ffU) != 0U ||
             droppedSum != record_.eventDroppedTotal ||
             record_.eventEmittedTotal != static_cast<quint32>(record_.protocolEvents.size()) ||
             record_.eventAcceptedTotal != record_.eventEmittedTotal + record_.eventDroppedTotal ||
             endEnabledSourceMask != record_.enabledSourceMask ||
-            endImplementedSourceMask != record_.implementedSourceMask ||
-            record_.eventDroppedTotal != 0U || record_.eventOverflowMask != 0U ||
-            eventSequenceGap_) {
+            endImplementedSourceMask != record_.implementedSourceMask;
+        const bool eventLoss = record_.eventDroppedTotal != 0U ||
+                               record_.eventOverflowMask != 0U || eventSequenceGap_;
+        const bool reasonIsOverflow =
+            record_.eventEndReason == static_cast<quint32>(EventEndReason::Overflow);
+        const bool overflowReasonMismatch = reasonIsOverflow != eventLoss;
+        if (statisticsInvalid || overflowReasonMismatch || eventLoss) {
             if (error != nullptr) {
-                *error = QStringLiteral(
+                const QString detail = QStringLiteral(
                     "EVENT_END 统计、溢出或事件序号不一致: overflow=0x%1, "
                     "accepted=%2, emitted=%3, received=%4, dropped=%5, "
                     "drop_counts=[%6], enabled=0x%7/0x%8, implemented=0x%9/0x%10, "
@@ -531,6 +758,13 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
                     .arg(endImplementedSourceMask, 3, 16, QLatin1Char('0'))
                     .arg(record_.implementedSourceMask, 3, 16, QLatin1Char('0'))
                     .arg(eventSequenceGap_ ? QStringLiteral("true") : QStringLiteral("false"));
+                if (overflowReasonMismatch) {
+                    *error = QStringLiteral("CAPTURE_END_OVERFLOW_CONTRACT_ERROR: %1").arg(detail);
+                } else if (eventLoss && !statisticsInvalid) {
+                    *error = QStringLiteral("CAPTURE_END_OVERFLOW: %1").arg(detail);
+                } else {
+                    *error = detail;
+                }
             }
             return false;
         }
@@ -578,14 +812,15 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
     const quint32 sampleBytes = read32(frame.payload.constData() + 20);
     const quint32 payloadBytes = read32(frame.payload.constData() + 24);
     if (windowStart != record_.windowStartIndex || trigger != record_.triggerIndex ||
-        sampleBytes != record_.actualSampleCount * kCaptureSampleBytes || payloadBytes != payloadBytes_ ||
+        (v4Frame && record_.actualSampleCount != kCaptureWindowSamplesV4) ||
+        sampleBytes != record_.actualSampleCount * record_.sampleBytes || payloadBytes != payloadBytes_ ||
         sampleBytes_.size() != static_cast<int>(sampleBytes)) {
         if (error != nullptr) *error = QStringLiteral("CAPTURE_END 与实际样本流不一致");
         return false;
     }
     for (quint32 index = 0; index < record_.actualSampleCount; ++index) {
-        record_.samples.append(sampleBytes_.mid(static_cast<int>(index * kCaptureSampleBytes),
-                                                static_cast<int>(kCaptureSampleBytes)));
+        record_.samples.append(sampleBytes_.mid(static_cast<int>(index * record_.sampleBytes),
+                                                static_cast<int>(record_.sampleBytes)));
     }
     hasEnd_ = true;
     return true;

@@ -1,9 +1,9 @@
 /**********************************************************
 * 文件名: tb_lockstep_global_timestamp.v
 * 日期: 2026-07-19
-* 版本: 1.0
-* 更新记录: 新增跨采集空闲期的全局时间戳回归。
-* 描述: 验证时间基准仅由硬复位清零，并在模拟 ARM/STOP 间隔持续递增。
+* 版本: 1.1
+* 更新记录: 改为验证外部绝对索引对齐、32 位回绕扩展和无效样本保持。
+* 描述: 验证稀疏事件时间戳与连续窗口使用同一条全局采样时间轴。
 **********************************************************/
 
 `timescale 1ns/1ps
@@ -13,14 +13,15 @@ module tb_lockstep_global_timestamp;
 
   reg clk;
   reg rst_n;
-  reg capture_active;
+  reg sample_valid;
+  reg [31:0] sample_abs_index;
   wire [63:0] timestamp;
-  reg [63:0] first_capture_timestamp;
-  reg [63:0] second_capture_timestamp;
 
   lockstep_global_timestamp #(.UDLY(UDLY)) dut (
     .clk(clk),
     .rst_n(rst_n),
+    .sample_valid_i(sample_valid),
+    .sample_abs_index_i(sample_abs_index),
     .timestamp_o(timestamp)
   );
 
@@ -37,26 +38,54 @@ module tb_lockstep_global_timestamp;
   initial begin
     clk = 1'b0;
     rst_n = 1'b0;
-    capture_active = 1'b0;
-    first_capture_timestamp = 64'd0;
-    second_capture_timestamp = 64'd0;
+    sample_valid = 1'b0;
+    sample_abs_index = 32'd0;
 
     repeat (3) @(posedge clk);
     rst_n = 1'b1;
-    repeat (5) @(posedge clk);
+    @(negedge clk);
+    sample_valid = 1'b1;
+    sample_abs_index = 32'h12345678;
+    @(posedge clk);
     #2;
-    capture_active = 1'b1;
-    first_capture_timestamp = timestamp;
-    repeat (4) @(posedge clk);
-    capture_active = 1'b0;
-    repeat (11) @(posedge clk);
-    capture_active = 1'b1;
-    #2;
-    second_capture_timestamp = timestamp;
+    if (timestamp != 64'h0000000012345678)
+      fail("nonzero absolute index did not seed timestamp");
 
-    if (first_capture_timestamp == 64'd0) fail("first capture timestamp did not advance");
-    if (second_capture_timestamp <= first_capture_timestamp + 64'd11)
-      fail("timestamp did not advance through capture idle interval");
+    @(negedge clk);
+    sample_abs_index = 32'hfffffffe;
+    @(posedge clk);
+    #2;
+    if (timestamp != 64'h00000000fffffffe)
+      fail("timestamp did not follow pre-wrap absolute index");
+
+    @(negedge clk);
+    sample_abs_index = 32'hffffffff;
+    @(posedge clk);
+    #2;
+    if (timestamp != 64'h00000000ffffffff)
+      fail("timestamp lost final pre-wrap sample");
+
+    @(negedge clk);
+    sample_abs_index = 32'h00000000;
+    @(posedge clk);
+    #2;
+    if (timestamp != 64'h0000000100000000)
+      fail("timestamp epoch did not advance across 32-bit wrap");
+
+    @(negedge clk);
+    sample_abs_index = 32'h00000001;
+    @(posedge clk);
+    #2;
+    if (timestamp != 64'h0000000100000001)
+      fail("timestamp did not continue after wrap");
+
+    @(negedge clk);
+    sample_valid = 1'b0;
+    sample_abs_index = 32'h00000055;
+    repeat (3) @(posedge clk);
+    #2;
+    if (timestamp != 64'h0000000100000001)
+      fail("invalid samples changed the global timestamp");
 
     rst_n = 1'b0;
     #2;
@@ -64,6 +93,4 @@ module tb_lockstep_global_timestamp;
     $display("PASS tb_lockstep_global_timestamp");
     $finish;
   end
-
-  wire unused_capture_active_w = capture_active;
 endmodule

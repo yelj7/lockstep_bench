@@ -25,6 +25,7 @@ module tb_lockstep_capture_recovery;
   reg [31:0] sample_abs_index_i;
   wire arm_ready_o;
   wire arm_accepted_o;
+  wire pretrigger_ready_o;
   wire done_o;
   wire abort_pulse_o;
   wire watchdog_pulse_o;
@@ -63,7 +64,7 @@ module tb_lockstep_capture_recovery;
     .done_pulse_o(),
     .upload_allowed_o(),
     .param_error_o(),
-    .pretrigger_ready_o(),
+    .pretrigger_ready_o(pretrigger_ready_o),
     .meta_valid_o(),
     .meta_protocol_enable_o(),
     .meta_protocol_count_o(),
@@ -158,7 +159,17 @@ module tb_lockstep_capture_recovery;
 
     sample_i[418] = 1'b1;
     sample_i[429] = 1'b1;
+    trigger_timeout_samples_i = 32'd0;
     pulse_arm();
+    wait_count_r = 0;
+    while (!pretrigger_ready_o && wait_count_r < 5000) begin
+      @(posedge read_clk);
+      wait_count_r = wait_count_r + 1;
+    end
+    if (!pretrigger_ready_o) begin
+      failures_r = failures_r + 1;
+      $display("FAIL re-arm pretrigger history did not become ready");
+    end
     wait_count_r = 0;
     while (!done_o && wait_count_r < 100000) begin
       @(posedge read_clk);

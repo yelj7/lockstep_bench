@@ -1,10 +1,9 @@
 /**********************************************************
 * 文件名: lockstep_wide_capture_window_cdc.v
-* 日期: 2026-07-16
-* 版本: 1.0
-* 更新记录: ARM 改为 pending/ready 握手，并增加任意 AHB 传输触发值。
-* 描述: sample_clk 域负责 AHB/UART/SPI/CAN/I2C/ETH/USB/JTAG
-*       最高 1024-bit 宽样本写入和触发窗口冻结；read_clk 域在采集完成后
+* 日期: 2026-07-22
+* 版本: 1.2
+* 更新记录: 固定 2047 点预触发填充，并输出 sample 域生命周期脉冲。
+* 描述: sample_clk 域负责最高 1024-bit 宽样本写入和触发窗口冻结；read_clk 域在采集完成后
 *       读取 BRAM lane 并交给 FT601 上行帧源。FT601 只参与配置和
 *       采后上传，不参与实时采样。
 **********************************************************/
@@ -53,6 +52,9 @@ module lockstep_wide_capture_window_cdc (
   watchdog_pulse_o,
   trigger_seen_o,
   trigger_pulse_sample_o,
+  arm_pulse_sample_o,
+  stop_pulse_sample_o,
+  capture_done_pulse_sample_o,
   watchdog_expired_o,
   read_req_i,
   read_sample_index_i,
@@ -121,6 +123,9 @@ module lockstep_wide_capture_window_cdc (
   output                              watchdog_pulse_o;
   output                              trigger_seen_o;
   output                              trigger_pulse_sample_o;
+  output                              arm_pulse_sample_o;
+  output                              stop_pulse_sample_o;
+  output                              capture_done_pulse_sample_o;
   output                              watchdog_expired_o;
   input                               read_req_i;
   input  [SAMPLE_ADDR_WIDTH-1:0]      read_sample_index_i;
@@ -180,6 +185,8 @@ module lockstep_wide_capture_window_cdc (
   reg [4:0]                       trigger_mismatch_mask_read_r;
   (* ASYNC_REG = "TRUE" *) reg    arm_ready_sample_d1_r;
   (* ASYNC_REG = "TRUE" *) reg    arm_ready_sample_d2_r;
+  (* ASYNC_REG = "TRUE" *) reg    pretrigger_ready_read_d1_r;
+  (* ASYNC_REG = "TRUE" *) reg    pretrigger_ready_read_d2_r;
   (* ASYNC_REG = "TRUE" *) reg    done_toggle_read_d1_r;
   (* ASYNC_REG = "TRUE" *) reg    done_toggle_read_d2_r;
   (* ASYNC_REG = "TRUE" *) reg    done_toggle_read_d3_r;
@@ -231,6 +238,7 @@ module lockstep_wide_capture_window_cdc (
   wire                            arm_request_sample_w;
   wire                            arm_accept_sample_w;
   wire                            trigger_accept_w;
+  wire                            pretrigger_ready_sample_w;
   wire                            addr_valid_w;
   wire                            addr_ready_w;
   wire                            addr_match_w;
@@ -292,6 +300,9 @@ module lockstep_wide_capture_window_cdc (
   assign param_ok_w        = param_width_ok_w && param_lane_ok_w && param_window_ok_w;
   assign param_error_o     = !param_ok_w;
   assign trigger_pulse_sample_o = trigger_accept_w;
+  assign arm_pulse_sample_o = arm_accept_sample_w;
+  assign stop_pulse_sample_o = stop_request_sample_w || watchdog_fire_w;
+  assign capture_done_pulse_sample_o = capture_done_fire_w;
 
   assign sample_padded_w = sample_i;
   assign arm_ready_sample_w = ((sample_state_r == ST_IDLE) || (sample_state_r == ST_DONE)) && param_ok_w;
@@ -318,8 +329,10 @@ module lockstep_wide_capture_window_cdc (
                               (mismatch_active_w != 5'b00000);
   // Address match and mismatch rising edge are independent trigger sources.
   assign trace_trigger_w = addr_trigger_w || mismatch_trigger_w;
-  assign trigger_accept_w = (sample_state_r == ST_PRE) &&
-                            ((AHB_TRIGGER_MODE != 0) ? trace_trigger_w : legacy_index_trigger_w);
+  assign pretrigger_ready_sample_w = (sample_state_r == ST_PRE) &&
+                                     (sample_index_r >= PRETRIGGER_SAMPLE_COUNT);
+  assign trigger_accept_w = pretrigger_ready_sample_w &&
+                             ((AHB_TRIGGER_MODE != 0) ? trace_trigger_w : legacy_index_trigger_w);
   assign post_sample_accept_w = (sample_state_r == ST_POST) && sample_valid_i;
   assign capture_done_fire_w = post_sample_accept_w && (post_count_sample_r == (post_target_count_sample_r - 32'd1));
   assign capture_write_w = ((sample_state_r == ST_PRE) || (sample_state_r == ST_POST)) && sample_valid_i;
@@ -327,7 +340,7 @@ module lockstep_wide_capture_window_cdc (
   assign trigger_pre_count_w = (sample_index_r >= PRETRIGGER_SAMPLE_COUNT) ?
                                PRETRIGGER_SAMPLE_COUNT : sample_index_r;
   assign trigger_post_target_count_w = (WINDOW_SAMPLE_COUNT - 32'd1) - trigger_pre_count_w;
-  assign trigger_window_start_abs_index_w = sample_index_r - trigger_pre_count_w;
+  assign trigger_window_start_abs_index_w = sample_abs_index_i - trigger_pre_count_w;
   assign trigger_pre_count_addr_w = trigger_pre_count_w[SAMPLE_ADDR_WIDTH-1:0];
   assign trigger_window_start_addr_w = wr_addr_r - trigger_pre_count_addr_w;
 
@@ -347,7 +360,7 @@ module lockstep_wide_capture_window_cdc (
   assign done_o = meta_valid_o;
   assign done_pulse_o = done_event_read_w;
   assign upload_allowed_o = meta_valid_o;
-  assign pretrigger_ready_o = 1'b0;
+  assign pretrigger_ready_o = pretrigger_ready_read_d2_r;
   assign meta_protocol_count_o = PROTOCOL_COUNT;
   assign meta_sample_bits_o = PROBE_SAMPLE_BITS;
   assign meta_lane_count_o = ACTIVE_LANE_COUNT;
@@ -583,6 +596,8 @@ module lockstep_wide_capture_window_cdc (
     if (!read_rst_n) begin
       arm_ready_sample_d1_r <= #UDLY 1'b0;
       arm_ready_sample_d2_r <= #UDLY 1'b0;
+      pretrigger_ready_read_d1_r <= #UDLY 1'b0;
+      pretrigger_ready_read_d2_r <= #UDLY 1'b0;
       done_toggle_read_d1_r <= #UDLY 1'b0;
       done_toggle_read_d2_r <= #UDLY 1'b0;
       done_toggle_read_d3_r <= #UDLY 1'b0;
@@ -602,6 +617,8 @@ module lockstep_wide_capture_window_cdc (
     end else begin
       arm_ready_sample_d1_r <= #UDLY arm_ready_sample_r;
       arm_ready_sample_d2_r <= #UDLY arm_ready_sample_d1_r;
+      pretrigger_ready_read_d1_r <= #UDLY pretrigger_ready_sample_w;
+      pretrigger_ready_read_d2_r <= #UDLY pretrigger_ready_read_d1_r;
       done_toggle_read_d1_r <= #UDLY done_toggle_sample_r;
       done_toggle_read_d2_r <= #UDLY done_toggle_read_d1_r;
       done_toggle_read_d3_r <= #UDLY done_toggle_read_d2_r;
