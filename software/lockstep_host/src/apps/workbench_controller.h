@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: workbench_controller.h
 * 日期: 2026-07-14
-* 版本: v1.2
-* 更新记录: 增加报告模型构建、生命周期刷新和报告文件操作
+* 版本: v1.5
+* 更新记录: 支持采样配置准备与任务提交分阶段执行。
 * 描述: 声明 UI 与工作区、目标控制、报告及日志模块的适配控制器
 **********************************************************/
 
@@ -13,6 +13,7 @@
 
 #include <QObject>
 #include <QSerialPort>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -25,8 +26,13 @@
 #include "resource_manager.h"
 #include "target_control.h"
 #include "waveform_trace_viewer.h"
-#include "workflow_engine.h"
 #include "workspace_manager.h"
+
+class QThread;
+
+namespace lockstep::acquisition {
+struct SamplingCaptureConfig;
+}
 
 namespace lockstep::apps {
 
@@ -36,6 +42,7 @@ public:
         lockstep::ui::MainWindowShell* window,
         lockstep::ui::UiMode mode,
         QObject* parent = nullptr);
+    ~WorkbenchController() override;
 
     bool initialize(const QString& workspaceRootPath);
 
@@ -61,17 +68,21 @@ private:
     void toggleSerialMonitor();
     void clearSerialOutput();
     void sendSerialData(const QString& text);
-    bool saveSamplingConfig(const QVariantMap& parameters, bool requestHardwareSend);
-    void startSamplingCapture(const QVariantMap& parameters);
+    bool sendSamplingConfig(const QVariantMap& parameters);
+    bool persistSamplingConfig(
+        const QVariantMap& parameters,
+        lockstep::acquisition::SamplingCaptureConfig* hardwareConfig,
+        bool saveToTask);
     void browseProgramImage();
     void programImage();
     void verifyReadback();
     void beginHardwareOperation(lockstep::target_control::ProgramOperation operation, const QString& name);
     void endHardwareOperation();
+    void trackWorkerThread(QThread* thread);
     void updateProgramActionAvailability();
     void updateWriteOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
     void updateReadbackOperationProgress(quint64 completedBytes, quint64 totalBytes, const QString& message);
-    void runProgram();
+    void runProgram(const QVariantMap& samplingParameters);
     void stopProgram();
     void appendProgramSerialOutput(const QString& text);
     void updateRunButtonText();
@@ -88,7 +99,7 @@ private:
     void importWaveformFile();
     void refreshWaveformView();
     void refreshWaveformViewWithAutoAnalysis();
-    void analyzeCurrentTrace(bool refreshAfterAnalysis = true);
+    bool analyzeCurrentTrace(bool refreshAfterAnalysis = true);
     void updateProjectView();
     void updateTaskDetail();
     void updateTopStatus();
@@ -118,14 +129,11 @@ private:
     lockstep::target_control::DebugAccess* debugAccess() const;
     QJsonObject resourceSnapshotJson() const;
     lockstep::workspace::WorkspaceMode workspaceMode() const;
-    lockstep::workflow::FlowMode flowMode() const;
 
     lockstep::ui::MainWindowShell* window_;
     lockstep::ui::UiMode mode_;
     lockstep::workspace::WorkspaceManager workspace_;
     lockstep::resources::ResourceManager resources_;
-    lockstep::workflow::WorkflowEngine workflow_;
-    lockstep::target_control::TargetConnectionService connectionService_;
     lockstep::target_control::ProgramController programController_;
     lockstep::reporting::ReportGenerator reportGenerator_;
     lockstep::error_handling::ErrorRegistry errorRegistry_;
@@ -150,7 +158,6 @@ private:
     bool targetConnectionBusy_;
 
     lockstep::workspace::TaskContext currentTask_;
-    lockstep::workflow::FlowState flowState_;
     lockstep::target_control::DebugProfile debugProfile_;
     lockstep::target_control::ConnectionRecord connectionRecord_;
     lockstep::target_control::PrecheckRecord precheckRecord_;
@@ -169,6 +176,8 @@ private:
     bool runButtonResetMode_;
     bool reportGenerationBusy_;
     bool samplingCaptureBusy_;
+    QThread* samplingCaptureThread_;
+    QSet<QThread*> workerThreads_;
     lockstep::target_control::ProgramOperation hardwareOperation_;
     QString hardwareOperationName_;
     int currentWriteProgress_;

@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: workbench_dialogs.cpp
 * 日期: 2026-07-17
-* 版本: 1.0
-* 更新记录: 新增任务加载、配置保存和任务删除确认弹窗实现。
+* 版本: 1.1
+* 更新记录: 移除采样配置保存决策弹窗，保留任务高影响操作确认。
 * 描述: 提供键盘可取消且默认保护当前数据的模态确认框。
 **********************************************************/
 
@@ -75,35 +75,6 @@ bool confirmTaskDeletion(QWidget* const parent, const QString& taskLabel)
     makeDefaultCancel(&dialog, cancelButton);
     dialog.exec();
     return dialog.clickedButton() == deleteButton;
-}
-
-ConfigSaveDecision askConfigSaveDecision(QWidget* const parent, const QString& taskLabel)
-{
-    QMessageBox dialog(parent);
-    dialog.setObjectName(QStringLiteral("sampling_config_save_decision_dialog"));
-    dialog.setWindowTitle(QStringLiteral("保存采样配置"));
-    dialog.setIcon(QMessageBox::Question);
-    dialog.setText(QStringLiteral("采样配置已发生改动。"));
-    dialog.setInformativeText(
-        QStringLiteral("请选择覆盖当前任务“%1”，或将改动另存为新任务。\n"
-                       "覆盖会清空与旧配置关联的日志、证据、波形和报告。")
-            .arg(taskLabel));
-    QPushButton* const overwriteButton = addButton(
-        &dialog, QStringLiteral("覆盖当前任务"), QStringLiteral("sampling_config_overwrite_button"),
-        QMessageBox::AcceptRole);
-    QPushButton* const saveAsButton = addButton(
-        &dialog, QStringLiteral("另存为新任务"), QStringLiteral("sampling_config_save_as_button"),
-        QMessageBox::ActionRole);
-    QPushButton* const cancelButton = addButton(
-        &dialog, QStringLiteral("取消"), QStringLiteral("sampling_config_cancel_button"),
-        QMessageBox::RejectRole);
-    overwriteButton->setAutoDefault(false);
-    saveAsButton->setAutoDefault(false);
-    makeDefaultCancel(&dialog, cancelButton);
-    dialog.exec();
-    if (dialog.clickedButton() == overwriteButton) return ConfigSaveDecision::Overwrite;
-    if (dialog.clickedButton() == saveAsButton) return ConfigSaveDecision::SaveAsNewTask;
-    return ConfigSaveDecision::Cancel;
 }
 
 bool samplingConfigHasMeaningfulChanges(const QByteArray& existingBytes, const QJsonObject& proposed)

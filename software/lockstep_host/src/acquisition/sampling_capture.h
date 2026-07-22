@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: sampling_capture.h
 * 日期: 2026-07-14
-* 版本: v3.1
-* 更新记录: 主分支恢复 D3XX 传输并保留 v3 事件帧与稀疏事件记录合同。
+* 版本: v3.3
+* 更新记录: 增加完整配置序列化和分阶段协作式取消合同。
 * 描述: 声明帧编解码、采集会话、D3XX 传输及 VCD/事件产物导出。
 **********************************************************/
 
@@ -46,6 +46,17 @@ enum class CaptureFrameType : quint16 {
     ErrorResponse = 0x80ff
 };
 
+enum class EventEndReason : quint32 {
+    ProgramDone = 0,
+    HostTerminate = 1,
+    Watchdog = 2,
+    Overflow = 3,
+    HardTimeout = 4,
+    FatalError = 5
+};
+
+QString toString(EventEndReason reason);
+
 struct CaptureFrameHeader final {
     quint32 magic = kCaptureFrameMagic;
     quint16 version = kCaptureProtocolVersion;
@@ -86,7 +97,6 @@ public:
                       quint32 captureId = 0, quint32 flags = 0,
                       quint16 version = kCaptureProtocolVersion) const;
     CaptureDecodeResult feed(const QByteArray& bytes);
-    void reset();
 
 private:
     QByteArray buffer_;
@@ -111,6 +121,7 @@ struct SamplingCaptureConfig final {
     quint32 eventHardTimeoutTicks = 240'000'000U;
 
     bool validate(QString* error) const;
+    QJsonObject toJson() const;
     QByteArray toPayload() const;
     QByteArray toEventPayload() const;
 };
@@ -165,6 +176,7 @@ struct SamplingCaptureRecord final {
         QByteArray payload;
     };
     QList<ProtocolEvent> protocolEvents;
+    bool hasEventStream = false;
     quint32 eventTimebaseHz = 0;
     quint32 implementedSourceMask = 0;
     quint32 enabledSourceMask = 0;
@@ -251,25 +263,27 @@ private:
 
 bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRootPath,
                      QString* vcdPath, QString* sidecarPath, QString* error);
+bool validateCaptureCompletion(const SamplingCaptureRecord& capture, QString* error);
 
 class SamplingCaptureSession final {
 public:
     bool configure(CaptureTransport* transport, const SamplingCaptureConfig& config,
                    QString* error) const;
     bool armAndWaitAccepted(CaptureTransport* transport, quint32 commandSequence,
-                            quint32* captureId, QString* error) const;
+                             quint32* captureId, QString* error) const;
+    bool startEventStream(CaptureTransport* transport, quint32 commandSequence,
+                          QString* error) const;
     bool collect(CaptureTransport* transport, const QString& taskRootPath, int timeoutMs,
-                 SamplingCaptureRecord* record, QString* error,
-                 quint32 expectedEnabledSourceMask = 0x19fU) const;
+                  SamplingCaptureRecord* record, QString* error,
+                  quint32 expectedEnabledSourceMask = 0x19fU,
+                  const std::function<bool()>& cancelled = {}) const;
     bool queryStatus(CaptureTransport* transport, CaptureStatusV2* status, QString* error) const;
     bool stopAndRecover(CaptureTransport* transport, CaptureStatusV2* status, QString* error) const;
     CaptureSessionResult runDetailed(CaptureTransport* transport, const SamplingCaptureConfig& config,
-                                     const QString& taskRootPath, int timeoutMs,
-                                     SamplingCaptureRecord* record,
-                                     const std::function<bool(quint32, QString*)>& afterArm = {}) const;
-    bool run(CaptureTransport* transport, const SamplingCaptureConfig& config,
-             const QString& taskRootPath, int timeoutMs, SamplingCaptureRecord* record,
-             QString* error) const;
+                                      const QString& taskRootPath, int timeoutMs,
+                                      SamplingCaptureRecord* record,
+                                      const std::function<bool(quint32, QString*)>& afterArm = {},
+                                      const std::function<bool()>& cancelled = {}) const;
 };
 
 }  // namespace lockstep::acquisition

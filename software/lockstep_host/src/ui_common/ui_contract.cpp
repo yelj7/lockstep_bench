@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_contract.cpp
 * 日期: 2026-07-14
-* 版本: v1.1
-* 更新记录: 增加测试报告文件操作显示文本
+* 版本: v1.2
+* 更新记录: 移除独立保存与开始采集动作显示文本。
 * 描述: 实现界面动作显示文本和默认工作台状态
 **********************************************************/
 
@@ -43,9 +43,7 @@ QString toDisplayText(const UiAction action)
     case UiAction::DetachLogWindow: return QStringLiteral("弹出独立窗口");
     case UiAction::GenerateReport: return QStringLiteral("生成报告");
     case UiAction::SendSerialData: return QStringLiteral("发送串口数据");
-    case UiAction::SaveSamplingConfig: return QStringLiteral("保存采样配置");
     case UiAction::SendSamplingConfig: return QStringLiteral("下发采样配置");
-    case UiAction::StartSamplingCapture: return QStringLiteral("开始采集");
     case UiAction::OpenReportHtml: return QStringLiteral("打开报告");
     case UiAction::OpenReportDirectory: return QStringLiteral("打开报告目录");
     case UiAction::CopyReportPath: return QStringLiteral("复制报告路径");

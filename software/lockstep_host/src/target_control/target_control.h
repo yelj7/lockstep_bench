@@ -1,18 +1,10 @@
-/*****************************************************************************
-*  @file      target_control.h
-*  @brief     目标连接烧写回读运行控制模块接口
-*  Details.   声明目标连接烧写回读运行控制模块的公共类型、数据结构和调用接口。
-*
-*  @version   1.0.0.1
-*
-*----------------------------------------------------------------------------*
-*  Change History :
-*  <Version> | <Description>
-*----------------------------------------------------------------------------*
-*   1.0.0.1   | Create file
-*----------------------------------------------------------------------------*
-*
-*****************************************************************************/
+/**********************************************************
+* 文件名: target_control.h
+* 日期: 2026-07-22
+* 版本: 1.1
+* 更新记录: 统一普通运行与复位并运行的目标启动接口。
+* 描述: 声明目标连接、烧写、回读和运行控制接口。
+**********************************************************/
 
 #ifndef LOCKSTEP_HOST_SRC_TARGET_CONTROL_TARGET_CONTROL_H_
 #define LOCKSTEP_HOST_SRC_TARGET_CONTROL_TARGET_CONTROL_H_
@@ -180,15 +172,6 @@ struct OperationProgress final {
     bool canCancel = false;
 };
 
-struct ProgramGate final {
-    bool connected = false;
-    bool precheckPassed = false;
-    bool programWritten = false;
-    bool readbackPassed = false;
-    bool runAllowed = false;
-    QString reason;
-};
-
 using OperationProgressCallback = std::function<void(quint64 completedBytes, quint64 totalBytes, const QString& message)>;
 
 struct DebugServiceConfig final {
@@ -219,26 +202,6 @@ public:
     virtual DebugResult reset(const QString& strategy) = 0;
     virtual DebugResult run(quint64 entryAddress) = 0;
     virtual DebugResult halt() = 0;
-};
-
-class InMemoryDebugAccess final : public DebugAccess {
-public:
-    explicit InMemoryDebugAccess(quint64 memorySizeBytes);
-
-    DebugResult connectTarget(const DebugProfile& profile) override;
-    DebugResult disconnectTarget() override;
-    DebugResult status() override;
-    DebugResult read(quint64 address, quint64 length) override;
-    DebugResult write(quint64 address, const QByteArray& data) override;
-    DebugResult reset(const QString& strategy) override;
-    DebugResult run(quint64 entryAddress) override;
-    DebugResult halt() override;
-
-private:
-    QByteArray memory_;
-    bool connected_ = false;
-    bool running_ = false;
-    DebugProfile profile_;
 };
 
 class DebugServiceAccess final : public DebugAccess {
@@ -299,15 +262,12 @@ public:
         DebugAccess& access,
         const QString& taskId,
         const ProgramImageInfo& image,
-        const ReadbackVerifyRecord& verifyRecord) const;
+        const ReadbackVerifyRecord& verifyRecord,
+        bool resetBeforeRun = false,
+        const QString& resetStrategy = QString()) const;
     RunControlRecord haltTarget(
         DebugAccess& access,
         const QString& taskId) const;
-    ProgramGate getProgramGate(
-        const ConnectionRecord& connection,
-        const PrecheckRecord& precheck,
-        const WriteRecord& writeRecord,
-        const ReadbackVerifyRecord& verifyRecord) const;
 };
 
 }  // namespace lockstep::target_control

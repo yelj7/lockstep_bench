@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: sampling_capture.cpp
 * 日期: 2026-07-16
-* 版本: v3.2
-* 更新记录: EVENT_END 失败时记录溢出位图、逐协议丢失和实收事件数。
+* 版本: v3.6
+* 更新记录: 强制有限 D3XX 超时并补齐各采集阶段取消检查。
 * 描述: 实现 v2/v3 线协议、D3XX 传输、1024-bit VCD 和事件 sidecar 输出。
 **********************************************************/
 
@@ -28,6 +28,18 @@ constexpr quint32 kMaxPayloadBytes = 4U * 1024U * 1024U;
 constexpr quint32 kCrcDisabledFlag = 1U << 1U;
 constexpr int kCaptureReadChunkBytes = 32 * 1024;
 constexpr int kStatusResponseBytes = kCaptureReadChunkBytes;
+
+bool writeComplete(CaptureTransport* const transport, const QByteArray& command,
+                   int* const transferred, QString* const error)
+{
+    if (!transport->writePipe(0x02U, command, transferred, error)) return false;
+    if (*transferred == command.size()) return true;
+    if (error != nullptr) {
+        *error = QStringLiteral("capture command short write: expected=%1 actual=%2")
+                     .arg(command.size()).arg(*transferred);
+    }
+    return false;
+}
 
 quint32 crc32(const QByteArray& bytes)
 {
@@ -160,6 +172,47 @@ void saveSessionEvidence(const QString& taskRootPath, const CaptureSessionResult
 
 }  // namespace
 
+QString toString(const EventEndReason reason)
+{
+    switch (reason) {
+    case EventEndReason::ProgramDone: return QStringLiteral("program_done");
+    case EventEndReason::HostTerminate: return QStringLiteral("host_terminate");
+    case EventEndReason::Watchdog: return QStringLiteral("watchdog");
+    case EventEndReason::Overflow: return QStringLiteral("overflow");
+    case EventEndReason::HardTimeout: return QStringLiteral("hard_timeout");
+    case EventEndReason::FatalError: return QStringLiteral("fatal_error");
+    }
+    return QStringLiteral("unknown");
+}
+
+bool validateCaptureCompletion(const SamplingCaptureRecord& capture, QString* const error)
+{
+    if (capture.stopReason != 0U) {
+        if (error != nullptr) {
+            *error = QStringLiteral("capture incomplete: stop_reason=%1 flags=0x%2")
+                         .arg(capture.stopReason)
+                         .arg(capture.deviceStatusFlags, 8, 16, QLatin1Char('0'));
+        }
+        return false;
+    }
+    if (!capture.hasEventStream) {
+        if (error != nullptr) {
+            *error = QStringLiteral("capture incomplete: event stream closure is missing");
+        }
+        return false;
+    }
+    if (capture.eventEndReason == static_cast<quint32>(EventEndReason::ProgramDone)) return true;
+
+    const EventEndReason reason = static_cast<EventEndReason>(capture.eventEndReason);
+    if (error != nullptr) {
+        *error = QStringLiteral("CAPTURE_END_%1: event_end_reason=%2 (%3)")
+                     .arg(toString(reason).toUpper())
+                     .arg(capture.eventEndReason)
+                     .arg(toString(reason));
+    }
+    return false;
+}
+
 QByteArray CaptureFrameCodec::encode(const CaptureFrameType type, const QByteArray& payload,
                                  const quint32 sequence, const quint32 captureId,
                                  const quint32 flags, const quint16 version) const
@@ -237,18 +290,14 @@ CaptureDecodeResult CaptureFrameCodec::feed(const QByteArray& bytes)
     return result;
 }
 
-void CaptureFrameCodec::reset()
-{
-    buffer_.clear();
-}
-
 bool SamplingCaptureConfig::validate(QString* error) const
 {
     // 协议字段 posttrigger 包含触发样本；硬件内部另有 post_after_trigger=2048。
-    const bool countsValid = sampleCount > 0U && pretriggerCount + posttriggerCount == sampleCount;
-    const bool rateValid = sampleRateHz == 1'000'000U || sampleRateHz == 10'000'000U ||
-                           sampleRateHz == 50'000'000U || sampleRateHz == 120'000'000U;
+    const bool countsValid = sampleCount == 4096U && pretriggerCount == 2047U &&
+                             posttriggerCount == 2049U;
+    const bool rateValid = sampleRateHz == 120'000'000U;
     if (!countsValid || !rateValid || (protocolGroupMask & ~0x1ffU) != 0U || mode != 0U ||
+        inputInvertMask != 0U || (triggerEdgeRise & ~1U) != 0U || triggerEdgeFall != 0U ||
         triggerTimeoutSamples == 0U || (eventEnableMask & ~0x19fU) != 0U || eventLimit != 0U ||
         eventWatchdogTicks == 0U || eventHardTimeoutTicks < eventWatchdogTicks) {
         if (error != nullptr) {
@@ -257,6 +306,30 @@ bool SamplingCaptureConfig::validate(QString* error) const
         return false;
     }
     return true;
+}
+
+QJsonObject SamplingCaptureConfig::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("sample_rate_hz"), static_cast<double>(sampleRateHz));
+    object.insert(QStringLiteral("sample_count"), static_cast<double>(sampleCount));
+    object.insert(QStringLiteral("pretrigger"), static_cast<double>(pretriggerCount));
+    object.insert(QStringLiteral("posttrigger"), static_cast<double>(posttriggerCount));
+    object.insert(QStringLiteral("protocol_group_mask"), static_cast<double>(protocolGroupMask));
+    object.insert(QStringLiteral("input_invert_mask"), static_cast<double>(inputInvertMask));
+    object.insert(QStringLiteral("physical_channels"), static_cast<double>(kCapturePhysicalChannels));
+    object.insert(QStringLiteral("sample_word_bits"), static_cast<double>(kCaptureSampleWordBits));
+    object.insert(QStringLiteral("trigger_mask"), static_cast<double>(triggerMask));
+    object.insert(QStringLiteral("trigger_value"), static_cast<double>(triggerValue));
+    object.insert(QStringLiteral("trigger_edge_rise"), static_cast<double>(triggerEdgeRise));
+    object.insert(QStringLiteral("trigger_edge_fall"), static_cast<double>(triggerEdgeFall));
+    object.insert(QStringLiteral("mode"), static_cast<double>(mode));
+    object.insert(QStringLiteral("trigger_timeout_samples"), static_cast<double>(triggerTimeoutSamples));
+    object.insert(QStringLiteral("event_enable_mask"), static_cast<double>(eventEnableMask));
+    object.insert(QStringLiteral("event_limit"), static_cast<double>(eventLimit));
+    object.insert(QStringLiteral("event_watchdog_ticks"), static_cast<double>(eventWatchdogTicks));
+    object.insert(QStringLiteral("event_hard_timeout_ticks"), static_cast<double>(eventHardTimeoutTicks));
+    return object;
 }
 
 QByteArray SamplingCaptureConfig::toPayload() const
@@ -349,6 +422,7 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         const quint32 recordBytes = read32(data + 16);
         record_.captureId = frame.header.captureId;
         record_.eventTimebaseHz = read32(data + 0);
+        record_.hasEventStream = true;
         record_.implementedSourceMask = read32(data + 4);
         record_.enabledSourceMask = read32(data + 8);
         record_.designGapMask = read32(data + 12);
@@ -431,7 +505,8 @@ bool SamplingCaptureAssembler::append(const CaptureFrame& frame, QString* error)
         }
         const quint32 endEnabledSourceMask = read32(data + 56);
         const quint32 endImplementedSourceMask = read32(data + 60);
-        if ((record_.eventOverflowMask & ~0x1ffU) != 0U ||
+        if (record_.eventEndReason > static_cast<quint32>(EventEndReason::FatalError) ||
+            (record_.eventOverflowMask & ~0x1ffU) != 0U ||
             droppedSum != record_.eventDroppedTotal ||
             record_.eventEmittedTotal != static_cast<quint32>(record_.protocolEvents.size()) ||
             record_.eventAcceptedTotal != record_.eventEmittedTotal + record_.eventDroppedTotal ||
@@ -577,8 +652,8 @@ bool D3xxRuntime::load(QString* error)
         d_->library.resolve("FT_SetPipeTimeout"));
     if (d_->createDeviceInfoList == nullptr || d_->getDeviceInfoDetail == nullptr ||
         d_->create == nullptr || d_->close == nullptr || d_->readPipe == nullptr ||
-        d_->writePipe == nullptr) {
-        if (error != nullptr) *error = QStringLiteral("FTD3XX 缺少必需的设备或管道接口");
+        d_->writePipe == nullptr || d_->setPipeTimeout == nullptr) {
+        if (error != nullptr) *error = QStringLiteral("FTD3XX 缺少必需的设备、管道或超时接口");
         d_.reset();
         return false;
     }
@@ -635,9 +710,15 @@ bool D3xxRuntime::open(const quint32 index, QString* error)
         d_->handle = nullptr;
         return false;
     }
-    if (d_->setPipeTimeout != nullptr) {
-        d_->setPipeTimeout(d_->handle, 0x02U, 2000U);
-        d_->setPipeTimeout(d_->handle, 0x82U, 2000U);
+    const unsigned long writeTimeoutStatus = d_->setPipeTimeout(d_->handle, 0x02U, 2000U);
+    const unsigned long readTimeoutStatus = d_->setPipeTimeout(d_->handle, 0x82U, 2000U);
+    if (writeTimeoutStatus != 0U || readTimeoutStatus != 0U) {
+        if (error != nullptr) {
+            *error = QStringLiteral("无法设置 FT601 管道超时: write_status=%1 read_status=%2")
+                         .arg(writeTimeoutStatus).arg(readTimeoutStatus);
+        }
+        close();
+        return false;
     }
     d_->openIndex = index;
     d_->hasOpenIndex = true;
@@ -779,6 +860,9 @@ bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRo
     sidecar.insert(QStringLiteral("physical_channels"), static_cast<qint64>(kCapturePhysicalChannels));
     sidecar.insert(QStringLiteral("actual_sample_count"), static_cast<qint64>(capture.actualSampleCount));
     sidecar.insert(QStringLiteral("window_start_index"), static_cast<qint64>(capture.windowStartIndex));
+    const quint64 windowEndIndex = static_cast<quint64>(capture.windowStartIndex) +
+        (capture.actualSampleCount == 0U ? 0U : static_cast<quint64>(capture.actualSampleCount - 1U));
+    sidecar.insert(QStringLiteral("window_end_index"), QString::number(windowEndIndex));
     sidecar.insert(QStringLiteral("trigger_index"), static_cast<qint64>(capture.triggerIndex));
     sidecar.insert(QStringLiteral("stop_reason"), static_cast<qint64>(capture.stopReason));
     sidecar.insert(QStringLiteral("vcd"), QStringLiteral("waveform/capture.vcd"));
@@ -807,6 +891,8 @@ bool exportScalarVcd(const SamplingCaptureRecord& capture, const QString& taskRo
                             static_cast<qint64>(capture.enabledSourceMask));
         eventArchive.insert(QStringLiteral("design_gap_mask"), static_cast<qint64>(capture.designGapMask));
         eventArchive.insert(QStringLiteral("end_reason"), static_cast<qint64>(capture.eventEndReason));
+        eventArchive.insert(QStringLiteral("end_reason_name"),
+                            toString(static_cast<EventEndReason>(capture.eventEndReason)));
         eventArchive.insert(QStringLiteral("overflow_mask"), static_cast<qint64>(capture.eventOverflowMask));
         eventArchive.insert(QStringLiteral("accepted_total"),
                             static_cast<qint64>(capture.eventAcceptedTotal));
@@ -840,8 +926,8 @@ bool SamplingCaptureSession::configure(CaptureTransport* const transport, const 
     const auto sendCommand = [&](const CaptureFrameType type, const QByteArray& payload,
                                  const quint32 sequence,
                                  const quint16 version = kCaptureProtocolVersion) {
-        return transport->writePipe(0x02U, codec.encode(type, payload, sequence, 0U, 0U, version),
-                                    &transferred, error);
+        const QByteArray command = codec.encode(type, payload, sequence, 0U, 0U, version);
+        return writeComplete(transport, command, &transferred, error);
     };
     quint32 nextResponseSequence = 0U;
     bool hasResponseSequence = false;
@@ -943,8 +1029,8 @@ bool SamplingCaptureSession::queryStatus(CaptureTransport* const transport, Capt
     }
     CaptureFrameCodec codec;
     int transferred = 0;
-    if (!transport->writePipe(0x02U, codec.encode(CaptureFrameType::GetStatus, QByteArray(), 100U),
-                              &transferred, error)) {
+    const QByteArray command = codec.encode(CaptureFrameType::GetStatus, QByteArray(), 100U);
+    if (!writeComplete(transport, command, &transferred, error)) {
         return false;
     }
     QElapsedTimer timer;
@@ -994,9 +1080,8 @@ bool SamplingCaptureSession::stopAndRecover(CaptureTransport* const transport, C
     bool endSeen = !captureActive;
     QString recoveryDetail;
     if (captureActive) {
-        stopSent = transport->writePipe(
-            0x02U, codec.encode(CaptureFrameType::StopCapture, QByteArray(), 101U), &transferred,
-            &recoveryDetail);
+        const QByteArray command = codec.encode(CaptureFrameType::StopCapture, QByteArray(), 101U);
+        stopSent = writeComplete(transport, command, &transferred, &recoveryDetail);
         if (stopSent) {
             QElapsedTimer timer;
             timer.start();
@@ -1063,7 +1148,8 @@ bool SamplingCaptureSession::stopAndRecover(CaptureTransport* const transport, C
 CaptureSessionResult SamplingCaptureSession::runDetailed(
     CaptureTransport* const transport, const SamplingCaptureConfig& config,
     const QString& taskRootPath, const int timeoutMs, SamplingCaptureRecord* const record,
-    const std::function<bool(quint32, QString*)>& afterArm) const
+    const std::function<bool(quint32, QString*)>& afterArm,
+    const std::function<bool()>& cancelled) const
 {
     CaptureSessionResult result;
     QString error;
@@ -1073,9 +1159,24 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
         saveSessionEvidence(taskRootPath, result);
         return result;
     }
+    const auto cancellationRequested = [&cancelled]() {
+        return cancelled && cancelled();
+    };
+    if (cancellationRequested()) {
+        result.phase = QStringLiteral("cancelled");
+        result.message = QStringLiteral("[CAPTURE_CANCELLED] 采集线程已取消");
+        saveSessionEvidence(taskRootPath, result);
+        return result;
+    }
     if (!configure(transport, config, &error)) {
         result.phase = QStringLiteral("configure");
         result.message = error;
+        saveSessionEvidence(taskRootPath, result);
+        return result;
+    }
+    if (cancellationRequested()) {
+        result.phase = QStringLiteral("cancelled");
+        result.message = QStringLiteral("[CAPTURE_CANCELLED] 采集线程已取消");
         saveSessionEvidence(taskRootPath, result);
         return result;
     }
@@ -1083,22 +1184,20 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
     const bool armOk = armAndWaitAccepted(transport, 4U, &captureId, &error);
     if (!armOk) {
         result.phase = QStringLiteral("arm");
-    } else {
-        CaptureFrameCodec codec;
-        const QByteArray release = codec.encode(CaptureFrameType::StartEventStream, QByteArray(),
-                                                5U, 0U, 0U, kCaptureProtocolVersionV3);
-        int transferred = 0;
-        if (!transport->writePipe(0x02U, release, &transferred, &error) ||
-            transferred != release.size()) {
-            if (error.isEmpty()) error = QStringLiteral("START_EVENT_STREAM 写入不完整");
-            result.phase = QStringLiteral("start_event_stream");
-        }
+    } else if (cancellationRequested()) {
+        error = QStringLiteral("[CAPTURE_CANCELLED] 采集线程已取消");
+        result.phase = QStringLiteral("cancelled");
+    } else if (!startEventStream(transport, 5U, &error)) {
+        result.phase = QStringLiteral("start_event_stream");
     }
-    if (armOk && result.phase.isEmpty() && afterArm && !afterArm(captureId, &error)) {
+    if (armOk && result.phase.isEmpty() && cancellationRequested()) {
+        error = QStringLiteral("[CAPTURE_CANCELLED] 采集线程已取消");
+        result.phase = QStringLiteral("cancelled");
+    } else if (armOk && result.phase.isEmpty() && afterArm && !afterArm(captureId, &error)) {
         result.phase = QStringLiteral("after_arm");
     } else if (armOk && result.phase.isEmpty() &&
                !collect(transport, taskRootPath, timeoutMs, record, &error,
-                        config.eventEnableMask)) {
+                        config.eventEnableMask, cancelled)) {
         result.phase = QStringLiteral("collect");
     } else if (armOk && result.phase.isEmpty()) {
         result.success = true;
@@ -1119,13 +1218,25 @@ CaptureSessionResult SamplingCaptureSession::runDetailed(
     return result;
 }
 
-bool SamplingCaptureSession::run(CaptureTransport* transport, const SamplingCaptureConfig& config,
-                            const QString& taskRootPath, const int timeoutMs,
-                            SamplingCaptureRecord* record, QString* error) const
+bool SamplingCaptureSession::startEventStream(
+    CaptureTransport* const transport,
+    const quint32 commandSequence,
+    QString* const error) const
 {
-    const CaptureSessionResult result = runDetailed(transport, config, taskRootPath, timeoutMs, record);
-    if (error != nullptr) *error = result.message;
-    return result.success;
+    if (transport == nullptr || !transport->isOpen()) {
+        if (error != nullptr) *error = QStringLiteral("capture transport is not open");
+        return false;
+    }
+    CaptureFrameCodec codec;
+    const QByteArray release = codec.encode(
+        CaptureFrameType::StartEventStream, QByteArray(), commandSequence,
+        0U, 0U, kCaptureProtocolVersionV3);
+    int transferred = 0;
+    if (writeComplete(transport, release, &transferred, error)) return true;
+    if (error != nullptr && error->isEmpty()) {
+        *error = QStringLiteral("START_EVENT_STREAM 写入不完整");
+    }
+    return false;
 }
 
 bool SamplingCaptureSession::armAndWaitAccepted(CaptureTransport* transport,
@@ -1139,8 +1250,8 @@ bool SamplingCaptureSession::armAndWaitAccepted(CaptureTransport* transport,
     }
     CaptureFrameCodec codec;
     int transferred = 0;
-    if (!transport->writePipe(0x02U, codec.encode(CaptureFrameType::ArmCapture, QByteArray(), commandSequence),
-                              &transferred, error)) return false;
+    const QByteArray command = codec.encode(CaptureFrameType::ArmCapture, QByteArray(), commandSequence);
+    if (!writeComplete(transport, command, &transferred, error)) return false;
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < 2000) {
@@ -1183,7 +1294,8 @@ bool SamplingCaptureSession::armAndWaitAccepted(CaptureTransport* transport,
 bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString& taskRootPath,
                                      const int timeoutMs, SamplingCaptureRecord* record,
                                      QString* error,
-                                     const quint32 expectedEnabledSourceMask) const
+                                     const quint32 expectedEnabledSourceMask,
+                                     const std::function<bool()>& cancelled) const
 {
     if (transport == nullptr || !transport->isOpen() || record == nullptr || timeoutMs <= 0) {
         if (error != nullptr) *error = QStringLiteral("capture collection arguments are invalid");
@@ -1203,6 +1315,11 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
     QElapsedTimer timer;
     timer.start();
     while (!assembler.complete() && timer.elapsed() < timeoutMs) {
+        if (cancelled && cancelled()) {
+            persistRawCapture();
+            if (error != nullptr) *error = QStringLiteral("[CAPTURE_CANCELLED] 采集线程已取消");
+            return false;
+        }
         const CapturePipeReadResult read = transport->readPipeDetailed(0x82U, kCaptureReadChunkBytes);
         if (read.fatalError) {
             persistRawCapture();
@@ -1244,14 +1361,7 @@ bool SamplingCaptureSession::collect(CaptureTransport* transport, const QString&
         return false;
     }
     *record = assembler.record();
-    if (record->stopReason != 0U) {
-        if (error != nullptr) {
-            *error = QStringLiteral("采集未完成: stop_reason=%1 flags=0x%2")
-                         .arg(record->stopReason)
-                         .arg(record->deviceStatusFlags, 8, 16, QLatin1Char('0'));
-        }
-        return false;
-    }
+    if (!validateCaptureCompletion(*record, error)) return false;
     return exportScalarVcd(*record, taskRootPath, nullptr, nullptr, error);
 }
 

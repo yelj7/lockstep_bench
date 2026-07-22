@@ -1,8 +1,8 @@
 /*****************************************************************************
 * 文件名: workbench_controller.cpp
 * 日期: 2026-07-13
-* 版本: v1.3
-* 更新记录: 增加任务加载确认及采样配置覆盖、另存为决策流程
+* 版本: v1.7
+* 更新记录: 硬件打开后再提交运行配置，异步回调统一使用 QPointer 守卫。
 * 描述: 实现 UI 动作到工作区、资源、流程、目标控制、报告和错误日志模块的适配
 *****************************************************************************/
 
@@ -30,8 +30,10 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSemaphore>
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QThread>
@@ -41,6 +43,8 @@
 #include <QtEndian>
 
 #include <algorithm>
+#include <atomic>
+#include <limits>
 #include <memory>
 
 #include "ui_theme.h"
@@ -48,6 +52,19 @@
 
 namespace lockstep::apps {
 namespace {
+
+template <typename Callback>
+void postToController(const QPointer<WorkbenchController>& controller, const Callback& callback)
+{
+    QCoreApplication* const application = QCoreApplication::instance();
+    if (application == nullptr) return;
+    QMetaObject::invokeMethod(
+        application,
+        [controller, callback]() {
+            if (!controller.isNull()) callback(controller.data());
+        },
+        Qt::QueuedConnection);
+}
 
 constexpr quint64 kDebugMemorySizeBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr char kProgramWriteRecordName[] = "program_write_record.json";
@@ -493,19 +510,6 @@ QJsonArray segmentsToJson(const QList<target_control::ImageSegment>& segments)
     return array;
 }
 
-QJsonObject imageToJson(const target_control::ProgramImageInfo& image)
-{
-    QJsonObject object;
-    object.insert(QStringLiteral("type"), target_control::toString(image.type));
-    object.insert(QStringLiteral("file_name"), image.fileName);
-    object.insert(QStringLiteral("sha256"), image.sha256);
-    object.insert(QStringLiteral("size_bytes"), QString::number(image.sizeBytes));
-    object.insert(QStringLiteral("entry_address"), addressText(image.entryAddress));
-    object.insert(QStringLiteral("segments"), segmentsToJson(image.segments));
-    object.insert(QStringLiteral("error_message"), image.errorMessage);
-    return object;
-}
-
 QJsonObject writeRecordToJson(const target_control::WriteRecord& record)
 {
     QJsonObject object;
@@ -795,8 +799,6 @@ WorkbenchController::WorkbenchController(
       mode_(mode),
       workspace_(),
       resources_(),
-      workflow_(),
-      connectionService_(),
       programController_(),
       reportGenerator_(),
       errorRegistry_(),
@@ -819,7 +821,6 @@ WorkbenchController::WorkbenchController(
       hardwareOperationBusy_(false),
       targetConnectionBusy_(false),
       currentTask_(),
-      flowState_(),
       debugProfile_(),
       connectionRecord_(),
       precheckRecord_(),
@@ -838,6 +839,8 @@ WorkbenchController::WorkbenchController(
       runButtonResetMode_(false),
       reportGenerationBusy_(false),
       samplingCaptureBusy_(false),
+      samplingCaptureThread_(nullptr),
+      workerThreads_(),
       hardwareOperation_(target_control::ProgramOperation::Write),
       hardwareOperationName_(),
       currentWriteProgress_(0),
@@ -887,6 +890,38 @@ WorkbenchController::WorkbenchController(
     }
 }
 
+WorkbenchController::~WorkbenchController()
+{
+    const QList<QThread*> threads = workerThreads_.values();
+    for (QThread* const thread : threads) {
+        if (thread != nullptr && thread->isRunning()) thread->requestInterruption();
+    }
+    QElapsedTimer shutdownTimer;
+    shutdownTimer.start();
+    for (QThread* const thread : threads) {
+        if (thread == nullptr) continue;
+        const int remainingMs = qMax(0, 10'000 - static_cast<int>(shutdownTimer.elapsed()));
+        bool finished = !thread->isRunning() || thread->wait(static_cast<unsigned long>(remainingMs));
+        if (!finished) {
+            thread->terminate();
+            finished = thread->wait(2'000);
+        }
+        if (finished) delete thread;
+    }
+    workerThreads_.clear();
+    samplingCaptureThread_ = nullptr;
+}
+
+void WorkbenchController::trackWorkerThread(QThread* const thread)
+{
+    if (thread == nullptr) return;
+    workerThreads_.insert(thread);
+    connect(thread, &QObject::destroyed, this, [this, thread]() {
+        workerThreads_.remove(thread);
+        if (samplingCaptureThread_ == thread) samplingCaptureThread_ = nullptr;
+    });
+}
+
 bool WorkbenchController::initialize(const QString& workspaceRootPath)
 {
     const QString trimmedRoot = workspaceRootPath.trimmed();
@@ -922,7 +957,7 @@ bool WorkbenchController::initialize(const QString& workspaceRootPath)
 
 void WorkbenchController::handleAction(const ui::UiActionRequest& request)
 {
-    if (samplingCaptureBusy_) {
+    if (samplingCaptureBusy_ && request.action != ui::UiAction::StopProgram) {
         logWarning(QStringLiteral("Sampling"), QStringLiteral("采集正在进行，请等待 CAPTURE_END。"));
         return;
     }
@@ -983,14 +1018,8 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
     case ui::UiAction::SendSerialData:
         sendSerialData(request.parameters.value(QStringLiteral("serialText")).toString());
         break;
-    case ui::UiAction::SaveSamplingConfig:
-        saveSamplingConfig(request.parameters, false);
-        break;
     case ui::UiAction::SendSamplingConfig:
-        saveSamplingConfig(request.parameters, true);
-        break;
-    case ui::UiAction::StartSamplingCapture:
-        startSamplingCapture(request.parameters);
+        sendSamplingConfig(request.parameters);
         break;
     case ui::UiAction::BrowseProgramImage:
         browseProgramImage();
@@ -1002,7 +1031,7 @@ void WorkbenchController::handleAction(const ui::UiActionRequest& request)
         verifyReadback();
         break;
     case ui::UiAction::RunProgram:
-        runProgram();
+        runProgram(request.parameters);
         break;
     case ui::UiAction::StopProgram:
         stopProgram();
@@ -1122,7 +1151,6 @@ bool WorkbenchController::createTask()
     }
 
     currentTask_ = context;
-    flowState_ = workflow_.startFlow(currentTask_.summary.taskId, flowMode());
     selectedTaskId_ = currentTask_.summary.taskId;
     hasTask_ = true;
     resetExecutionState();
@@ -1201,7 +1229,6 @@ void WorkbenchController::loadTaskToWorkbench(const QString& taskId)
     }
 
     currentTask_ = context;
-    flowState_ = workflow_.startFlow(currentTask_.summary.taskId, flowMode());
     selectedTaskId_ = currentTask_.summary.taskId;
     hasTask_ = true;
     resetExecutionState();
@@ -1324,7 +1351,6 @@ void WorkbenchController::deleteTask(const QString& taskId)
     const bool deletedCurrentTask = hasTask_ && (currentTask_.summary.taskId == normalizedTaskId);
     if (deletedCurrentTask) {
         currentTask_ = workspace::TaskContext();
-        flowState_ = workflow::FlowState();
         selectedTaskId_.clear();
         hasTask_ = false;
         resetExecutionState();
@@ -1425,7 +1451,8 @@ void WorkbenchController::startDebugService()
 
     const target_control::DebugServiceConfig debugConfig = debugConfig_;
     const target_control::DebugProfile profile = debugProfile_;
-    QThread* const thread = QThread::create([this, debugConfig, profile]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, debugConfig, profile]() {
         target_control::DebugServiceAccess workerAccess(debugConfig);
         target_control::TargetConnectionService service;
         const target_control::ConnectionRecord connection = service.connectTarget(workerAccess, profile);
@@ -1434,51 +1461,46 @@ void WorkbenchController::startDebugService()
             precheck = service.runPrecheck(workerAccess, profile);
         }
 
-        QMetaObject::invokeMethod(
-            this,
-            [this, profile, connection, precheck]() {
-                targetConnectionBusy_ = false;
-                connectionRecord_ = connection;
-                precheckRecord_ = precheck;
-                hasConnection_ = (connectionRecord_.state == target_control::ConnectionState::Connected);
-                hasPrecheck_ = hasConnection_ && (precheckRecord_.state == target_control::PrecheckState::Passed);
+        postToController(self, [profile, connection, precheck](WorkbenchController* const controller) {
+                controller->targetConnectionBusy_ = false;
+                controller->connectionRecord_ = connection;
+                controller->precheckRecord_ = precheck;
+                controller->hasConnection_ =
+                    (controller->connectionRecord_.state == target_control::ConnectionState::Connected);
+                controller->hasPrecheck_ = controller->hasConnection_ &&
+                    (controller->precheckRecord_.state == target_control::PrecheckState::Passed);
 
-                if (hasConnection_) {
+                if (controller->hasConnection_) {
                     if (target_control::DebugServiceAccess* const serviceAccess =
-                            dynamic_cast<target_control::DebugServiceAccess*>(debugAccess_.get())) {
+                            dynamic_cast<target_control::DebugServiceAccess*>(controller->debugAccess_.get())) {
                         serviceAccess->assumeConnected(profile);
                     }
                 } else {
-                    precheckRecord_ = target_control::PrecheckRecord();
+                    controller->precheckRecord_ = target_control::PrecheckRecord();
                 }
 
                 const QString statusText = QStringLiteral("调试器: %1 / 预检: %2")
-                    .arg(connectionStateText(connectionRecord_.state), precheckStateText(precheckRecord_.state));
-                if (window_ != nullptr) {
-                    window_->setConnectionSummary(debugProfile_.profileName, statusText);
+                    .arg(connectionStateText(controller->connectionRecord_.state),
+                         precheckStateText(controller->precheckRecord_.state));
+                if (controller->window_ != nullptr) {
+                    controller->window_->setConnectionSummary(controller->debugProfile_.profileName, statusText);
                 }
-                updateConnectionDiagnostics(hasConnection_ ? QStringLiteral("已连接") : QStringLiteral("未连接"));
+                controller->updateConnectionDiagnostics(
+                    controller->hasConnection_ ? QStringLiteral("已连接") : QStringLiteral("未连接"));
 
-                if (hasTask_) {
-                    flowState_ = workflow_.recordStageResult(
-                        flowState_,
-                        workflow::Stage::Connection,
-                        hasPrecheck_ ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-                        statusText,
-                        QJsonObject());
-                }
-
-                if (hasConnection_) {
-                    logInfo(QStringLiteral("Target"), statusText);
-                    refreshSerialPorts();
+                if (controller->hasConnection_) {
+                    controller->logInfo(QStringLiteral("Target"), statusText);
+                    controller->refreshSerialPorts();
                 } else {
-                    logError(QStringLiteral("Target"), QStringLiteral("目标连接失败: %1").arg(connectionRecord_.errorMessage));
+                    controller->logError(
+                        QStringLiteral("Target"),
+                        QStringLiteral("目标连接失败: %1").arg(controller->connectionRecord_.errorMessage));
                 }
-                updateProgramActionAvailability();
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
+                controller->updateProgramActionAvailability();
+                controller->updateTopStatus();
+            });
     });
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
     updateTopStatus();
@@ -1514,41 +1536,45 @@ void WorkbenchController::stopDebugService()
 
     const target_control::DebugServiceConfig debugConfig = debugConfig_;
     const target_control::DebugProfile profile = debugProfile_;
-    QThread* const thread = QThread::create([this, debugConfig, profile]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, debugConfig, profile]() {
         target_control::DebugServiceAccess workerAccess(debugConfig);
         workerAccess.assumeConnected(profile);
         target_control::TargetConnectionService service;
         const target_control::ConnectionRecord disconnectRecord = service.disconnectTarget(workerAccess);
 
-        QMetaObject::invokeMethod(
-            this,
-            [this, disconnectRecord]() {
-                targetConnectionBusy_ = false;
-                connectionRecord_ = disconnectRecord;
-                hasConnection_ = false;
-                hasPrecheck_ = false;
-                precheckRecord_ = target_control::PrecheckRecord();
+        postToController(self, [disconnectRecord](WorkbenchController* const controller) {
+                controller->targetConnectionBusy_ = false;
+                controller->connectionRecord_ = disconnectRecord;
+                controller->hasConnection_ = false;
+                controller->hasPrecheck_ = false;
+                controller->precheckRecord_ = target_control::PrecheckRecord();
                 if (target_control::DebugServiceAccess* const serviceAccess =
-                        dynamic_cast<target_control::DebugServiceAccess*>(debugAccess_.get())) {
+                        dynamic_cast<target_control::DebugServiceAccess*>(controller->debugAccess_.get())) {
                     serviceAccess->assumeDisconnected();
                 }
 
-                updateConnectionDiagnostics(connectionRecord_.state == target_control::ConnectionState::Failed
+                controller->updateConnectionDiagnostics(
+                    controller->connectionRecord_.state == target_control::ConnectionState::Failed
                     ? QStringLiteral("未连接")
                     : QStringLiteral("已断开"));
-                if (window_ != nullptr) {
-                    window_->setConnectionSummary(debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
+                if (controller->window_ != nullptr) {
+                    controller->window_->setConnectionSummary(
+                        controller->debugProfile_.profileName, QStringLiteral("调试器: 已停止"));
                 }
-                if (connectionRecord_.state == target_control::ConnectionState::Failed) {
-                    logError(QStringLiteral("Target"), QStringLiteral("调试服务断开失败: %1").arg(connectionRecord_.errorMessage));
+                if (controller->connectionRecord_.state == target_control::ConnectionState::Failed) {
+                    controller->logError(
+                        QStringLiteral("Target"),
+                        QStringLiteral("调试服务断开失败: %1")
+                            .arg(controller->connectionRecord_.errorMessage));
                 } else {
-                    logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
+                    controller->logInfo(QStringLiteral("Target"), QStringLiteral("调试服务已停止"));
                 }
-                updateProgramActionAvailability();
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
+                controller->updateProgramActionAvailability();
+                controller->updateTopStatus();
+            });
     });
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
     updateTopStatus();
@@ -1677,9 +1703,12 @@ void WorkbenchController::sendSerialData(const QString& text)
     }
 }
 
-bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, const bool requestHardwareSend)
+bool WorkbenchController::persistSamplingConfig(
+    const QVariantMap& parameters,
+    acquisition::SamplingCaptureConfig* const hardwareConfig,
+    const bool saveToTask)
 {
-    if (!ensureTask()) {
+    if (hardwareConfig == nullptr || !ensureTask()) {
         return false;
     }
 
@@ -1711,7 +1740,8 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
 
     quint64 triggerAddress = 0U;
     const QString triggerAddressText = parameters.value(QStringLiteral("trigger_addr")).toString().trimmed();
-    if (!parseAddressText(triggerAddressText, &triggerAddress)) {
+    if (!parseAddressText(triggerAddressText, &triggerAddress) ||
+        triggerAddress > std::numeric_limits<quint32>::max()) {
         logError(QStringLiteral("Sampling"), QStringLiteral("触发地址无效: %1").arg(triggerAddressText));
         return false;
     }
@@ -1719,6 +1749,20 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     const bool mismatchEnable = parameters.value(QStringLiteral("mismatch_enable")).toBool();
     const int mismatchMask = parameters.value(QStringLiteral("mismatch_mask")).toInt() & kSamplingMismatchMask;
     const int triggerMask = mismatchEnable ? mismatchMask : 0;
+
+    hardwareConfig->sampleRateHz = static_cast<quint32>(sampleRateHz);
+    hardwareConfig->sampleCount = static_cast<quint32>(sampleCount);
+    hardwareConfig->pretriggerCount = static_cast<quint32>(pretrigger);
+    hardwareConfig->posttriggerCount = static_cast<quint32>(posttrigger);
+    hardwareConfig->protocolGroupMask = 0x1ffU;
+    hardwareConfig->triggerMask = static_cast<quint32>(triggerMask);
+    hardwareConfig->triggerValue = static_cast<quint32>(triggerAddress & 0xffffffffULL);
+    hardwareConfig->triggerEdgeRise = mismatchEnable ? 1U : 0U;
+    QString validationError;
+    if (!hardwareConfig->validate(&validationError)) {
+        logError(QStringLiteral("Sampling"), validationError);
+        return false;
+    }
 
     QJsonObject addressTrigger;
     addressTrigger.insert(QStringLiteral("valid"), true);
@@ -1737,104 +1781,33 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     hardwareProtocol.insert(QStringLiteral("trigger_edge_rise"), mismatchEnable ? 1 : 0);
     hardwareProtocol.insert(QStringLiteral("trigger_edge_fall"), 0);
 
-    QJsonObject root;
+    QJsonObject root = hardwareConfig->toJson();
     root.insert(QStringLiteral("schema_version"), QStringLiteral("1.0"));
-    root.insert(QStringLiteral("sample_count"), sampleCount);
-    root.insert(QStringLiteral("pretrigger"), pretrigger);
-    root.insert(QStringLiteral("posttrigger"), posttrigger);
     root.insert(QStringLiteral("trigger_count"), triggerCount);
     root.insert(QStringLiteral("post_after_trigger"), postAfterTrigger);
-    root.insert(QStringLiteral("sample_word_bits"), sampleWordBits);
-    root.insert(QStringLiteral("sample_rate_hz"), sampleRateHz);
     root.insert(QStringLiteral("trigger_logic"), QStringLiteral("valid_ready_addr_or_mismatch_rise"));
     root.insert(QStringLiteral("addr_trigger"), addressTrigger);
     root.insert(QStringLiteral("mismatch_trigger"), mismatchTrigger);
     root.insert(QStringLiteral("hardware_protocol"), hardwareProtocol);
     root.insert(QStringLiteral("created_at"), currentTimeText());
+    if (!saveToTask) return true;
 
     const QJsonDocument document(root);
     const QByteArray payload = document.toJson(QJsonDocument::Indented);
     workspace::TaskContext targetTask = currentTask_;
-    bool createdNewTask = false;
     QString error;
     const bool meaningfulConfigChange = QFileInfo::exists(currentTask_.paths.samplingConfigPath) &&
         samplingConfigChanged(currentTask_.paths.samplingConfigPath, root);
 
-    if (meaningfulConfigChange && window_ != nullptr) {
-        const dialogs::ConfigSaveDecision decision = dialogs::askConfigSaveDecision(
-            window_, currentTask_.summary.taskName.trimmed().isEmpty()
-                         ? currentTask_.summary.taskId : currentTask_.summary.taskName);
-        if (decision == dialogs::ConfigSaveDecision::Cancel) {
-            logInfo(QStringLiteral("Sampling"), QStringLiteral("已取消保存采样配置。"));
-            return false;
-        }
-        if (decision == dialogs::ConfigSaveDecision::SaveAsNewTask) {
-            QString taskName = QStringLiteral("%1 - 副本").arg(
-                currentTask_.summary.taskName.trimmed().isEmpty()
-                    ? currentTask_.summary.taskId : currentTask_.summary.taskName);
-            QString description = currentTask_.summary.description;
-            if (!promptTaskMetadata(window_, QStringLiteral("另存为新任务"), taskName, description,
-                                    &taskName, &description)) {
-                logInfo(QStringLiteral("Sampling"), QStringLiteral("已取消另存为新任务。"));
-                return false;
-            }
-
-            workspace::TaskCreateOptions options;
-            options.taskName = taskName;
-            options.description = description;
-            options.inputs.resourceSnapshot = resourceSnapshotJson();
-            options.stageStatus = QStringLiteral("created_from_sampling_config");
-            if (!workspace_.createTask(workspaceMode(), options, &targetTask, &error)) {
-                logError(QStringLiteral("Sampling"), QStringLiteral("另存为新任务失败: %1").arg(error));
-                return false;
-            }
-            createdNewTask = true;
-
-            workspace::TaskInputSet clonedInputs;
-            clonedInputs.resourceSnapshot = resourceSnapshotJson();
-            struct InputCopySpec final {
-                workspace::TaskInputFileKind kind;
-                workspace::TaskInputItem workspace::TaskInputSet::*member;
-            };
-            const InputCopySpec copySpecs[] = {
-                {workspace::TaskInputFileKind::ProgramFile, &workspace::TaskInputSet::programFile},
-                {workspace::TaskInputFileKind::ProgramManifest, &workspace::TaskInputSet::programManifest},
-                {workspace::TaskInputFileKind::FaultInjectionConfig, &workspace::TaskInputSet::faultInjectionConfig}
-            };
-            for (const InputCopySpec& spec : copySpecs) {
-                const workspace::TaskInputItem& sourceItem = currentTask_.inputs.*(spec.member);
-                if (sourceItem.relativePath.trimmed().isEmpty()) continue;
-                const QString sourcePath = QDir(currentTask_.paths.taskRootPath).filePath(sourceItem.relativePath);
-                if (!QFileInfo::exists(sourcePath)) continue;
-                workspace::TaskInputImportRequest request;
-                request.mode = workspaceMode();
-                request.taskId = targetTask.summary.taskId;
-                request.kind = spec.kind;
-                request.sourceFilePath = sourcePath;
-                request.targetFileName = sourceItem.originalFileName;
-                workspace::TaskInputItem imported;
-                if (!workspace_.importTaskInputFile(request, &imported, &error)) {
-                    workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
-                    logError(QStringLiteral("Sampling"), QStringLiteral("复制任务输入失败: %1").arg(error));
-                    return false;
-                }
-                clonedInputs.*(spec.member) = imported;
-            }
-            targetTask.inputs = clonedInputs;
-        }
-    }
-
     const QString configPath = targetTask.paths.samplingConfigPath;
     if (!QDir().mkpath(QFileInfo(configPath).absolutePath())) {
         logError(QStringLiteral("Sampling"), QStringLiteral("无法创建采样配置目录: %1").arg(QFileInfo(configPath).absolutePath()));
-        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
         return false;
     }
 
     QString writeError;
     if (!writePayloadFile(configPath, payload, &writeError)) {
         logError(QStringLiteral("Sampling"), writeError);
-        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
         return false;
     }
 
@@ -1849,7 +1822,7 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
 
     workspace::TaskContext updated;
     bool inputSaved = false;
-    if (meaningfulConfigChange && !createdNewTask) {
+    if (meaningfulConfigChange) {
         workspace::InputChangeRequest request;
         request.mode = workspaceMode();
         request.taskId = targetTask.summary.taskId;
@@ -1864,16 +1837,10 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     }
     if (!inputSaved) {
         logError(QStringLiteral("Sampling"), QStringLiteral("保存采样配置索引失败: %1").arg(error));
-        if (createdNewTask) workspace_.deleteTask(workspaceMode(), targetTask.summary.taskId, nullptr);
         return false;
     }
 
     currentTask_ = updated;
-    if (createdNewTask) {
-        flowState_ = workflow_.startFlow(currentTask_.summary.taskId, flowMode());
-        hasTask_ = true;
-        resetExecutionState();
-    }
     selectedTaskId_ = currentTask_.summary.taskId;
     logInfo(
         QStringLiteral("Sampling"),
@@ -1881,43 +1848,6 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
             .arg(addressText(triggerAddress),
                  mismatchEnable ? QStringLiteral("true") : QStringLiteral("false"),
                  QString::number(mismatchMask, 16)));
-    if (requestHardwareSend) {
-        acquisition::D3xxRuntime transport;
-        QString transportError;
-        if (!transport.load(&transportError)) {
-            logError(QStringLiteral("Sampling"), transportError);
-            return false;
-        }
-        const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&transportError);
-        if (devices.isEmpty() || !transport.open(devices.first().index, &transportError)) {
-            logError(QStringLiteral("Sampling"), transportError.isEmpty()
-                ? QStringLiteral("未枚举到 FT601 设备") : transportError);
-            return false;
-        }
-        acquisition::SamplingCaptureConfig hardwareConfig;
-        hardwareConfig.sampleRateHz = static_cast<quint32>(sampleRateHz);
-        hardwareConfig.sampleCount = static_cast<quint32>(sampleCount);
-        hardwareConfig.pretriggerCount = static_cast<quint32>(pretrigger);
-        hardwareConfig.posttriggerCount = static_cast<quint32>(posttrigger);
-        hardwareConfig.protocolGroupMask = 0x1ffU;
-        hardwareConfig.triggerMask = static_cast<quint32>(triggerMask);
-        hardwareConfig.triggerValue = static_cast<quint32>(triggerAddress & 0xffffffffULL);
-        hardwareConfig.triggerEdgeRise = mismatchEnable ? 1U : 0U;
-        if (!hardwareConfig.validate(&transportError)) {
-            transport.close();
-            logError(QStringLiteral("Sampling"), transportError);
-            return false;
-        }
-        acquisition::SamplingCaptureSession session;
-        const bool configAccepted = session.configure(&transport, hardwareConfig, &transportError);
-        transport.close();
-        if (!configAccepted) {
-            logError(QStringLiteral("Sampling"), transportError.isEmpty()
-                ? QStringLiteral("CONFIG_CAPTURE 未获得有效确认") : transportError);
-            return false;
-        }
-        logInfo(QStringLiteral("Sampling"), QStringLiteral("FT601 已确认 1024 路采样配置。"));
-    }
     updateProjectView();
     updateTaskDetail();
     updateTopStatus();
@@ -1925,47 +1855,112 @@ bool WorkbenchController::saveSamplingConfig(const QVariantMap& parameters, cons
     return true;
 }
 
-void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
+bool WorkbenchController::sendSamplingConfig(const QVariantMap& parameters)
 {
-    if (samplingCaptureBusy_ || !saveSamplingConfig(parameters, false)) {
+    acquisition::SamplingCaptureConfig hardwareConfig;
+    if (!persistSamplingConfig(parameters, &hardwareConfig, true)) {
+        return false;
+    }
+
+    samplingCaptureBusy_ = true;
+    if (window_ != nullptr) {
+        window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, false);
+    }
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, hardwareConfig]() {
+        acquisition::D3xxRuntime transport;
+        QString transportError;
+        bool accepted = transport.load(&transportError);
+        if (accepted) {
+            const QList<acquisition::D3xxDeviceInfo> devices = transport.enumerate(&transportError);
+            accepted = !devices.isEmpty();
+            if (!accepted && transportError.isEmpty()) transportError = QStringLiteral("未枚举到 FT601 设备");
+            if (accepted) accepted = transport.open(devices.first().index, &transportError);
+        }
+        if (accepted) {
+            acquisition::SamplingCaptureSession session;
+            accepted = session.configure(&transport, hardwareConfig, &transportError);
+        }
+        transport.close();
+        postToController(self, [accepted, transportError](WorkbenchController* const controller) {
+                controller->samplingCaptureBusy_ = false;
+                if (controller->window_ != nullptr) {
+                    controller->window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, true);
+                }
+                if (accepted) {
+                    controller->logInfo(
+                        QStringLiteral("Sampling"),
+                        QStringLiteral("采样配置已保存到任务并由 FT601 确认。"));
+                } else {
+                    controller->logError(
+                        QStringLiteral("Sampling"),
+                        transportError.isEmpty()
+                            ? QStringLiteral("CONFIG_CAPTURE 未获得有效确认") : transportError);
+                }
+                controller->updateTopStatus();
+            });
+    });
+    samplingCaptureThread_ = thread;
+    trackWorkerThread(thread);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        if (samplingCaptureThread_ == thread) samplingCaptureThread_ = nullptr;
+    });
+    thread->start();
+    return true;
+}
+
+void WorkbenchController::runProgram(const QVariantMap& parameters)
+{
+    if (samplingCaptureBusy_) {
         return;
     }
 
-    quint64 triggerAddress = 0U;
-    if (!parseAddressText(parameters.value(QStringLiteral("trigger_addr")).toString(), &triggerAddress)) {
-        logError(QStringLiteral("Sampling"), QStringLiteral("采集触发地址无效"));
+    if (!hasConnection_ || !hasPrecheck_ || !hasVerifyRecord_ ||
+        verifyRecord_.state != target_control::VerifyState::Passed) {
+        logError(QStringLiteral("Sampling"),
+                 QStringLiteral("采集启动前必须完成目标连接、预检、烧写和回读校验"));
         return;
     }
-    const bool mismatchEnable = parameters.value(QStringLiteral("mismatch_enable")).toBool();
-    const quint32 mismatchMask = static_cast<quint32>(
-        parameters.value(QStringLiteral("mismatch_mask")).toInt() & kSamplingMismatchMask);
+    if (!serialOpen_ && !openSelectedSerialPort()) {
+        logWarning(
+            QStringLiteral("Sampling"),
+            QStringLiteral("程序打印 UART 未打开，本次运行继续；缺少串口结束证据，不能据此判定通过"));
+    }
     acquisition::SamplingCaptureConfig config;
-    config.sampleRateHz = static_cast<quint32>(kSamplingSampleRateHz);
-    config.sampleCount = static_cast<quint32>(kSamplingSampleCount);
-    config.pretriggerCount = static_cast<quint32>(kSamplingPretrigger);
-    config.posttriggerCount = static_cast<quint32>(kSamplingPosttrigger);
-    config.protocolGroupMask = 0x1ffU;
-    config.triggerMask = mismatchEnable ? mismatchMask : 0U;
-    config.triggerValue = static_cast<quint32>(triggerAddress & 0xffffffffULL);
-    config.triggerEdgeRise = mismatchEnable ? 1U : 0U;
-
-    QString validationError;
-    if (!config.validate(&validationError)) {
-        logError(QStringLiteral("Sampling"), validationError);
+    if (!persistSamplingConfig(parameters, &config, false)) {
         return;
     }
 
     const QString taskRoot = currentTask_.paths.taskRootPath;
     const QString taskId = currentTask_.summary.taskId;
+    const bool resetBeforeRun = runButtonResetMode_;
+    const target_control::DebugServiceConfig debugConfig = debugConfig_;
+    const target_control::DebugProfile profile = debugProfile_;
+    const target_control::ProgramImageInfo image = imageInfo_;
+    const target_control::ReadbackVerifyRecord verifyRecord = verifyRecord_;
+    hasHaltRecord_ = false;
+    haltRecord_ = target_control::RunControlRecord();
+    runSerialOutput_.clear();
+    latestRunInstruction_ = resetBeforeRun ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行");
+    runOutputConfirmed_ = false;
+    runSerialCaptureActive_ = true;
+    currentRunProgress_ = 10;
+    currentStopProgress_ = 0;
     samplingCaptureBusy_ = true;
     if (window_ != nullptr) {
-        window_->setActionButtonsEnabled(ui::UiAction::SaveSamplingConfig, false);
         window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, false);
-        window_->setActionButtonsEnabled(ui::UiAction::StartSamplingCapture, false);
     }
-    logInfo(QStringLiteral("Sampling"), QStringLiteral("开始 FT601 采集: 120 MHz / 4096 点 / 1024 bit"));
+    setRunSummaryFromCurrentState(
+        QStringLiteral("采样已启动，等待程序运行"), currentRunProgress_, currentStopProgress_);
+    logInfo(
+        QStringLiteral("Sampling"),
+        QStringLiteral("程序运行前启动 FT601 采集: 120 MHz / 4096 点 / 1024 bit"));
 
-    QThread* const thread = QThread::create([this, config, taskRoot, taskId]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create(
+        [self, parameters, config, taskRoot, taskId, resetBeforeRun,
+         debugConfig, profile, image, verifyRecord]() {
         QString captureError;
         fault_injection::FaultInjectionResult faultResult;
         const QString faultConfigPath = QDir(taskRoot).filePath(QStringLiteral("inputs/fault_injection_config.json"));
@@ -1998,12 +1993,6 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 }
             }
         }
-        faultResult = fault_injection::FaultInjectionOrchestrator().execute(faultRequest);
-        if (faultResult.status == QStringLiteral("failed")) {
-            captureError = captureError.isEmpty()
-                ? QStringLiteral("错误注入失败，已阻断 ARM: %1").arg(faultResult.error)
-                : captureError;
-        }
         acquisition::D3xxRuntime transport;
         bool success = captureError.isEmpty() && transport.load(&captureError);
         if (success) {
@@ -2012,42 +2001,153 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
             if (!success && captureError.isEmpty()) captureError = QStringLiteral("未枚举到 FT601 设备");
             if (success) success = transport.open(devices.first().index, &captureError);
         }
+        if (success) {
+            const auto persisted = std::make_shared<bool>(false);
+            const auto persistState = std::make_shared<std::atomic<int>>(0);
+            const auto completed = std::make_shared<QSemaphore>();
+            QCoreApplication* const application = QCoreApplication::instance();
+            const bool posted = application != nullptr && QMetaObject::invokeMethod(
+                application,
+                [self, parameters, persisted, persistState, completed]() {
+                    int expected = 0;
+                    if (persistState->compare_exchange_strong(expected, 1) && !self.isNull()) {
+                        acquisition::SamplingCaptureConfig persistedConfig;
+                        *persisted = self->persistSamplingConfig(parameters, &persistedConfig, true);
+                    }
+                    persistState->store(3);
+                    completed->release();
+                },
+                Qt::QueuedConnection);
+            bool commitCompleted = posted && completed->tryAcquire(1, 5'000);
+            if (posted && !commitCompleted) {
+                int expected = 0;
+                if (!persistState->compare_exchange_strong(expected, 2)) {
+                    completed->acquire();
+                    commitCompleted = true;
+                }
+            }
+            if (!commitCompleted || !*persisted) {
+                success = false;
+                if (captureError.isEmpty()) {
+                    captureError = posted
+                        ? QStringLiteral("FT601 已打开，但采样配置未能提交到当前任务")
+                        : QStringLiteral("无法调度采样配置任务提交");
+                }
+            }
+        }
         acquisition::SamplingCaptureRecord record;
+        target_control::RunControlRecord captureRunRecord;
         if (success) {
             acquisition::SamplingCaptureSession session;
+            const auto afterArm = [&](const quint32 captureId, QString* const callbackError) {
+                target_control::DebugServiceAccess runAccess(debugConfig);
+                const target_control::DebugResult connectResult = runAccess.connectTarget(profile);
+                if (!connectResult.success) {
+                    if (callbackError != nullptr) {
+                        *callbackError = QStringLiteral(
+                            "ARM 后目标连接失败: capture_id=%1 error=%2")
+                                             .arg(captureId).arg(connectResult.errorMessage);
+                    }
+                    return false;
+                }
+                target_control::ProgramController controller;
+                captureRunRecord = controller.runTarget(
+                    runAccess, taskId, image, verifyRecord, resetBeforeRun, profile.resetStrategy);
+                runAccess.disconnectTarget();
+                if (captureRunRecord.state != target_control::RunState::Running) {
+                    if (callbackError != nullptr) {
+                        *callbackError = QStringLiteral(
+                            "ARM 后程序启动失败: capture_id=%1 error=%2")
+                                             .arg(captureId).arg(captureRunRecord.errorMessage);
+                    }
+                    return false;
+                }
+                faultResult = fault_injection::FaultInjectionOrchestrator().execute(faultRequest);
+                if (faultResult.status == QStringLiteral("failed")) {
+                    if (callbackError != nullptr) {
+                        *callbackError = QStringLiteral(
+                            "程序启动后错误注入失败: capture_id=%1 error=%2")
+                                             .arg(captureId).arg(faultResult.error);
+                    }
+                    return false;
+                }
+                return true;
+            };
+            const auto cancelled = []() {
+                return QThread::currentThread()->isInterruptionRequested();
+            };
             const acquisition::CaptureSessionResult captureResult =
-                session.runDetailed(&transport, config, taskRoot, 120'000, &record);
+                session.runDetailed(
+                    &transport, config, taskRoot, 120'000, &record, afterArm, cancelled);
             success = captureResult.success;
             captureError = captureResult.message;
             if (!success) {
-                const QString code = captureError.contains(QStringLiteral("CAPTURE_RECOVERY_FAILED"))
-                    ? QStringLiteral("CAPTURE_RECOVERY_FAILED")
-                    : captureError.contains(QStringLiteral("stop_reason=2"))
-                        ? QStringLiteral("CAPTURE_TRIGGER_TIMEOUT")
-                        : QStringLiteral("CAPTURE_STREAM_TIMEOUT");
+                QString code = QStringLiteral("CAPTURE_STREAM_ERROR");
+                const QStringList endCodes = {
+                    QStringLiteral("CAPTURE_END_HOST_TERMINATE"),
+                    QStringLiteral("CAPTURE_END_WATCHDOG"),
+                    QStringLiteral("CAPTURE_END_OVERFLOW"),
+                    QStringLiteral("CAPTURE_END_HARD_TIMEOUT"),
+                    QStringLiteral("CAPTURE_END_FATAL_ERROR")};
+                for (const QString& candidate : endCodes) {
+                    if (captureError.contains(candidate)) {
+                        code = candidate;
+                        break;
+                    }
+                }
+                if (captureError.contains(QStringLiteral("CAPTURE_RECOVERY_FAILED"))) {
+                    code = QStringLiteral("CAPTURE_RECOVERY_FAILED");
+                } else if (captureError.contains(QStringLiteral("等待 CAPTURE_END 超时"))) {
+                    code = QStringLiteral("CAPTURE_STREAM_TIMEOUT");
+                }
                 captureError = QStringLiteral("[%1] %2").arg(code, captureError);
             }
         }
         transport.close();
 
-        QMetaObject::invokeMethod(
-            this,
-            [this, success, captureError, taskRoot, taskId]() {
-                samplingCaptureBusy_ = false;
-                if (window_ != nullptr) {
-                    window_->setActionButtonsEnabled(ui::UiAction::SaveSamplingConfig, true);
-                    window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, true);
-                    window_->setActionButtonsEnabled(ui::UiAction::StartSamplingCapture, true);
+        postToController(
+            self,
+            [success, captureError, taskRoot, taskId, captureRunRecord](WorkbenchController* const controller) {
+                controller->samplingCaptureBusy_ = false;
+                if (controller->window_ != nullptr) {
+                    controller->window_->setActionButtonsEnabled(ui::UiAction::SendSamplingConfig, true);
                 }
-                if (!success) {
-                    logError(QStringLiteral("Sampling"), captureError.isEmpty()
-                        ? QStringLiteral("FT601 采集失败") : captureError);
-                    refreshReportView();
+                if (!controller->hasTask_ || controller->currentTask_.summary.taskId != taskId ||
+                    controller->currentTask_.paths.taskRootPath != taskRoot) {
+                    controller->logWarning(
+                        QStringLiteral("Sampling"), QStringLiteral("采集已完成，但当前任务已变化。"));
                     return;
                 }
-                if (!hasTask_ || currentTask_.summary.taskId != taskId ||
-                    currentTask_.paths.taskRootPath != taskRoot) {
-                    logWarning(QStringLiteral("Sampling"), QStringLiteral("采集已完成，但当前任务已变化。"));
+                if (!captureRunRecord.taskId.isEmpty()) {
+                    controller->runRecord_ = captureRunRecord;
+                    controller->hasRunRecord_ = true;
+                    if (controller->runRecord_.state == target_control::RunState::Running) {
+                        controller->currentRunProgress_ = qMax(controller->currentRunProgress_, 85);
+                        controller->logInfo(
+                            QStringLiteral("Run"),
+                            QStringLiteral("采样 ARM 后程序运行成功: %1")
+                                .arg(debugReturnSummary(controller->runRecord_.rawReturn)));
+                    }
+                    QString evidenceError;
+                    if (!controller->writeEvidenceJson(
+                            QString::fromLatin1(kRunControlRecordName),
+                            runRecordToJson(controller->runRecord_), nullptr, &evidenceError)) {
+                        controller->logWarning(
+                            QStringLiteral("Evidence"),
+                            QStringLiteral("ARM 后运行证据写入失败: %1").arg(evidenceError));
+                    }
+                }
+                if (!success) {
+                    controller->runSerialCaptureActive_ = false;
+                    controller->logError(QStringLiteral("Sampling"), captureError.isEmpty()
+                        ? QStringLiteral("FT601 采集失败") : captureError);
+                    const bool programStarted = captureRunRecord.state == target_control::RunState::Running;
+                    controller->setRunSummaryFromCurrentState(
+                        programStarted ? QStringLiteral("程序已运行，采集结束失败")
+                                       : QStringLiteral("采集启动失败，程序未运行"),
+                        controller->currentRunProgress_, controller->currentStopProgress_);
+                    controller->updateTopStatus();
+                    controller->refreshReportView();
                     return;
                 }
 
@@ -2063,11 +2163,18 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 const QByteArray schemaBytes = QJsonDocument(schema).toJson(QJsonDocument::Indented);
                 if (!schemaFile.open(QIODevice::WriteOnly) ||
                     schemaFile.write(schemaBytes) != schemaBytes.size() || !schemaFile.commit()) {
-                    logError(QStringLiteral("Sampling"), QStringLiteral("采集完成，但通道 schema 写入失败"));
+                    controller->logError(
+                        QStringLiteral("Sampling"), QStringLiteral("采集完成，但通道 schema 写入失败"));
                     return;
                 }
 
-                analyzeCurrentTrace(false);
+                if (!controller->analyzeCurrentTrace(false)) {
+                    controller->logError(
+                        QStringLiteral("Sampling"),
+                        QStringLiteral("采集完成，但协议解析失败，未生成通过报告"));
+                    controller->refreshReportView();
+                    return;
+                }
                 QJsonArray artifacts;
                 const auto appendArtifact = [&artifacts](const QString& name, const QString& relativePath) {
                     QJsonObject artifact;
@@ -2092,18 +2199,24 @@ void WorkbenchController::startSamplingCapture(const QVariantMap& parameters)
                 artifactIndex.insert(QStringLiteral("schema"), QStringLiteral("lockstep-artifacts-v1"));
                 artifactIndex.insert(QStringLiteral("artifacts"), artifacts);
                 QString artifactError;
-                if (!writeEvidenceJson(QStringLiteral("artifacts.json"), artifactIndex, nullptr, &artifactError)) {
-                    logError(QStringLiteral("Sampling"), artifactError);
+                if (!controller->writeEvidenceJson(
+                        QStringLiteral("artifacts.json"), artifactIndex, nullptr, &artifactError)) {
+                    controller->logError(QStringLiteral("Sampling"), artifactError);
                     return;
                 }
-                refreshWaveformView();
-                logInfo(QStringLiteral("Sampling"), QStringLiteral("采集、VCD 与协议解析已完成。"));
-                generateReport();
-            },
-            Qt::QueuedConnection);
+                controller->refreshWaveformView();
+                controller->logInfo(QStringLiteral("Sampling"), QStringLiteral("采集、VCD 与协议解析已完成。"));
+                controller->generateReport();
+            });
     });
+    samplingCaptureThread_ = thread;
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        if (samplingCaptureThread_ == thread) samplingCaptureThread_ = nullptr;
+    });
     thread->start();
+    updateTopStatus();
 }
 
 void WorkbenchController::updateConnectionDiagnostics(const QString& serviceState)
@@ -2331,7 +2444,8 @@ void WorkbenchController::programImage()
     const target_control::DebugServiceConfig debugConfig = debugConfig_;
     const target_control::DebugProfile profile = debugProfile_;
     const QString taskId = currentTask_.summary.taskId;
-    QThread* const thread = QThread::create([this, debugConfig, profile, image, taskId]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, debugConfig, profile, image, taskId]() {
         WriteWorkerResult result;
         QElapsedTimer timer;
         timer.start();
@@ -2344,58 +2458,62 @@ void WorkbenchController::programImage()
         } else {
             target_control::ProgramController controller;
             const target_control::OperationProgressCallback callback =
-                [this](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
-                    QMetaObject::invokeMethod(
-                        this,
-                        [this, completedBytes, totalBytes, message]() {
-                            updateWriteOperationProgress(completedBytes, totalBytes, message);
-                        },
-                        Qt::QueuedConnection);
+                [self](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
+                    postToController(
+                        self,
+                        [completedBytes, totalBytes, message](WorkbenchController* const workbench) {
+                            workbench->updateWriteOperationProgress(completedBytes, totalBytes, message);
+                        });
                 };
             result.record = controller.programTarget(workerAccess, taskId, image, callback);
         }
         result.elapsedMs = timer.elapsed();
-        QMetaObject::invokeMethod(
-            this,
-            [this, result]() {
-                writeRecord_ = result.record;
-                hasWriteRecord_ = writeRecord_.success ||
-                    !writeRecord_.rawReturn.isEmpty() ||
-                    !writeRecord_.errorMessage.isEmpty();
-                currentWriteProgress_ = writeRecord_.success ? 100 : 100;
+        postToController(self, [result](WorkbenchController* const workbench) {
+                workbench->writeRecord_ = result.record;
+                workbench->hasWriteRecord_ = workbench->writeRecord_.success ||
+                    !workbench->writeRecord_.rawReturn.isEmpty() ||
+                    !workbench->writeRecord_.errorMessage.isEmpty();
+                workbench->currentWriteProgress_ = 100;
 
                 QString error;
                 QString relativePath;
-                if (!writeEvidenceJson(QString::fromLatin1(kProgramWriteRecordName), writeRecordToJson(writeRecord_), &relativePath, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鐑у啓璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kProgramWriteRecordName),
+                        writeRecordToJson(workbench->writeRecord_), &relativePath, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"),
+                        QStringLiteral("鐑у啓璇佹嵁鍐欏叆澶辫触: %1").arg(error));
                 }
                 const target_control::OperationProgress persistedProgress =
                     target_control::makeOperationProgress(
                         target_control::ProgramOperation::Write,
-                        writeRecord_.success ? target_control::OperationStage::PersistWriteRecord : target_control::OperationStage::Failed);
-                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鐑у綍杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                        workbench->writeRecord_.success
+                            ? target_control::OperationStage::PersistWriteRecord
+                            : target_control::OperationStage::Failed);
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kProgramOperationProgressName),
+                        progressToJson(persistedProgress), nullptr, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"),
+                        QStringLiteral("鐑у綍杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
                 }
 
-                flowState_ = workflow_.recordStageResult(
-                    flowState_,
-                    workflow::Stage::ProgramWrite,
-                    writeRecord_.success ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-                    writeRecord_.success ? QStringLiteral("鐑у啓鎴愬姛") : writeRecord_.errorMessage,
-                    imageToJson(imageInfo_));
-
-                if (writeRecord_.success) {
-                    logInfo(QStringLiteral("Program"), QStringLiteral("烧录成功。"));
+                if (workbench->writeRecord_.success) {
+                    workbench->logInfo(QStringLiteral("Program"), QStringLiteral("烧录成功。"));
                 } else {
-                    logError(QStringLiteral("Program"), QStringLiteral("烧录失败: %1").arg(writeRecord_.errorMessage));
+                    workbench->logError(
+                        QStringLiteral("Program"),
+                        QStringLiteral("烧录失败: %1").arg(workbench->writeRecord_.errorMessage));
                 }
-                logInfo(QStringLiteral("Program"), QStringLiteral("烧录开销: %1 ms").arg(result.elapsedMs));
-                endHardwareOperation();
-                setRamSummaryFromCurrentState(writeRecord_.success ? QStringLiteral("烧录完成") : QStringLiteral("烧录失败"));
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
+                workbench->logInfo(
+                    QStringLiteral("Program"), QStringLiteral("烧录开销: %1 ms").arg(result.elapsedMs));
+                workbench->endHardwareOperation();
+                workbench->setRamSummaryFromCurrentState(
+                    workbench->writeRecord_.success ? QStringLiteral("烧录完成") : QStringLiteral("烧录失败"));
+                workbench->updateTopStatus();
+            });
     });
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
 }
@@ -2454,7 +2572,8 @@ void WorkbenchController::verifyReadback()
     const target_control::DebugServiceConfig debugConfig = debugConfig_;
     const target_control::DebugProfile profile = debugProfile_;
     const QString taskId = currentTask_.summary.taskId;
-    QThread* const thread = QThread::create([this, debugConfig, profile, image, taskId]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, debugConfig, profile, image, taskId]() {
         ReadbackWorkerResult result;
         QElapsedTimer timer;
         timer.start();
@@ -2468,199 +2587,59 @@ void WorkbenchController::verifyReadback()
         } else {
             target_control::ProgramController controller;
             const target_control::OperationProgressCallback callback =
-                [this](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
-                    QMetaObject::invokeMethod(
-                        this,
-                        [this, completedBytes, totalBytes, message]() {
-                            updateReadbackOperationProgress(completedBytes, totalBytes, message);
-                        },
-                        Qt::QueuedConnection);
+                [self](const quint64 completedBytes, const quint64 totalBytes, const QString& message) {
+                    postToController(
+                        self,
+                        [completedBytes, totalBytes, message](WorkbenchController* const workbench) {
+                            workbench->updateReadbackOperationProgress(completedBytes, totalBytes, message);
+                        });
                 };
             result.record = controller.verifyReadback(workerAccess, taskId, image, callback);
         }
         result.elapsedMs = timer.elapsed();
-        QMetaObject::invokeMethod(
-            this,
-            [this, result]() {
-                verifyRecord_ = result.record;
-                hasVerifyRecord_ = true;
-                currentReadbackProgress_ = 100;
+        postToController(self, [result](WorkbenchController* const workbench) {
+                workbench->verifyRecord_ = result.record;
+                workbench->hasVerifyRecord_ = true;
+                workbench->currentReadbackProgress_ = 100;
 
                 QString error;
                 QString relativePath;
-                if (!writeEvidenceJson(QString::fromLatin1(kReadbackVerifyRecordName), verifyRecordToJson(verifyRecord_), &relativePath, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鍥炶璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kReadbackVerifyRecordName),
+                        verifyRecordToJson(workbench->verifyRecord_), &relativePath, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"),
+                        QStringLiteral("鍥炶璇佹嵁鍐欏叆澶辫触: %1").arg(error));
                 }
                 const target_control::OperationProgress persistedProgress =
                     target_control::makeOperationProgress(target_control::ProgramOperation::Readback, target_control::OperationStage::PersistVerifyRecord);
-                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("鍥炶杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kProgramOperationProgressName),
+                        progressToJson(persistedProgress), nullptr, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"),
+                        QStringLiteral("鍥炶杩涘害璇佹嵁鍐欏叆澶辫触: %1").arg(error));
                 }
 
-                const bool passed = verifyRecord_.state == target_control::VerifyState::Passed;
-                flowState_ = workflow_.recordStageResult(
-                    flowState_,
-                    workflow::Stage::ReadbackVerify,
-                    passed ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-                    passed ? QStringLiteral("鍥炶鏍￠獙閫氳繃") : verifyRecord_.errorMessage,
-                    verifyRecordToJson(verifyRecord_));
+                const bool passed = workbench->verifyRecord_.state == target_control::VerifyState::Passed;
                 if (passed) {
-                    logInfo(QStringLiteral("Readback"), QStringLiteral("回读校验通过。"));
+                    workbench->logInfo(QStringLiteral("Readback"), QStringLiteral("回读校验通过。"));
                 } else {
-                    logError(QStringLiteral("Readback"), QStringLiteral("回读校验失败: %1").arg(verifyRecord_.errorMessage));
+                    workbench->logError(
+                        QStringLiteral("Readback"),
+                        QStringLiteral("回读校验失败: %1").arg(workbench->verifyRecord_.errorMessage));
                 }
-                logInfo(QStringLiteral("Readback"), QStringLiteral("回读开销: %1 ms").arg(result.elapsedMs));
-                endHardwareOperation();
-                setRamSummaryFromCurrentState(passed ? QStringLiteral("回读校验完成") : QStringLiteral("回读校验失败"));
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
+                workbench->logInfo(
+                    QStringLiteral("Readback"), QStringLiteral("回读开销: %1 ms").arg(result.elapsedMs));
+                workbench->endHardwareOperation();
+                workbench->setRamSummaryFromCurrentState(
+                    passed ? QStringLiteral("回读校验完成") : QStringLiteral("回读校验失败"));
+                workbench->updateTopStatus();
+            });
     });
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
-}
-
-void WorkbenchController::runProgram()
-{
-    if (hardwareOperationBusy_) {
-        logWarning(QStringLiteral("Run"), QStringLiteral("%1 正在执行，请等待完成。").arg(hardwareOperationName_));
-        return;
-    }
-    if (!hasConnection_ || !hasPrecheck_) {
-        logError(QStringLiteral("Run"), QStringLiteral("目标尚未连接或预检未通过，不能运行程序。"));
-        return;
-    }
-    if (!hasVerifyRecord_ || verifyRecord_.state != target_control::VerifyState::Passed) {
-        logError(QStringLiteral("Run"), QStringLiteral("回读校验未通过，禁止运行。"));
-        return;
-    }
-    if (!serialOpen_) {
-        if (serialPorts_.isEmpty()) {
-            refreshSerialPorts();
-        }
-        logInfo(QStringLiteral("Run"), QStringLiteral("运行前自动打开默认板卡 UART 串口。"));
-        if (!openSelectedSerialPort()) {
-            logError(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出；请先刷新串口并打开板卡 UART 串口。"));
-            return;
-        }
-    }
-    target_control::DebugAccess* const access = debugAccess();
-    if (access == nullptr) {
-        logError(QStringLiteral("Run"), QStringLiteral("自研片上调试服务未配置，不能运行程序。"));
-        return;
-    }
-
-    const bool resetBeforeRun = runButtonResetMode_;
-    beginHardwareOperation(target_control::ProgramOperation::Run, QStringLiteral("程序运行"));
-    target_control::OperationProgress progress =
-        target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CheckRunGate);
-    hasHaltRecord_ = false;
-    haltRecord_ = target_control::RunControlRecord();
-    runSerialOutput_.clear();
-    latestRunInstruction_ = resetBeforeRun ? QStringLiteral("程序复位并运行") : QStringLiteral("程序运行");
-    runOutputConfirmed_ = false;
-    runSerialCaptureActive_ = true;
-    currentStopProgress_ = 0;
-    updateRunButtonText();
-    currentRunProgress_ = progress.percent;
-    setRunSummaryFromCurrentState(QStringLiteral("运行准备中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    progress = target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::DispatchRun);
-    currentRunProgress_ = progress.percent;
-    setRunSummaryFromCurrentState(QStringLiteral("运行命令已发送 - ") + progress.message, currentRunProgress_, currentStopProgress_);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-
-    const target_control::DebugServiceConfig debugConfig = debugConfig_;
-    const target_control::DebugProfile profile = debugProfile_;
-    const target_control::ProgramImageInfo image = imageInfo_;
-    const target_control::ReadbackVerifyRecord verifyRecord = verifyRecord_;
-    const QString taskId = currentTask_.summary.taskId;
-    QThread* const thread = QThread::create([this, debugConfig, profile, image, verifyRecord, taskId, resetBeforeRun]() {
-        RunWorkerResult result;
-        QElapsedTimer timer;
-        timer.start();
-        target_control::DebugServiceAccess workerAccess(debugConfig);
-        const target_control::DebugResult connectResult = workerAccess.connectTarget(profile);
-        if (!connectResult.success) {
-            result.connectionError = connectResult.errorMessage;
-            result.record.operation = target_control::ProgramOperation::Run;
-            result.record.taskId = taskId;
-            result.record.entryAddress = image.entryAddress;
-            result.record.state = target_control::RunState::Failed;
-            result.record.errorMessage = QStringLiteral("目标连接确认失败: %1").arg(connectResult.errorMessage);
-        } else {
-            target_control::ProgramController controller;
-            if (resetBeforeRun) {
-                const target_control::DebugResult resetResult = workerAccess.reset(profile.resetStrategy);
-                if (!resetResult.success) {
-                    result.record.operation = target_control::ProgramOperation::Run;
-                    result.record.taskId = taskId;
-                    result.record.entryAddress = image.entryAddress;
-                    result.record.state = target_control::RunState::Failed;
-                    result.record.rawReturn = resetResult.rawReturn;
-                    result.record.errorMessage = QStringLiteral("目标复位失败: %1").arg(resetResult.errorMessage);
-                } else {
-                    result.record = controller.runTarget(workerAccess, taskId, image, verifyRecord);
-                }
-            } else {
-                result.record = controller.runTarget(workerAccess, taskId, image, verifyRecord);
-            }
-        }
-        result.elapsedMs = timer.elapsed();
-
-        QMetaObject::invokeMethod(
-            this,
-            [this, result]() {
-                target_control::OperationProgress progress =
-                    target_control::makeOperationProgress(target_control::ProgramOperation::Run, target_control::OperationStage::CaptureRunStatus);
-                currentRunProgress_ = qMax(currentRunProgress_, progress.percent);
-                setRunSummaryFromCurrentState(QStringLiteral("运行返回确认中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
-
-                runRecord_ = result.record;
-                hasRunRecord_ = true;
-
-                QString error;
-                QString relativePath;
-                if (!writeEvidenceJson(QString::fromLatin1(kRunControlRecordName), runRecordToJson(runRecord_), &relativePath, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("运行证据写入失败: %1").arg(error));
-                }
-                const bool running = runRecord_.state == target_control::RunState::Running;
-                const target_control::OperationProgress persistedProgress =
-                    target_control::makeOperationProgress(
-                        target_control::ProgramOperation::Run,
-                        running ? target_control::OperationStage::PersistRunRecord : target_control::OperationStage::Failed);
-                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("运行进度证据写入失败: %1").arg(error));
-                }
-
-                flowState_ = workflow_.recordStageResult(
-                    flowState_,
-                    workflow::Stage::RunControl,
-                    running ? workflow::StageStatus::Passed : workflow::StageStatus::Failed,
-                    running ? QStringLiteral("运行命令已返回，等待串口输出确认") : runRecord_.errorMessage,
-                    runRecordToJson(runRecord_));
-                if (running) {
-                    currentRunProgress_ = qMin(currentRunProgress_, 85);
-                    logInfo(QStringLiteral("Run"), QStringLiteral("运行命令返回成功: %1").arg(debugReturnSummary(runRecord_.rawReturn)));
-                    if (!serialOpen_) {
-                        logWarning(QStringLiteral("Run"), QStringLiteral("串口未打开，无法采集程序输出，不能确认程序是否正确运行。"));
-                    } else {
-                        logInfo(QStringLiteral("Run"), QStringLiteral("等待串口输出确认程序运行结果。"));
-                    }
-                } else {
-                    runSerialCaptureActive_ = false;
-                    logError(QStringLiteral("Run"), QStringLiteral("程序运行失败: %1").arg(runRecord_.errorMessage));
-                }
-                logInfo(QStringLiteral("Run"), QStringLiteral("运行控制开销: %1 ms").arg(result.elapsedMs));
-                endHardwareOperation();
-                setRunSummaryFromCurrentState(running ? QStringLiteral("运行控制完成") : QStringLiteral("运行控制失败"), currentRunProgress_, currentStopProgress_);
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
-    });
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-    thread->start();
-    updateTopStatus();
 }
 
 void WorkbenchController::stopProgram()
@@ -2697,7 +2676,8 @@ void WorkbenchController::stopProgram()
     const target_control::DebugServiceConfig debugConfig = debugConfig_;
     const target_control::DebugProfile profile = debugProfile_;
     const QString taskId = currentTask_.summary.taskId;
-    QThread* const thread = QThread::create([this, debugConfig, profile, taskId]() {
+    const QPointer<WorkbenchController> self(this);
+    QThread* const thread = QThread::create([self, debugConfig, profile, taskId]() {
         RunWorkerResult result;
         QElapsedTimer timer;
         timer.start();
@@ -2715,47 +2695,61 @@ void WorkbenchController::stopProgram()
         }
         result.elapsedMs = timer.elapsed();
 
-        QMetaObject::invokeMethod(
-            this,
-            [this, result]() {
+        postToController(self, [result](WorkbenchController* const workbench) {
                 target_control::OperationProgress progress =
                     target_control::makeOperationProgress(target_control::ProgramOperation::Halt, target_control::OperationStage::CaptureHaltStatus);
-                currentStopProgress_ = qMax(currentStopProgress_, progress.percent);
-                setRunSummaryFromCurrentState(QStringLiteral("终止返回确认中 - ") + progress.message, currentRunProgress_, currentStopProgress_);
+                workbench->currentStopProgress_ = qMax(workbench->currentStopProgress_, progress.percent);
+                workbench->setRunSummaryFromCurrentState(
+                    QStringLiteral("终止返回确认中 - ") + progress.message,
+                    workbench->currentRunProgress_, workbench->currentStopProgress_);
 
-                haltRecord_ = result.record;
-                hasHaltRecord_ = true;
+                workbench->haltRecord_ = result.record;
+                workbench->hasHaltRecord_ = true;
 
                 QString error;
                 QString relativePath;
-                if (!writeEvidenceJson(QString::fromLatin1(kHaltControlRecordName), runRecordToJson(haltRecord_), &relativePath, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("终止证据写入失败: %1").arg(error));
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kHaltControlRecordName),
+                        runRecordToJson(workbench->haltRecord_), &relativePath, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"), QStringLiteral("终止证据写入失败: %1").arg(error));
                 }
-                const bool halted = haltRecord_.state == target_control::RunState::Halted;
+                const bool halted = workbench->haltRecord_.state == target_control::RunState::Halted;
                 const target_control::OperationProgress persistedProgress =
                     target_control::makeOperationProgress(
                         target_control::ProgramOperation::Halt,
                         halted ? target_control::OperationStage::PersistHaltRecord : target_control::OperationStage::Failed);
-                if (!writeEvidenceJson(QString::fromLatin1(kProgramOperationProgressName), progressToJson(persistedProgress), nullptr, &error)) {
-                    logWarning(QStringLiteral("Evidence"), QStringLiteral("终止进度证据写入失败: %1").arg(error));
+                if (!workbench->writeEvidenceJson(
+                        QString::fromLatin1(kProgramOperationProgressName),
+                        progressToJson(persistedProgress), nullptr, &error)) {
+                    workbench->logWarning(
+                        QStringLiteral("Evidence"), QStringLiteral("终止进度证据写入失败: %1").arg(error));
                 }
 
                 if (halted) {
-                    currentStopProgress_ = 100;
-                    runSerialCaptureActive_ = false;
-                    runButtonResetMode_ = true;
-                    logInfo(QStringLiteral("Run"), QStringLiteral("程序已终止: %1").arg(debugReturnSummary(haltRecord_.rawReturn)));
-                    updateRunButtonText();
+                    workbench->currentStopProgress_ = 100;
+                    workbench->runSerialCaptureActive_ = false;
+                    workbench->runButtonResetMode_ = true;
+                    workbench->logInfo(
+                        QStringLiteral("Run"),
+                        QStringLiteral("程序已终止: %1")
+                            .arg(debugReturnSummary(workbench->haltRecord_.rawReturn)));
+                    workbench->updateRunButtonText();
                 } else {
-                    logWarning(QStringLiteral("Run"), QStringLiteral("终止请求失败: %1").arg(haltRecord_.errorMessage));
+                    workbench->logWarning(
+                        QStringLiteral("Run"),
+                        QStringLiteral("终止请求失败: %1").arg(workbench->haltRecord_.errorMessage));
                 }
-                logInfo(QStringLiteral("Run"), QStringLiteral("终止控制开销: %1 ms").arg(result.elapsedMs));
-                endHardwareOperation();
-                setRunSummaryFromCurrentState(halted ? QStringLiteral("终止控制完成") : QStringLiteral("终止控制失败"), currentRunProgress_, currentStopProgress_);
-                updateTopStatus();
-            },
-            Qt::QueuedConnection);
+                workbench->logInfo(
+                    QStringLiteral("Run"), QStringLiteral("终止控制开销: %1 ms").arg(result.elapsedMs));
+                workbench->endHardwareOperation();
+                workbench->setRunSummaryFromCurrentState(
+                    halted ? QStringLiteral("终止控制完成") : QStringLiteral("终止控制失败"),
+                    workbench->currentRunProgress_, workbench->currentStopProgress_);
+                workbench->updateTopStatus();
+            });
     });
+    trackWorkerThread(thread);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
     updateTopStatus();
@@ -3211,10 +3205,10 @@ void WorkbenchController::refreshWaveformViewWithAutoAnalysis()
     refreshWaveformView();
 }
 
-void WorkbenchController::analyzeCurrentTrace(const bool refreshAfterAnalysis)
+bool WorkbenchController::analyzeCurrentTrace(const bool refreshAfterAnalysis)
 {
     if (!ensureTask()) {
-        return;
+        return false;
     }
 
     protocol_analyzer::ProtocolAnalysisRequest request;
@@ -3266,6 +3260,7 @@ void WorkbenchController::analyzeCurrentTrace(const bool refreshAfterAnalysis)
     if (refreshAfterAnalysis) {
         refreshWaveformView();
     }
+    return result.success;
 }
 
 void WorkbenchController::updateProjectView()
@@ -3727,11 +3722,6 @@ QJsonObject WorkbenchController::resourceSnapshotJson() const
 workspace::WorkspaceMode WorkbenchController::workspaceMode() const
 {
     return (mode_ == ui::UiMode::Test) ? workspace::WorkspaceMode::Test : workspace::WorkspaceMode::Research;
-}
-
-workflow::FlowMode WorkbenchController::flowMode() const
-{
-    return (mode_ == ui::UiMode::Test) ? workflow::FlowMode::Test : workflow::FlowMode::Research;
 }
 
 }  // namespace lockstep::apps

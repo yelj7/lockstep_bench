@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_contract.h
 * 日期: 2026-07-14
-* 版本: v1.1
-* 更新记录: 增加测试报告页面模型和报告文件操作
+* 版本: v1.2
+* 更新记录: 移除独立保存与开始采集动作，程序运行统一触发采样。
 * 描述: 声明上位机界面动作、工作台状态和报告页数据合同
 **********************************************************/
 
@@ -52,14 +52,12 @@ enum class UiAction : unsigned char {
     GenerateReport = 29U,
     DeleteTask = 30U,
     SendSerialData = 31U,
-    SaveSamplingConfig = 32U,
     SendSamplingConfig = 33U,
     OpenReportHtml = 34U,
     OpenReportDirectory = 35U,
     CopyReportPath = 36U,
     OpenReportArtifact = 37U,
-    NavigateToReportSource = 38U,
-    StartSamplingCapture = 39U
+    NavigateToReportSource = 38U
 };
 
 enum class ReportLifecycleState : unsigned char {

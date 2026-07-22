@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: sampling_capture_test.cpp
 * 日期: 2026-07-16
-* 版本: 3.1
-* 更新记录: 主分支恢复 D3XX 后更新传输无关的恢复门槛断言。
+* 版本: 3.6
+* 更新记录: 增加完整配置序列化和分阶段取消恢复回归。
 * 描述: 验证 v2/v3、恢复门槛、1024-bit VCD 和稀疏事件合同。
 **********************************************************/
 
@@ -41,6 +41,12 @@ void overwrite32(QByteArray* bytes, const int offset, const quint32 value)
     bytes->replace(offset, sizeof(little), reinterpret_cast<const char*>(&little), sizeof(little));
 }
 
+quint32 read32(const QByteArray& bytes, const int offset)
+{
+    return qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar*>(bytes.constData() + offset));
+}
+
 bool expect(bool condition, const char* message)
 {
     if (!condition) std::cerr << message << '\n';
@@ -53,7 +59,7 @@ public:
     {
         Q_UNUSED(error);
         if (pipeId != 0x02U) return false;
-        if (transferred != nullptr) *transferred = bytes.size();
+        if (transferred != nullptr) *transferred = qMax(0, bytes.size() - shortWriteBytes);
         const lockstep::acquisition::CaptureDecodeResult decoded = requestCodec_.feed(bytes);
         if (!decoded.success || decoded.frames.size() != 1) return false;
         const lockstep::acquisition::CaptureFrame& request = decoded.frames.first();
@@ -151,6 +157,7 @@ public:
     int pendingTimeoutReads = 0;
     int reopenCount = 0;
     bool reopenSucceeds = true;
+    int shortWriteBytes = 0;
 
 private:
     lockstep::acquisition::CaptureFrameCodec requestCodec_;
@@ -166,12 +173,93 @@ int main(int argc, char** argv)
     using namespace lockstep::acquisition;
 
     SamplingCaptureConfig config;
+    const QJsonObject configJson = config.toJson();
+    if (!expect(configJson.value(QStringLiteral("sample_rate_hz")).toInt() == 120'000'000 &&
+                    configJson.value(QStringLiteral("sample_count")).toInt() == 4096 &&
+                    configJson.value(QStringLiteral("protocol_group_mask")).toInt() == 0x1ff &&
+                    configJson.value(QStringLiteral("input_invert_mask")).toInt() == 0 &&
+                    configJson.value(QStringLiteral("trigger_timeout_samples")).toInt() == 1'200'000'000 &&
+                    configJson.value(QStringLiteral("event_enable_mask")).toInt() == 0x19f &&
+                    configJson.value(QStringLiteral("event_limit")).toInt() == 0 &&
+                    configJson.value(QStringLiteral("event_watchdog_ticks")).toInt() == 12'000'000 &&
+                    configJson.value(QStringLiteral("event_hard_timeout_ticks")).toInt() == 240'000'000,
+                "persisted JSON includes every hardware and event configuration field")) return 1;
     QString error;
+    const QByteArray capturePayload = config.toPayload();
+    const QByteArray eventPayload = config.toEventPayload();
     if (!expect(config.validate(&error), "default 1024 capture config is valid") ||
         !expect(config.sampleRateHz == 120'000'000U, "default config matches live 120 MHz hardware") ||
         !expect(config.eventLimit == 0U, "default event stream is independent of the 4096-sample window") ||
-        !expect(config.toPayload().size() == 52, "capture config payload preserves v2 52-byte wire contract") ||
-        !expect(config.toEventPayload().size() == 16, "event config uses explicit v3 16-byte wire contract")) return 1;
+        !expect(capturePayload.size() == 52, "capture config payload preserves v2 52-byte wire contract") ||
+        !expect(eventPayload.size() == 16, "event config uses explicit v3 16-byte wire contract") ||
+        !expect(read32(capturePayload, 0) == config.sampleRateHz &&
+                    read32(capturePayload, 4) == config.sampleCount &&
+                    read32(capturePayload, 8) == config.pretriggerCount &&
+                    read32(capturePayload, 12) == config.posttriggerCount &&
+                    read32(capturePayload, 16) == config.protocolGroupMask &&
+                    read32(capturePayload, 20) == config.inputInvertMask &&
+                    read32(capturePayload, 24) == 0x04000400U &&
+                    read32(capturePayload, 28) == config.triggerMask &&
+                    read32(capturePayload, 32) == config.triggerValue &&
+                    read32(capturePayload, 36) == config.triggerEdgeRise &&
+                    read32(capturePayload, 40) == config.triggerEdgeFall &&
+                    read32(capturePayload, 44) == config.mode &&
+                    read32(capturePayload, 48) == config.triggerTimeoutSamples,
+                "capture config serializes every v2 field at the fixed wire offset") ||
+        !expect(read32(eventPayload, 0) == config.eventEnableMask &&
+                    read32(eventPayload, 4) == config.eventLimit &&
+                    read32(eventPayload, 8) == config.eventWatchdogTicks &&
+                    read32(eventPayload, 12) == config.eventHardTimeoutTicks,
+                "event config serializes every v3 field at the fixed wire offset")) return 1;
+
+    const auto expectInvalidConfig = [&](const SamplingCaptureConfig& invalid,
+                                         const char* const message) {
+        QString validationError;
+        return expect(!invalid.validate(&validationError), message);
+    };
+    SamplingCaptureConfig invalid = config;
+    invalid.sampleRateHz = 50'000'000U;
+    if (!expectInvalidConfig(invalid, "unsupported sample rate is rejected")) return 1;
+    invalid = config;
+    invalid.sampleCount = 2048U;
+    invalid.pretriggerCount = 1023U;
+    invalid.posttriggerCount = 1025U;
+    if (!expectInvalidConfig(invalid, "unsupported sample window is rejected")) return 1;
+    invalid = config;
+    invalid.inputInvertMask = 1U;
+    if (!expectInvalidConfig(invalid, "unimplemented input inversion is rejected")) return 1;
+    invalid = config;
+    invalid.triggerEdgeRise = 2U;
+    if (!expectInvalidConfig(invalid, "unsupported trigger rise bits are rejected")) return 1;
+    invalid = config;
+    invalid.triggerEdgeFall = 1U;
+    if (!expectInvalidConfig(invalid, "unimplemented falling-edge trigger is rejected")) return 1;
+    invalid = config;
+    invalid.protocolGroupMask = 0x200U;
+    if (!expectInvalidConfig(invalid, "unsupported protocol group bits are rejected")) return 1;
+    invalid = config;
+    invalid.mode = 1U;
+    if (!expectInvalidConfig(invalid, "unsupported capture mode is rejected")) return 1;
+    invalid = config;
+    invalid.triggerTimeoutSamples = 0U;
+    if (!expectInvalidConfig(invalid, "zero trigger timeout is rejected")) return 1;
+    invalid = config;
+    invalid.eventEnableMask = 0x200U;
+    if (!expectInvalidConfig(invalid, "unimplemented event sources are rejected")) return 1;
+    invalid = config;
+    invalid.eventLimit = 1U;
+    if (!expectInvalidConfig(invalid, "unsupported finite event limit is rejected")) return 1;
+    invalid = config;
+    invalid.eventWatchdogTicks = 0U;
+    if (!expectInvalidConfig(invalid, "zero event watchdog is rejected")) return 1;
+    invalid = config;
+    invalid.eventHardTimeoutTicks = invalid.eventWatchdogTicks - 1U;
+    if (!expectInvalidConfig(invalid, "hard timeout shorter than watchdog is rejected")) return 1;
+
+    SamplingCaptureRecord missingEventClosure;
+    if (!expect(!validateCaptureCompletion(missingEventClosure, &error) &&
+                    error.contains(QStringLiteral("event stream")),
+                "capture without EVENT_META/EVENT_END cannot pass")) return 1;
 
     FakeCaptureTransport transport;
     transport.pendingTimeoutReads = 2;
@@ -212,6 +300,12 @@ int main(int argc, char** argv)
     if (!expect(!session.configure(&oversizedStatusTransport, config, &error),
                 "configuration rejects an oversized STATUS_RSP")) return 1;
 
+    FakeCaptureTransport shortWriteTransport;
+    shortWriteTransport.shortWriteBytes = 4;
+    if (!expect(!session.configure(&shortWriteTransport, config, &error) &&
+                    error.contains(QStringLiteral("short write")),
+                "configuration rejects a transport short write")) return 1;
+
     QTemporaryDir afterArmTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_after_arm")));
     FakeCaptureTransport afterArmTransport;
     SamplingCaptureRecord afterArmRecord;
@@ -232,6 +326,18 @@ int main(int argc, char** argv)
         !expect(afterArmTransport.commands.indexOf(CaptureFrameType::StartEventStream) ==
                     afterArmTransport.commands.indexOf(CaptureFrameType::ArmCapture) + 1,
                 "START_EVENT_STREAM is sent immediately after ARM ACK")) return 1;
+
+    QTemporaryDir cancelledTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_cancelled")));
+    FakeCaptureTransport cancelledTransport;
+    SamplingCaptureRecord cancelledRecord;
+    int cancellationChecks = 0;
+    const CaptureSessionResult cancelledResult = session.runDetailed(
+        &cancelledTransport, config, cancelledTask.path(), 100, &cancelledRecord, {},
+        [&cancellationChecks]() { return ++cancellationChecks >= 3; });
+    if (!expect(!cancelledResult.success && cancelledResult.phase == QStringLiteral("cancelled") &&
+                    cancelledResult.message.contains(QStringLiteral("CAPTURE_CANCELLED")) &&
+                    cancelledResult.recoverySucceeded,
+                "thread cancellation between ARM and START performs STOP recovery")) return 1;
 
     QTemporaryDir recoveryTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_recovery")));
     FakeCaptureTransport timeoutTransport;
@@ -373,6 +479,29 @@ int main(int argc, char** argv)
                     v3Record.protocolEvents.first().payload == QByteArray::fromHex("55aa") &&
                     v3Record.eventEmittedTotal == 1U && v3Record.eventDroppedTotal == 0U,
                 "v3 event record and EVENT_END statistics assemble exactly")) return 1;
+    for (const quint32 reason : {1U, 2U, 4U, 5U}) {
+        QByteArray reasonEnd = eventEnd;
+        overwrite32(&reasonEnd, 0, reason);
+        const QByteArray reasonStream =
+            encoder.encode(CaptureFrameType::EventMeta, eventMeta, 20U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::EventData, eventData, 21U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureMeta, meta, 22U, 42U) +
+            encoder.encode(CaptureFrameType::SampleData, samples, 23U, 42U) +
+            encoder.encode(CaptureFrameType::EventEnd, reasonEnd, 24U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureEnd, end, 25U, 42U);
+        QTemporaryDir reasonTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_end_reason")));
+        FakeCaptureTransport reasonTransport;
+        reasonTransport.queueIncoming(reasonStream);
+        SamplingCaptureRecord reasonRecord;
+        if (!expect(!session.collect(&reasonTransport, reasonTask.path(), 1000,
+                                     &reasonRecord, &error),
+                    "non-program EVENT_END reason cannot be reported as capture success")) return 1;
+        if (!expect(error.contains(QStringLiteral("CAPTURE_END_")),
+                    "EVENT_END reason is preserved in the failure diagnostic")) return 1;
+    }
     QTemporaryDir earlyEventTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_early_event")));
     FakeCaptureTransport earlyEventTransport;
     earlyEventTransport.queueIncoming(v3Stream);
@@ -479,7 +608,11 @@ int main(int argc, char** argv)
     QFile sidecar(sidecarPath);
     if (!expect(sidecar.open(QIODevice::ReadOnly), "sidecar readable")) return 1;
     const QJsonObject sidecarObject = QJsonDocument::fromJson(sidecar.readAll()).object();
-    if (!expect(sidecarObject.value("sample_word_bits").toInt() == 1024, "sidecar fixes 1024-bit contract")) return 1;
+    if (!expect(sidecarObject.value("sample_word_bits").toInt() == 1024,
+                "sidecar fixes 1024-bit contract") ||
+        !expect(sidecarObject.value("window_start_index").toInteger() == 10 &&
+                    sidecarObject.value("window_end_index").toString() == QStringLiteral("11"),
+                "sidecar preserves the inclusive absolute capture window")) return 1;
 
     if (argc >= 2) {
         QTemporaryDir replayTask(lockstepTestTemporaryTemplate(QStringLiteral("capture_replay")));
@@ -509,6 +642,35 @@ int main(int argc, char** argv)
             if (!expect(QFileInfo::exists(QDir(replayTask.path()).filePath(output)),
                         "offline replay output exists")) return 1;
         }
+
+        QByteArray watchdogEventEnd = eventEnd;
+        overwrite32(&watchdogEventEnd, 0, static_cast<quint32>(EventEndReason::Watchdog));
+        const QByteArray watchdogStream =
+            encoder.encode(CaptureFrameType::EventMeta, eventMeta, 20U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::EventData, eventData, 21U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureMeta, meta, 22U, 42U) +
+            encoder.encode(CaptureFrameType::SampleData, samples, 23U, 42U) +
+            encoder.encode(CaptureFrameType::EventEnd, watchdogEventEnd, 24U, 42U, 0U,
+                           kCaptureProtocolVersionV3) +
+            encoder.encode(CaptureFrameType::CaptureEnd, end, 25U, 42U);
+        QTemporaryDir watchdogReplayTask(
+            lockstepTestTemporaryTemplate(QStringLiteral("capture_watchdog_replay")));
+        const QString watchdogRawPath =
+            QDir(watchdogReplayTask.path()).filePath(QStringLiteral("watchdog_fixture.dat"));
+        QFile watchdogRaw(watchdogRawPath);
+        if (!expect(watchdogRaw.open(QIODevice::WriteOnly) &&
+                        watchdogRaw.write(watchdogStream) == watchdogStream.size(),
+                    "watchdog offline fixture written")) return 1;
+        watchdogRaw.close();
+        QProcess watchdogReplay;
+        watchdogReplay.start(QString::fromLocal8Bit(argv[1]), {
+            QStringLiteral("--offline-capture"), watchdogRawPath,
+            QStringLiteral("--task-root"), watchdogReplayTask.path(),
+            QStringLiteral("--task-id"), QStringLiteral("offline_watchdog_fixture")});
+        if (!expect(watchdogReplay.waitForFinished(30'000) && watchdogReplay.exitCode() == 13,
+                    "offline replay rejects a watchdog-ended capture")) return 1;
 
         QByteArray subsetEventMeta = eventMeta;
         overwrite32(&subsetEventMeta, 8, 0x183U);

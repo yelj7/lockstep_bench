@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: main_window_shell.cpp
 * 日期: 2026-07-14
-* 版本: v1.4
-* 更新记录: 隐藏空闲协议占位文本，并按协议汇总关键行为与锁步状态
+* 版本: v1.5
+* 更新记录: 采样页仅保留下发按钮，程序运行同步携带当前采样配置。
 * 描述: 实现上位机主窗口框架及各工作页面
 **********************************************************/
 
@@ -3061,18 +3061,10 @@ QWidget* MainWindowShell::createSamplingConfigPage()
     QGroupBox* const actionPanel = panelBox(QStringLiteral("配置操作"), content);
     QHBoxLayout* const actionLayout = new QHBoxLayout(actionPanel);
     actionLayout->addStretch(1);
-    QPushButton* const saveButton =
-        createActionButton(UiAction::SaveSamplingConfig, NavigationPage::SamplingConfig, actionPanel, false);
     QPushButton* const sendButton =
-        createActionButton(UiAction::SendSamplingConfig, NavigationPage::SamplingConfig, actionPanel, false);
-    QPushButton* const captureButton =
-        createActionButton(UiAction::StartSamplingCapture, NavigationPage::SamplingConfig, actionPanel, true);
-    saveButton->setMinimumHeight(38);
+        createActionButton(UiAction::SendSamplingConfig, NavigationPage::SamplingConfig, actionPanel, true);
     sendButton->setMinimumHeight(38);
-    captureButton->setMinimumHeight(38);
-    actionLayout->addWidget(saveButton);
     actionLayout->addWidget(sendButton);
-    actionLayout->addWidget(captureButton);
     layout->addWidget(actionPanel);
     layout->addStretch(1);
     return scrollPage(content);
@@ -3752,8 +3744,7 @@ void MainWindowShell::emitAction(const UiAction action, const NavigationPage pag
             serialInput->clear();
         }
     }
-    if ((action == UiAction::SaveSamplingConfig) || (action == UiAction::SendSamplingConfig) ||
-        (action == UiAction::StartSamplingCapture)) {
+    if (action == UiAction::SendSamplingConfig || action == UiAction::RunProgram) {
         QLineEdit* const triggerAddrEdit = findChild<QLineEdit*>(QStringLiteral("sampling_trigger_addr_edit"));
         int mismatchMask = 0;
         for (int bit = 0; bit < kSamplingMismatchBits; ++bit) {

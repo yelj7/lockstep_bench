@@ -79,6 +79,16 @@ else()
 endif()
 add_test(NAME lockstep_sampling_capture_test COMMAND lockstep_sampling_capture_test $<TARGET_FILE:lockstep_ui_preview>)
 
+add_executable(lockstep_target_control_test target_control_test.cpp)
+target_link_libraries(lockstep_target_control_test PRIVATE lockstep_target_control Qt${QT_VERSION_MAJOR}::Core)
+target_compile_features(lockstep_target_control_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(lockstep_target_control_test PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(lockstep_target_control_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME lockstep_target_control_test COMMAND lockstep_target_control_test)
+
 add_executable(lockstep_workbench_dialogs_test workbench_dialogs_test.cpp)
 target_link_libraries(lockstep_workbench_dialogs_test
     PRIVATE

@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: ui_preview_main.cpp
 * 日期: 2026-07-13
-* 版本: v2.5
-* 更新记录: 实时采集支持同步归档板载 UART 文本并强制校验程序结束标志。
+* 版本: v2.6
+* 更新记录: 诊断 smoke 补齐事件流启动并使用生产默认 watchdog。
 * 描述: 按参数启动界面、调试服务、离线回放或实时采集模式。
 **********************************************************/
 
@@ -242,13 +242,15 @@ int runOfflineCapture(int argc, char* argv[])
         if (captureStarted && !assembler.append(frame, &error)) return 5;
     }
     if (!assembler.complete()) return 6;
+    const lockstep::acquisition::SamplingCaptureRecord record = assembler.record();
+    if (!lockstep::acquisition::validateCaptureCompletion(record, &error)) return 13;
     const QString evidenceDir = QDir(taskRoot).filePath(QStringLiteral("evidence"));
     QDir().mkpath(evidenceDir);
     QSaveFile rawOutput(QDir(evidenceDir).filePath(QStringLiteral("raw_capture.dat")));
     if (!rawOutput.open(QIODevice::WriteOnly) || rawOutput.write(raw) != raw.size() || !rawOutput.commit()) return 7;
     QString vcdPath;
     QString sidecarPath;
-    if (!lockstep::acquisition::exportScalarVcd(assembler.record(), taskRoot, &vcdPath, &sidecarPath, &error)) return 8;
+    if (!lockstep::acquisition::exportScalarVcd(record, taskRoot, &vcdPath, &sidecarPath, &error)) return 8;
 
     return finalizeCaptureTask(taskRoot, taskId);
 }
@@ -512,10 +514,12 @@ int runCaptureDiagnostic(int argc, char* argv[])
         output.insert(QStringLiteral("operation"), QStringLiteral("smoke"));
         lockstep::acquisition::SamplingCaptureConfig config;
         config.triggerTimeoutSamples = unsignedArgument(
-            arguments, QStringLiteral("--trigger-timeout-samples"), 120'000U, &argumentValid);
+            arguments, QStringLiteral("--trigger-timeout-samples"), config.triggerTimeoutSamples,
+            &argumentValid);
         quint32 captureId = 0U;
         success = argumentValid && session.configure(&transport, config, &error) &&
-            session.armAndWaitAccepted(&transport, 3U, &captureId, &error) &&
+            session.armAndWaitAccepted(&transport, 4U, &captureId, &error) &&
+            session.startEventStream(&transport, 5U, &error) &&
             session.queryStatus(&transport, &status, &error);
         output.insert(QStringLiteral("capture_id"), static_cast<double>(captureId));
         if (success) success = session.stopAndRecover(&transport, &status, &error);

@@ -1,8 +1,8 @@
 /**********************************************************
 * 文件名: waveform_ui_test.cpp
 * 日期: 2026-07-14
-* 版本: v1.4
-* 更新记录: 增加关键行为摘要树与 Mismatch 正常/异常文案回归测试
+* 版本: v1.6
+* 更新记录: 固化单一下发按钮及程序运行同步携带采样配置的界面合同。
 * 描述: 离屏验证九协议波形、关键行为摘要和红色异常波形。
 **********************************************************/
 
@@ -29,6 +29,19 @@ bool expect(const bool condition, const QString& message)
         QTextStream(stderr) << "FAIL: " << message << '\n';
     }
     return condition;
+}
+
+bool hasFixedSamplingConfig(const lockstep::ui::UiActionRequest& request)
+{
+    return request.parameters.value(QStringLiteral("sample_count")).toInt() == 4096 &&
+        request.parameters.value(QStringLiteral("pretrigger")).toInt() == 2047 &&
+        request.parameters.value(QStringLiteral("posttrigger")).toInt() == 2049 &&
+        request.parameters.value(QStringLiteral("trigger_count")).toInt() == 1 &&
+        request.parameters.value(QStringLiteral("post_after_trigger")).toInt() == 2048 &&
+        request.parameters.value(QStringLiteral("sample_word_bits")).toInt() == 1024 &&
+        request.parameters.value(QStringLiteral("sample_rate_hz")).toInt() == 120000000 &&
+        request.parameters.value(QStringLiteral("mismatch_enable")).toBool() &&
+        request.parameters.value(QStringLiteral("mismatch_mask")).toInt() == 0x1f;
 }
 
 bool treeContainsText(const QTreeWidget* const tree, const QString& text)
@@ -147,30 +160,50 @@ int main(int argc, char* argv[])
     lockstep::ui::MainWindowShell window;
     window.resize(1280, 720);
     window.showPage(lockstep::ui::NavigationPage::SamplingConfig);
-    QPushButton* captureButton = nullptr;
+    QPushButton* sendConfigButton = nullptr;
+    QPushButton* runProgramButton = nullptr;
+    bool removedSamplingActionVisible = false;
     for (QPushButton* const button : window.findChildren<QPushButton*>()) {
         if (button->property("uiAction").toInt() ==
-            static_cast<int>(lockstep::ui::UiAction::StartSamplingCapture)) {
-            captureButton = button;
-            break;
+            static_cast<int>(lockstep::ui::UiAction::SendSamplingConfig)) {
+            sendConfigButton = button;
+        } else if (button->property("uiAction").toInt() ==
+                   static_cast<int>(lockstep::ui::UiAction::RunProgram)) {
+            runProgramButton = button;
         }
+        removedSamplingActionVisible = removedSamplingActionVisible ||
+            button->text() == QStringLiteral("保存采样配置") ||
+            button->text() == QStringLiteral("开始采集");
     }
-    bool captureRequested = false;
-    lockstep::ui::UiActionRequest captureRequest;
+    bool sendConfigRequested = false;
+    bool runProgramRequested = false;
+    lockstep::ui::UiActionRequest sendConfigRequest;
+    lockstep::ui::UiActionRequest runProgramRequest;
     QObject::connect(&window, &lockstep::ui::MainWindowShell::actionRequested,
-                     [&captureRequested, &captureRequest](const lockstep::ui::UiActionRequest& request) {
-        if (request.action == lockstep::ui::UiAction::StartSamplingCapture) {
-            captureRequested = true;
-            captureRequest = request;
+                     [&](const lockstep::ui::UiActionRequest& request) {
+        if (request.action == lockstep::ui::UiAction::SendSamplingConfig) {
+            sendConfigRequested = true;
+            sendConfigRequest = request;
+        } else if (request.action == lockstep::ui::UiAction::RunProgram) {
+            runProgramRequested = true;
+            runProgramRequest = request;
         }
     });
-    if (!expect(captureButton != nullptr, QStringLiteral("sampling page exposes the C++ capture action"))) return 1;
-    captureButton->click();
+    if (!expect(sendConfigButton != nullptr, QStringLiteral("sampling page exposes the send-config action")) ||
+        !expect(runProgramButton != nullptr, QStringLiteral("program page exposes the run action")) ||
+        !expect(!removedSamplingActionVisible,
+                QStringLiteral("sampling page omits save-config and start-capture actions"))) {
+        return 1;
+    }
+    sendConfigButton->click();
+    runProgramButton->click();
     QCoreApplication::processEvents();
-    if (!expect(captureRequested &&
-                    captureRequest.parameters.value(QStringLiteral("sample_word_bits")).toInt() == 1024 &&
-                    captureRequest.parameters.value(QStringLiteral("sample_rate_hz")).toInt() == 120000000,
-                QStringLiteral("capture action sends the fixed 1024-bit 120 MHz contract"))) return 1;
+    if (!expect(sendConfigRequested && hasFixedSamplingConfig(sendConfigRequest),
+                QStringLiteral("send-config action carries the complete default hardware contract")) ||
+        !expect(runProgramRequested && hasFixedSamplingConfig(runProgramRequest),
+                QStringLiteral("run-program action carries the current sampling contract"))) {
+        return 1;
+    }
 
     window.showPage(lockstep::ui::NavigationPage::Waveform);
 

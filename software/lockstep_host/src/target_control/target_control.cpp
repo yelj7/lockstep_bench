@@ -1,8 +1,8 @@
 ﻿/*****************************************************************************
 * 文件名: target_control.cpp
 * 日期: 2026-07-14
-* 版本: 1.0.0
-* 更新记录: 调试访问改为启动统一产品可执行文件的服务模式
+* 版本: 1.1
+* 更新记录: 运行接口支持可选复位并阻止复位失败后继续启动。
 * 描述: 实现目标连接、烧写、回读和运行控制。
 *****************************************************************************/
 
@@ -173,6 +173,15 @@ bool parseServiceResponse(const QByteArray& payload, QJsonObject* const response
 
     *response = document.object();
     return true;
+}
+
+bool validateServiceResponse(const QJsonObject& response, const QString& requestId,
+                             const QString& operation)
+{
+    return response.value(QStringLiteral("schema")).toString() ==
+               QStringLiteral("lockstep-debug-service-response-v1") &&
+        response.value(QStringLiteral("request_id")).toString() == requestId &&
+        response.value(QStringLiteral("operation")).toString() == operation;
 }
 
 bool parseProgressObject(
@@ -1030,105 +1039,6 @@ OperationProgress makeOperationProgress(
     return progress;
 }
 
-InMemoryDebugAccess::InMemoryDebugAccess(const quint64 memorySizeBytes)
-    : memory_(static_cast<int>(memorySizeBytes), '\0')
-{
-}
-
-DebugResult InMemoryDebugAccess::connectTarget(const DebugProfile& profile)
-{
-    profile_ = profile;
-    connected_ = true;
-    running_ = false;
-    return makeSuccess(QStringLiteral("connect"), QStringLiteral("connected:%1").arg(profile.profileId));
-}
-
-DebugResult InMemoryDebugAccess::disconnectTarget()
-{
-    connected_ = false;
-    running_ = false;
-    return makeSuccess(QStringLiteral("disconnect"), QStringLiteral("disconnected"));
-}
-
-DebugResult InMemoryDebugAccess::status()
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("status"), QStringLiteral("target not connected"));
-    }
-
-    return makeSuccess(
-        QStringLiteral("status"),
-        running_ ? QStringLiteral("state=running") : QStringLiteral("state=halted"));
-}
-
-DebugResult InMemoryDebugAccess::read(const quint64 address, const quint64 length)
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("read"), QStringLiteral("target not connected"));
-    }
-    if (!isRangeAllowed(profile_, address, length) || length > static_cast<quint64>(memory_.size())) {
-        return makeFailure(QStringLiteral("read"), QStringLiteral("read range invalid"));
-    }
-
-    const quint64 offset = address - profile_.ramBaseAddress;
-    if ((offset + length) > static_cast<quint64>(memory_.size())) {
-        return makeFailure(QStringLiteral("read"), QStringLiteral("read range exceeds memory"));
-    }
-
-    DebugResult result = makeSuccess(QStringLiteral("read"), QStringLiteral("read:%1").arg(length));
-    result.data = memory_.mid(static_cast<int>(offset), static_cast<int>(length));
-    return result;
-}
-
-DebugResult InMemoryDebugAccess::write(const quint64 address, const QByteArray& data)
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("write"), QStringLiteral("target not connected"));
-    }
-    const quint64 length = static_cast<quint64>(data.size());
-    if (!isRangeAllowed(profile_, address, length)) {
-        return makeFailure(QStringLiteral("write"), QStringLiteral("write range invalid"));
-    }
-
-    const quint64 offset = address - profile_.ramBaseAddress;
-    if ((offset + length) > static_cast<quint64>(memory_.size())) {
-        return makeFailure(QStringLiteral("write"), QStringLiteral("write range exceeds memory"));
-    }
-
-    for (int i = 0; i < data.size(); ++i) {
-        memory_[static_cast<int>(offset) + i] = data.at(i);
-    }
-
-    return makeSuccess(QStringLiteral("write"), QStringLiteral("write:%1").arg(data.size()));
-}
-
-DebugResult InMemoryDebugAccess::reset(const QString& strategy)
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("reset"), QStringLiteral("target not connected"));
-    }
-    running_ = false;
-    return makeSuccess(QStringLiteral("reset"), QStringLiteral("reset:%1").arg(strategy));
-}
-
-DebugResult InMemoryDebugAccess::run(const quint64 entryAddress)
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("run"), QStringLiteral("target not connected"));
-    }
-    running_ = true;
-    return makeSuccess(QStringLiteral("run"), QStringLiteral("running:%1").arg(entryAddress));
-}
-
-DebugResult InMemoryDebugAccess::halt()
-{
-    if (!connected_) {
-        return makeFailure(QStringLiteral("halt"), QStringLiteral("target not connected"));
-    }
-    running_ = false;
-    return makeSuccess(QStringLiteral("halt"), QStringLiteral("halted"));
-}
-
 DebugServiceAccess::DebugServiceAccess(const DebugServiceConfig& config)
     : config_(config)
 {
@@ -1320,20 +1230,26 @@ DebugResult DebugServiceAccess::runDebugService(
         result.errorMessage = serviceLine.mid(6);
         return result;
     }
-    result.success = true;
-
     QByteArray responseBytes;
-    if (QFileInfo::exists(responsePath) && readWholeFile(responsePath, &responseBytes, nullptr)) {
-        QJsonObject response;
-        if (parseServiceResponse(responseBytes, &response)) {
-            result.success = result.success && response.value(QStringLiteral("success")).toBool(false);
-            result.rawReturn = QString::fromUtf8(responseBytes);
-            result.errorMessage = response.value(QStringLiteral("error_message")).toString(result.errorMessage);
-            const QString dataHex = response.value(QStringLiteral("data_hex")).toString();
-            if (!dataHex.isEmpty()) {
-                result.data = hexToBytes(dataHex);
-            }
-        }
+    QJsonObject response;
+    QString responseReadError;
+    if (!QFileInfo::exists(responsePath) ||
+        !readWholeFile(responsePath, &responseBytes, &responseReadError)) {
+        result.errorMessage = responseReadError.isEmpty()
+            ? QStringLiteral("调试服务未生成响应文件")
+            : responseReadError;
+    } else if (!parseServiceResponse(responseBytes, &response) ||
+               !validateServiceResponse(
+                   response, result.requestId,
+                   request.value(QStringLiteral("operation")).toString())) {
+        result.errorMessage = QStringLiteral("调试服务响应格式、请求标识或操作不匹配");
+        result.rawReturn = QString::fromUtf8(responseBytes);
+    } else {
+        result.success = response.value(QStringLiteral("success")).toBool(false);
+        result.rawReturn = QString::fromUtf8(responseBytes);
+        result.errorMessage = response.value(QStringLiteral("error_message")).toString();
+        const QString dataHex = response.value(QStringLiteral("data_hex")).toString();
+        if (!dataHex.isEmpty()) result.data = hexToBytes(dataHex);
     }
 
     QFile::remove(requestPath);
@@ -1555,19 +1471,32 @@ PrecheckRecord TargetConnectionService::runPrecheck(
     }
 
     const DebugResult resetResult = access.reset(profile.resetStrategy);
-    const QByteArray probe(4, '\0');
-    const DebugResult writeResult = access.write(profile.ramBaseAddress, probe);
-    const DebugResult readResult = access.read(profile.ramBaseAddress, static_cast<quint64>(probe.size()));
+    const DebugResult originalRead = access.read(profile.ramBaseAddress, 4U);
+    const DebugResult writeResult = originalRead.success && originalRead.data.size() == 4
+        ? access.write(profile.ramBaseAddress, originalRead.data)
+        : DebugResult();
+    const DebugResult verifyRead = writeResult.success
+        ? access.read(profile.ramBaseAddress, 4U)
+        : DebugResult();
+    const bool readbackMatches = verifyRead.success && verifyRead.data == originalRead.data;
 
     record.resetSupported = resetResult.success;
     record.writeSupported = writeResult.success;
-    record.readSupported = readResult.success;
+    record.readSupported = originalRead.success && originalRead.data.size() == 4 && readbackMatches;
     record.runSupported = true;
-    record.rawReturn = QStringLiteral("%1;%2;%3")
-        .arg(statusResult.rawReturn, writeResult.rawReturn, readResult.rawReturn);
+    record.rawReturn = QStringLiteral("%1;%2;%3;%4")
+        .arg(statusResult.rawReturn, originalRead.rawReturn,
+             writeResult.rawReturn, verifyRead.rawReturn);
     record.state = (record.resetSupported && record.writeSupported && record.readSupported)
         ? PrecheckState::Passed
         : PrecheckState::Failed;
+    if (record.state == PrecheckState::Failed) {
+        record.errorMessage = !resetResult.success ? resetResult.errorMessage :
+            !originalRead.success ? originalRead.errorMessage :
+            !writeResult.success ? writeResult.errorMessage :
+            !verifyRead.success ? verifyRead.errorMessage :
+            QStringLiteral("预检 RAM 原值写回校验不一致");
+    }
     return record;
 }
 
@@ -1810,7 +1739,9 @@ RunControlRecord ProgramController::runTarget(
     DebugAccess& access,
     const QString& taskId,
     const ProgramImageInfo& image,
-    const ReadbackVerifyRecord& verifyRecord) const
+    const ReadbackVerifyRecord& verifyRecord,
+    const bool resetBeforeRun,
+    const QString& resetStrategy) const
 {
     RunControlRecord record;
     record.operation = ProgramOperation::Run;
@@ -1822,8 +1753,21 @@ RunControlRecord ProgramController::runTarget(
         return record;
     }
 
+    QStringList returns;
+    if (resetBeforeRun) {
+        const DebugResult resetResult = access.reset(resetStrategy);
+        if (!resetResult.rawReturn.isEmpty()) returns.append(resetResult.rawReturn);
+        if (!resetResult.success) {
+            record.rawReturn = returns.join(QChar::fromLatin1(';'));
+            record.errorMessage = QStringLiteral("目标复位失败: %1").arg(resetResult.errorMessage);
+            record.state = RunState::Failed;
+            return record;
+        }
+    }
+
     const DebugResult result = access.run(image.entryAddress);
-    record.rawReturn = result.rawReturn;
+    if (!result.rawReturn.isEmpty()) returns.append(result.rawReturn);
+    record.rawReturn = returns.join(QChar::fromLatin1(';'));
     record.snapshot = result.success ? QStringLiteral("target_running") : QString();
     record.errorMessage = result.errorMessage;
     record.state = result.success ? RunState::Running : RunState::Failed;
@@ -1844,32 +1788,6 @@ RunControlRecord ProgramController::haltTarget(
     record.errorMessage = result.errorMessage;
     record.state = result.success ? RunState::Halted : RunState::Failed;
     return record;
-}
-
-ProgramGate ProgramController::getProgramGate(
-    const ConnectionRecord& connection,
-    const PrecheckRecord& precheck,
-    const WriteRecord& writeRecord,
-    const ReadbackVerifyRecord& verifyRecord) const
-{
-    ProgramGate gate;
-    gate.connected = (connection.state == ConnectionState::Connected);
-    gate.precheckPassed = (precheck.state == PrecheckState::Passed);
-    gate.programWritten = writeRecord.success;
-    gate.readbackPassed = (verifyRecord.state == VerifyState::Passed);
-    gate.runAllowed = gate.connected && gate.precheckPassed && gate.programWritten && gate.readbackPassed;
-
-    if (!gate.connected) {
-        gate.reason = QStringLiteral("目标未连接");
-    } else if (!gate.precheckPassed) {
-        gate.reason = QStringLiteral("预检未通过");
-    } else if (!gate.programWritten) {
-        gate.reason = QStringLiteral("烧写未成功");
-    } else if (!gate.readbackPassed) {
-        gate.reason = QStringLiteral("回读校验未通过");
-    }
-
-    return gate;
 }
 
 }  // namespace lockstep::target_control
